@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: billy-ai-backend
+    env: docker
+    plan: free
+    autoDeploy: true
+    dockerContext: .
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: ENV
+        value: production
+      - key: FRONTEND_API_KEY
+        sync: false   # secure API key, set in Render dashboard
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: HF_TOKEN
+        sync: false
+      - key: DISABLE_MULTIMODAL
+        value: "1"    # set to 1 if you only want text chatbot at first

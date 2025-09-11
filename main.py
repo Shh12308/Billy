@@ -1,7 +1,3 @@
-# main.py — Billy AI (all-in-one, single file)
-# 🎯 Features: LLM + RAG + Tools + Agent + ASR + TTS + Vision + Music + Redis cache/RL + Moderation + Streaming
-# SECURITY NOTE: The python sandbox runs in a subprocess with timeout. For public use, run this API in Docker.
-
 import os
 import time
 import uuid
@@ -398,6 +394,44 @@ class WebSearchTool(Tool):
 
 register_tool(WebSearchTool())
 
+class NodeSandbox(Tool):
+    name = "node_sandbox"
+    description = "Run short JavaScript code via Node.js (timeout 2s)."
+    def run(self, args: str) -> Dict[str, Any]:
+        code = args
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "script.js")
+            with open(path, "w") as f:
+                f.write(code)
+            cmd = f"timeout 2 node {shlex.quote(path)}"
+            proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            try:
+                out, err = proc.communicate(timeout=3)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                return {"stdout": "", "stderr": "Execution timed out", "returncode": 124}
+            return {"stdout": out.decode("utf-8", errors="ignore"), "stderr": err.decode("utf-8", errors="ignore"), "returncode": proc.returncode}
+
+register_tool(NodeSandbox())
+
+class BashSandbox(Tool):
+    name = "bash_sandbox"
+    description = "Run safe shell commands (timeout 2s)."
+    def run(self, args: str) -> Dict[str, Any]:
+        cmd = args.strip()
+        if ";" in cmd or "&&" in cmd or "|" in cmd:
+            return {"stdout": "", "stderr": "Unsafe command detected", "returncode": 1}
+        safe_cmd = shlex.split(cmd)
+        proc = subprocess.Popen(safe_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False)
+        try:
+            out, err = proc.communicate(timeout=2)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            return {"stdout":"", "stderr":"Execution timed out", "returncode":124}
+        return {"stdout": out.decode("utf-8", errors="ignore"), "stderr": err.decode("utf-8", errors="ignore"), "returncode": proc.returncode}
+
+register_tool(BashSandbox())
+
 def agent_run(llm_func, system_prompt: str, user_prompt: str, chat_history: List[Tuple[str,str]] = None, max_steps: int = 4):
     chat_history = chat_history or []
     tools_info = "\n".join([f"{name}: {TOOLS[name].description}" for name in TOOLS])
@@ -690,9 +724,9 @@ class ForgetRequest(BaseModel):
 def health():
     return {"status": "ok"}
 
+
 @app.post("/generate", dependencies=[Depends(api_key_auth)])
 def generate(req: GenerateRequest):
-    # rate-limit
     rl_key = f"rl:{hashlib.sha1((req.prompt or '').encode()).hexdigest()}"
     if not rate_limit(rl_key, limit=120, window=60):
         raise HTTPException(status_code=429, detail="Rate limit exceeded")
@@ -701,10 +735,10 @@ def generate(req: GenerateRequest):
     if not safe:
         return JSONResponse({"error": reason or "Unsafe prompt"}, status_code=400)
 
-    # Agent trigger heuristic: allow "CALL_TOOL" or "use tool:" prefixes
     if req.prompt.strip().lower().startswith("use tool:") or "CALL_TOOL" in req.prompt:
         def _llm(p): return generate_text_sync(p, max_tokens=400, temperature=0.2, top_p=0.9)
-        out = agent_run(_llm, make_system_prompt(retrieve_knowledge(req.prompt, k=5)), req.prompt, req.chat_history or [], max_steps=req.max_steps)
+        out = agent_run(_llm, make_system_prompt(retrieve_knowledge(req.prompt, k=5)),
+                        req.prompt, req.chat_history or [], max_steps=req.max_steps)
         return out
 
     prompt = build_prompt(req.prompt, req.chat_history or [])
@@ -713,12 +747,14 @@ def generate(req: GenerateRequest):
     if cached:
         return {"response": cached}
 
-    out = generate_text_sync(prompt, max_tokens=req.max_tokens, temperature=req.temperature, top_p=req.top_p)
+    out = generate_text_sync(prompt, max_tokens=req.max_tokens,
+                             temperature=req.temperature, top_p=req.top_p)
     safe_out, _ = is_safe_message(out)
     if not safe_out:
         return JSONResponse({"error": "Response blocked by moderation."}, status_code=400)
     cache_set(cache_key, out, ttl=30)
     return {"response": out}
+
 
 @app.post("/stream", dependencies=[Depends(api_key_auth)])
 def stream(req: GenerateRequest):
@@ -727,34 +763,38 @@ def stream(req: GenerateRequest):
         return StreamingResponse(iter([reason or "Unsafe prompt"]), media_type="text/plain")
     prompt = build_prompt(req.prompt, req.chat_history or [])
     def gen():
-        for chunk in stream_generate(prompt, max_tokens=req.max_tokens, temperature=req.temperature, top_p=req.top_p):
+        for chunk in stream_generate(prompt, max_tokens=req.max_tokens,
+                                     temperature=req.temperature, top_p=req.top_p):
             yield chunk
     return StreamingResponse(gen(), media_type="text/plain")
+
 
 @app.post("/agent", dependencies=[Depends(api_key_auth)])
 def agent_endpoint(req: AgentRequest):
     def _llm(p): return generate_text_sync(p, max_tokens=400, temperature=0.2, top_p=0.9)
-    out = agent_run(_llm, make_system_prompt(retrieve_knowledge(req.prompt, k=5)), req.prompt, req.chat_history or [], max_steps=req.max_steps)
+    out = agent_run(_llm, make_system_prompt(retrieve_knowledge(req.prompt, k=5)),
+                    req.prompt, req.chat_history or [], max_steps=req.max_steps)
     return out
+
 
 @app.post("/embed", dependencies=[Depends(api_key_auth)])
 def embed(req: EmbedRequest):
     if not embedder:
         return JSONResponse({"error": "Embedder not loaded."}, status_code=500)
     vecs = [embed_text_local(t) for t in req.texts]
-    # also store them for RAG convenience
     for t in req.texts:
         store_knowledge(t)
     return {"embeddings": vecs}
+
 
 @app.post("/remember", dependencies=[Depends(api_key_auth)])
 def remember(req: RememberRequest):
     store_knowledge(req.text, user_id=req.user_id if hasattr(req, "user_id") else None)
     return {"status": "stored"}
 
+
 @app.post("/search", dependencies=[Depends(api_key_auth)])
 def web_search(req: SearchRequest):
-    # call web_search tool and ingest snippets into RAG
     ws = TOOLS.get("web_search")
     if not ws:
         return {"ingested": 0, "context_sample": ""}
@@ -766,28 +806,28 @@ def web_search(req: SearchRequest):
     ctx = retrieve_knowledge(req.query, k=req.max_results or 3)
     return {"ingested": count, "context_sample": ctx[:1000]}
 
+
+# === Updated Music with Supabase ===
 @app.post("/music", dependencies=[Depends(api_key_auth)])
 def music(req: MusicRequest, background_tasks: BackgroundTasks):
     try:
         tmp = generate_music(req.prompt, duration=req.duration or 20).get("path")
-        if CDN_BASE_URL:
-            url = f"{CDN_BASE_URL}/{os.path.basename(tmp)}"
-        else:
-            url = tmp
-        return {"reply": f"Generated music for: {req.prompt}", "audioUrl": url}
+        url = save_media_to_supabase(tmp, "audio", prompt=req.prompt)
+        return {"reply": f"Generated music for: {req.prompt}", "audioUrl": url or tmp}
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
+
+# === Updated TTS with Supabase ===
 @app.post("/tts", dependencies=[Depends(api_key_auth)])
 def tts(req: TTSRequest):
     try:
         out = synthesize_to_file(req.text, voice=req.voice)
-        if CDN_BASE_URL:
-            url = f"{CDN_BASE_URL}/tts/{os.path.basename(out['path'])}"
-            return {"audioUrl": url}
-        return FileResponse(out["path"], media_type="audio/mpeg", filename=os.path.basename(out["path"]))
+        url = save_media_to_supabase(out["path"], "audio", prompt=req.text)
+        return {"audioUrl": url or out["path"]}
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
+
 
 @app.post("/tts_stream", dependencies=[Depends(api_key_auth)])
 def tts_stream(req: TTSRequest):
@@ -804,6 +844,7 @@ def tts_stream(req: TTSRequest):
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
+
 @app.post("/asr", dependencies=[Depends(api_key_auth)])
 async def asr(file: UploadFile = File(...)):
     try:
@@ -814,6 +855,7 @@ async def asr(file: UploadFile = File(...)):
         return {"transcript": res.get("text", "")}
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
+
 
 @app.post("/vision", dependencies=[Depends(api_key_auth)])
 async def vision(file: UploadFile = File(...), task: Optional[str] = "caption"):
@@ -828,6 +870,7 @@ async def vision(file: UploadFile = File(...), task: Optional[str] = "caption"):
         return {"caption": caption}
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
+
 
 @app.websocket("/ws/generate")
 async def websocket_generate(ws: WebSocket):
@@ -870,9 +913,11 @@ async def websocket_generate(ws: WebSocket):
     except Exception:
         await ws.close()
 
+
 @app.get("/admin/memory")
 def admin_memory():
     return {"count": len(memory_store)}
+
 
 @app.post("/forget", dependencies=[Depends(api_key_auth)])
 def forget(req: ForgetRequest):
@@ -884,15 +929,31 @@ def forget(req: ForgetRequest):
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
+
 @app.get("/metrics")
 def metrics():
     if not generate_latest or not CONTENT_TYPE_LATEST:
         return JSONResponse({"error": "prometheus-client not installed"}, status_code=500)
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
-# ===============================
-# Startup
-# ===============================
+
+# === New: Library Endpoint ===
+@app.get("/library", dependencies=[Depends(api_key_auth)])
+def list_library(page: int = 0, page_size: int = 12):
+    if not supabase_client:
+        return {"items": []}
+    try:
+        start = page * page_size
+        end = start + page_size - 1
+        resp = supabase_client.table("generated_media") \
+            .select("*") \
+            .order("created_at", desc=True) \
+            .range(start, end) \
+            .execute()
+        return {"items": resp.data or []}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
 @app.on_event("startup")
 def on_startup():
     try:
@@ -908,10 +969,3 @@ def on_startup():
     except Exception:
         pass
     print("🚀 Billy AI startup complete")
-
-# ===============================
-# Run instructions
-# ===============================
-# uvicorn main:app --host 0.0.0.0 --port 8000
-# Set FRONTEND_API_KEY in env. Optionally set HF_TOKEN, REDIS_URL, SUPABASE_URL/SUPABASE_KEY, CDN_BASE_URL.
-# For CPU-only or fast boot without heavy models: export DISABLE_MULTIMODAL=1
