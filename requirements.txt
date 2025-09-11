@@ -1,13 +1,24 @@
+# Core
 fastapi==0.111.0
 uvicorn[standard]==0.30.0
+
+# LLM / Transformers
 transformers==4.42.0
 sentence-transformers==3.0.0
+
+# Web search / RAG
 duckduckgo-search==6.2.6
 chromadb==0.5.0
+
+# Supabase / DB
 supabase==2.5.0
 gotrue==2.5.0
 postgrest==0.16.4
 realtime==1.0.6
 storage3==0.7.5
+
+# OpenAI API
 openai==1.35.3
+
+# Utils
 Pillow==10.1.0
