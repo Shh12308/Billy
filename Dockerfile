@@ -1,4 +1,4 @@
-# ===== Base image (CPU only) =====
+# ===== Base image =====
 FROM python:3.11-slim
 
 # ===== System dependencies =====
@@ -14,6 +14,7 @@ WORKDIR /app
 # ===== Copy requirements and install =====
 COPY requirements.txt .
 RUN pip install --upgrade pip
+ENV PIP_ROOT_USER_ACTION=ignore
 RUN pip install -r requirements.txt
 
 # ===== Copy app code =====
