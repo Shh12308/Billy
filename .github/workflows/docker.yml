@@ -1,14 +1,16 @@
-name: Build and Push Docker image
+name: Build and Push AI to Docker Hub
 
 on:
   push:
-    branches: ["main"]
+    branches: [ "main" ]   # Run only when you push to main branch
+  workflow_dispatch:        # Allow manual trigger
 
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v3
 
       - name: Log in to Docker Hub
@@ -17,9 +19,10 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build and push
-        uses: docker/build-push-action@v4
-        with:
-          context: .
-          push: true
-          tags: username/my-ai:latest
+      - name: Build Docker image
+        run: |
+          docker build -t ${{ secrets.DOCKERHUB_USERNAME }}/my-ai:latest .
+
+      - name: Push Docker image
+        run: |
+          docker push ${{ secrets.DOCKERHUB_USERNAME }}/my-ai:latest
