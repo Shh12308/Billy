@@ -9,6 +9,10 @@ import hashlib
 import subprocess
 from threading import Thread
 from typing import List, Dict, Any, Tuple, Optional
+from dotenv import load_dotenv
+import os
+
+load_dotenv()  # loads .env from the same directory
 
 from fastapi import FastAPI, UploadFile, File, WebSocket, BackgroundTasks, Depends, Header, HTTPException, Response
 from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
