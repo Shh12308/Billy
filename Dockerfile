@@ -14,9 +14,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libsndfile1-dev \
     libjpeg-dev \
     zlib1g-dev \
-    curl \
-    wget \
     cmake \
+    libffi-dev \
+    wget \
+    curl \
     unzip \
     && rm -rf /var/lib/apt/lists/*
 
@@ -36,14 +37,24 @@ WORKDIR /app
 COPY requirements.txt .
 
 # ===============================
-# Install core ML packages separately to avoid build issues
+# Install core dependencies first
+# ===============================
+RUN pip install --no-cache-dir fastapi uvicorn[standard] pydantic requests httpx python-dotenv supabase openai transformers sentence-transformers chromadb redis prometheus-client duckduckgo-search
+
+# ===============================
+# Install PyTorch separately (pre-built wheel to avoid build issues)
 # ===============================
 RUN pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
 
 # ===============================
-# Install remaining Python dependencies
+# Install audio/voice/music/other ML libs
 # ===============================
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir TTS audiocraft bitsandbytes accelerate huggingface_hub
+
+# ===============================
+# Install Whisper directly from GitHub
+# ===============================
+RUN pip install --no-cache-dir git+https://github.com/openai/whisper.git
 
 # ===============================
 # Copy app source
