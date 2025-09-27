@@ -1,8 +1,9 @@
 # main.py
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Tuple
-import openai
+from openai import OpenAI
 import os
 
 # --- Config ---
@@ -10,9 +11,19 @@ OPENAI_KEY = os.getenv("OPENAI_API_KEY")  # set this in Render dashboard
 if not OPENAI_KEY:
     raise RuntimeError("OPENAI_API_KEY not set")
 
-openai.api_key = OPENAI_KEY
+client = OpenAI(api_key=OPENAI_KEY)
 
 app = FastAPI(title="Billy AI Chat", version="1.0.0")
+
+# --- CORS for frontend ---
+origins = ["*"]  # Change to your frontend URL for security
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # --- Models ---
 class ChatRequest(BaseModel):
@@ -31,6 +42,10 @@ def root():
 def status():
     return {"status": "AI running"}
 
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
 @app.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest):
     """
@@ -44,18 +59,13 @@ def chat(req: ChatRequest):
     messages.append({"role": "user", "content": req.prompt})
 
     try:
-        resp = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",  # small & cheap, good for Render
+        resp = client.chat.completions.create(
+            model="gpt-3.5-turbo",
             messages=messages,
             temperature=0.7,
             max_tokens=500
         )
-        text = resp.choices[0].message["content"].strip()
+        text = resp.choices[0].message.content.strip()
         return {"response": text}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-# Optional health endpoint
-@app.get("/health")
-def health():
-    return {"status": "ok"}
