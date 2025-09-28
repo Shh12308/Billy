@@ -37,10 +37,15 @@ COPY requirements.txt .
 # ===============================
 # Remove audiocraft from requirements.txt if present
 # and install it separately to avoid setup.py error
+# ===============================
+# Install Python dependencies
+# ===============================
 RUN sed -i '/audiocraft/d' requirements.txt \
  && pip install --no-cache-dir -r requirements.txt \
+ # Force correct torch version for bitsandbytes
+ && pip install --no-cache-dir torch==2.2.2 torchvision==0.17.2 torchaudio==2.2.2 \
+ && pip install --no-cache-dir bitsandbytes==0.47.0 \
  && pip install --no-cache-dir audiocraft
-
 # ===============================
 # Copy app source
 # ===============================
