@@ -1,21 +1,53 @@
-# Use official lightweight Python image
+# ===============================
+# Base image
+# ===============================
 FROM python:3.11-slim
 
+# ===============================
+# System dependencies for ML / audio / vision
+# ===============================
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    git \
+    ffmpeg \
+    libsndfile1 \
+    libjpeg-dev \
+    zlib1g-dev \
+    curl \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# ===============================
+# Upgrade pip
+# ===============================
+RUN python -m pip install --upgrade pip setuptools wheel
+
+# ===============================
 # Set working directory
+# ===============================
 WORKDIR /app
 
-# Copy requirements first
+# ===============================
+# Copy requirements
+# ===============================
 COPY requirements.txt .
 
-# Install dependencies
-RUN pip install --upgrade pip \
-    && pip install --no-cache-dir -r requirements.txt
+# ===============================
+# Install Python dependencies
+# ===============================
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the app code
-COPY app.py .
+# ===============================
+# Copy app source
+# ===============================
+COPY . .
 
-# Expose port (Render default is 10000)
-EXPOSE 10000
+# ===============================
+# Expose FastAPI default port
+# ===============================
+EXPOSE 8000
 
-# Run FastAPI app
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "10000"]
+# ===============================
+# Default command
+# ===============================
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
