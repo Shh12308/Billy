@@ -15,7 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     zlib1g-dev \
     curl \
     wget \
-    && rm -rf /var/lib/apt/lists/*
+ && rm -rf /var/lib/apt/lists/*
 
 # ===============================
 # Upgrade pip
@@ -35,7 +35,11 @@ COPY requirements.txt .
 # ===============================
 # Install Python dependencies
 # ===============================
-RUN pip install --no-cache-dir -r requirements.txt
+# Remove audiocraft from requirements.txt if present
+# and install it separately to avoid setup.py error
+RUN sed -i '/audiocraft/d' requirements.txt \
+ && pip install --no-cache-dir -r requirements.txt \
+ && pip install --no-cache-dir audiocraft
 
 # ===============================
 # Copy app source
