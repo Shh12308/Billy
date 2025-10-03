@@ -2,17 +2,16 @@ from fastapi import FastAPI, UploadFile, File
 from pydantic import BaseModel
 from datetime import date
 from supabase import create_client
+from PIL import Image
 import os
-import uuid
-
-# Optional multimodal
-try:
-    import torch
-    from transformers import BlipProcessor, BlipForConditionalGeneration
-except ImportError:
-    BlipProcessor = BlipForConditionalGeneration = None
+import io
+import base64
 
 app = FastAPI()
+
+# --------------------
+# Supabase Setup
+# --------------------
 supabase = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
 DAILY_LIMIT = int(os.getenv("DAILY_LIMIT", 20))
 
@@ -36,45 +35,62 @@ def check_usage(user_id: str) -> bool:
         return True
 
 # --------------------
-# Requests
+# Models
 # --------------------
 class PromptRequest(BaseModel):
     user_id: str
     prompt: str
 
+# --------------------
+# Chat Endpoint
+# --------------------
 @app.post("/chat")
 def chat(req: PromptRequest):
     if not check_usage(req.user_id):
         return {"error": "Daily free limit reached."}
-    # Lightweight dummy AI, replace with your LLM / OpenAI
-    return {"reply": f"🤖 Response to: {req.prompt}"}
+    # Lightweight AI simulation
+    return {"reply": f"🤖 [Free AI] I hear you said: '{req.prompt}'. Here's my thought: Sounds interesting!"}
 
 # --------------------
-# Image captioning
+# Image Captioning (Lightweight)
 # --------------------
-BLIP_MODEL = None
-BLIP_PROC = None
-def init_blip():
-    global BLIP_MODEL, BLIP_PROC
-    if BLIP_MODEL is None and BlipProcessor and BlipForConditionalGeneration:
-        BLIP_MODEL = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base")
-        BLIP_PROC = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
-init_blip()
-
 @app.post("/caption")
 async def caption(file: UploadFile = File(...)):
-    if BLIP_MODEL is None:
-        return {"caption": "BLIP not available."}
-    from PIL import Image
     img = Image.open(file.file).convert("RGB")
-    inputs = BLIP_PROC(images=img, return_tensors="pt")
-    out = BLIP_MODEL.generate(**inputs)
-    caption = BLIP_PROC.decode(out[0], skip_special_tokens=True)
-    return {"caption": caption}
+    width, height = img.size
+    fmt = img.format if img.format else "JPEG"
+    return {
+        "caption": f"An image with size {width}x{height}, format {fmt}.",
+        "info": {
+            "width": width,
+            "height": height,
+            "format": fmt
+        }
+    }
 
 # --------------------
-# Simple health check
+# Image Filters
+# --------------------
+@app.post("/filter/grayscale")
+async def grayscale(file: UploadFile = File(...)):
+    img = Image.open(file.file).convert("L")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    img_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+    return {"image_base64": img_b64}
+
+@app.post("/filter/thumbnail")
+async def thumbnail(file: UploadFile = File(...)):
+    img = Image.open(file.file).convert("RGB")
+    img.thumbnail((128, 128))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    img_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+    return {"thumbnail_base64": img_b64}
+
+# --------------------
+# Health Check
 # --------------------
 @app.get("/")
 def root():
-    return {"message": "✅ Billy Airunning"}
+    return {"message": "✅ Free AI running on Render (chat + image tools ready)!"}
