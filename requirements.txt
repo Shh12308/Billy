@@ -1,8 +1,9 @@
 fastapi==0.111.1
 uvicorn[standard]==0.23.1
 python-dotenv==1.0.0
-supabase==1.1.0
 pydantic==2.3.0
-torch==2.3.1        # Only if using BLIP / small LLM / TTS
 transformers==4.44.0
+torch==2.8.0
+sentence-transformers==2.2.2
 Pillow==10.1.0
+supabase==1.1.0
