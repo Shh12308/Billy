@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: billy-ai
+    env: python
+    buildCommand: pip install --no-cache-dir -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: SUPABASE_URL
+        value: your_supabase_url
+      - key: SUPABASE_KEY
+        value: your_supabase_service_key
+      - key: DAILY_LIMIT
+        value: "20"
