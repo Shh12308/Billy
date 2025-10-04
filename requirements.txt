@@ -1,8 +1,11 @@
 fastapi
 uvicorn
-supabase
-pillow
-transformers
 torch
-openai-whisper
+torchvision
+torchaudio
+transformers
+pillow
+supabase
+python-dotenv
 gTTS
+openai-whisper
