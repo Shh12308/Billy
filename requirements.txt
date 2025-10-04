@@ -4,5 +4,5 @@ supabase
 pillow
 transformers
 torch
-whisper
+openai-whisper
 gTTS
