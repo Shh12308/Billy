@@ -4,6 +4,8 @@ from datetime import date
 from supabase import create_client
 from PIL import Image
 import os
+from gtts import gTTS
+import tempfile
 
 # ---------- Supabase Setup ----------
 supabase = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
@@ -13,7 +15,6 @@ DAILY_LIMIT = int(os.getenv("DAILY_LIMIT", 20))
 import torch
 from transformers import BlipProcessor, BlipForConditionalGeneration, pipeline
 import whisper
-from TTS.api import TTS
 
 # Load lightweight models at startup
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -25,16 +26,11 @@ BLIP_PROC = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base
 print("Loading Whisper tiny...")
 ASR_MODEL = whisper.load_model("tiny", device=DEVICE)
 
-print("Loading TTS...")
-TTS_MODEL = TTS("tts_models/en/ljspeech/tacotron2-DDC", progress_bar=False, gpu=DEVICE=="cuda")
-
 # Dummy LLM (replace with OpenAI API if desired)
 CHAT_MODEL = pipeline("text-generation", model="distilgpt2", device=0 if DEVICE=="cuda" else -1)
 
-
 # ---------- FastAPI App ----------
 app = FastAPI()
-
 
 # ---------- Usage Tracking ----------
 def check_usage(user_id: str) -> bool:
@@ -62,7 +58,7 @@ class PromptRequest(BaseModel):
 
 @app.get("/")
 def root():
-    return {"message": "✅ Free AI running on Render"}
+    return {"message": "✅ Free Zynara AI running on Render"}
 
 
 @app.post("/chat")
@@ -99,6 +95,7 @@ async def asr(user_id: str, file: UploadFile = File(...)):
 def tts(req: PromptRequest):
     if not check_usage(req.user_id):
         return {"error": "Daily free limit reached."}
-    out_path = f"/tmp/{req.user_id}.wav"
-    TTS_MODEL.tts_to_file(text=req.prompt, file_path=out_path)
+    tts = gTTS(req.prompt, lang="en")
+    out_path = f"/tmp/{req.user_id}.mp3"
+    tts.save(out_path)
     return {"audio_file": out_path}
