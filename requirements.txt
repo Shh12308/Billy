@@ -1,11 +1,12 @@
 fastapi
-uvicorn
-torch
-torchvision
-torchaudio
-transformers
+uvicorn[standard]
 pillow
+gTTS
 supabase
 python-dotenv
-gTTS
+transformers
 openai-whisper
+torch==2.2.0+cpu
+torchvision==0.17.0+cpu
+torchaudio==2.2.0+cpu
+--extra-index-url https://download.pytorch.org/whl/cpu
