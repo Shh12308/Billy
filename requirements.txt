@@ -5,8 +5,8 @@ supabase
 python-dotenv
 transformers
 openai-whisper
-torch==2.2.0+cpu
-torchvision==0.17.0+cpu
-torchaudio==2.2.0+cpu
+torch==2.8.0+cpu
+torchvision==0.19.0+cpu
+torchaudio==2.8.0+cpu
 --extra-index-url https://download.pytorch.org/whl/cpu
 fastapi
