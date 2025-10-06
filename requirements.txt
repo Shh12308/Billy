@@ -1,12 +1,11 @@
-uvicorn[standard]
-pillow
-gTTS
-supabase
-python-dotenv
-transformers
-openai-whisper
-torch==2.8.0+cpu
-torchvision==0.23.0+cpu
-torchaudio==2.8.0+cpu
---extra-index-url https://download.pytorch.org/whl/cpu
-fastapi
+fastapi==0.118.0
+uvicorn==0.37.0
+pillow==11.3.0
+gTTS==2.5.4
+supabase==2.21.1
+python-dotenv==1.1.1
+transformers==4.57.0
+openai-whisper==20250625
+torch==2.5.0+cpu
+torchvision==0.22.0+cpu
+torchaudio==2.5.0+cpu
