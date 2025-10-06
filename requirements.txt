@@ -6,6 +6,6 @@ supabase==2.21.1
 python-dotenv==1.1.1
 transformers==4.57.0
 openai-whisper==20250625
-torch==2.5.0+cpu
-torchvision==0.22.0+cpu
-torchaudio==2.5.0+cpu
+torch==2.5.0
+torchvision==0.22.0
+torchaudio==2.5.0
