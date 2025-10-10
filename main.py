@@ -42,7 +42,7 @@ logger = logging.getLogger("proai")
 # ---------- Config ----------
 REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379")
 USE_LOCAL_MODEL = os.getenv("USE_LOCAL_MODEL", "false").lower() == "true"
-LOCAL_MODEL_NAME = os.getenv("LOCAL_MODEL_NAME", "gpt2")
+LLaMA_MODEL_NAME = "meta-llama/Llama-2-7b-chat-hf"  
 HF_API_KEY = os.getenv("HF_API_KEY", None)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", None)
 ENABLE_IMAGE_GEN = os.getenv("ENABLE_IMAGE_GEN", "false").lower() == "true"
