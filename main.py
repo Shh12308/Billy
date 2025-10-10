@@ -1,57 +1,72 @@
-from fastapi import Form
+# main.py
+from fastapi import FastAPI, Form, HTTPException, WebSocket, WebSocketDisconnect, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 from email.message import EmailMessage
 import smtplib
 import re
 import os
 import asyncio
 import logging
-from typing import List, Optional
-from pydantic import BaseModel
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, BackgroundTasks, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse, FileResponse
-from fastapi.staticfiles import StaticFiles
-import uvicorn
 import tempfile
 import uuid
+import json
+import uvicorn
 
-# Optional libs; import lazily to avoid heavy startup cost
+# optional heavy imports
 try:
     import redis.asyncio as aioredis
 except Exception:
     aioredis = None
 
-# Optional HF / transformers imports (lazily used)
 _transformers_available = True
 try:
-    from transformers import AutoTokenizer, AutoModelForCausalLM, TextStreamer
+    from transformers import AutoTokenizer, AutoModelForCausalLM
+    import torch
 except Exception:
     _transformers_available = False
 
-# Optional diffusers
 _diffusers_available = True
 try:
     from diffusers import StableDiffusionPipeline
-    import torch
 except Exception:
     _diffusers_available = False
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("proai")
 
-# ---------- Config ----------
+# ---------- Config (env driven) ----------
+PORT = int(os.getenv("PORT", "8000"))
 REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379")
 USE_LOCAL_MODEL = os.getenv("USE_LOCAL_MODEL", "false").lower() == "true"
-LLaMA_MODEL_NAME = "meta-llama/Llama-2-7b-chat-hf"  
+# Default to LLaMA 3 8B Instruct HF name (change if you have a different path)
+LOCAL_MODEL_NAME = os.getenv("LOCAL_MODEL_NAME", "meta-llama/Meta-Llama-3-8B-Instruct")
 HF_API_KEY = os.getenv("HF_API_KEY", None)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", None)
 ENABLE_IMAGE_GEN = os.getenv("ENABLE_IMAGE_GEN", "false").lower() == "true"
 IMAGE_MODEL = os.getenv("IMAGE_MODEL", "CompVis/stable-diffusion-v1-4")
-PORT = int(os.getenv("PORT", "8000"))
-CLIENT_ORIGINS = os.getenv("CLIENT_ORIGINS", "*").split(",")  # CSV of origins
+CLIENT_ORIGINS = os.getenv("CLIENT_ORIGINS", "*").split(",")
+ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "shaynengunga15@gmail.com")
+
+# SMTP settings for notify_admin
+SMTP_HOST = os.getenv("SMTP_HOST", "localhost")
+SMTP_PORT = int(os.getenv("SMTP_PORT", os.getenv("SMTP_PORT", "25")))
+SMTP_USER = os.getenv("SMTP_USER", None)
+SMTP_PASS = os.getenv("SMTP_PASS", None)
+
+# About info (shows projects, refuses to disclose details)
+ABOUT_INFO = {
+    "creator": "GoldBoy",
+    "age": 17,
+    "bio": "I am a 17-year-old programmer working on multiple projects/sites.",
+    "contact": "shaynengunga15@gmail.com",
+    "projects": ["NGG", "ST", "MZ, BB, NL"]
+}
 
 # ---------- FastAPI app ----------
-app = FastAPI(title="ProAI - main")
+app = FastAPI(title="ProAI - GoldBoy")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CLIENT_ORIGINS,
@@ -60,16 +75,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ---------- Redis client (async) ----------
+# ---------- Redis client (lazy) ----------
 redis_client = None
-
 async def get_redis():
     global redis_client
     if redis_client is None:
         if aioredis is None:
-            raise RuntimeError("redis.asyncio not installed - please install redis>=4.2")
+            raise RuntimeError("redis.asyncio not installed - please install redis>=4.2 if you want Redis features")
         redis_client = aioredis.from_url(REDIS_URL, decode_responses=True)
-        # Attempt a ping
         try:
             await redis_client.ping()
             logger.info("✅ Connected to Redis")
@@ -77,27 +90,40 @@ async def get_redis():
             logger.warning("⚠️ Redis connect failed: %s", e)
     return redis_client
 
-# ---------- Model holders (lazy-loaded) ----------
+# ---------- Model holders (lazy loaded) ----------
 _text_tokenizer = None
 _text_model = None
 _image_pipe = None
 
 async def load_text_model_if_needed():
     global _text_tokenizer, _text_model
-    if _text_model is not None:
+    if _text_model is not None and _text_tokenizer is not None:
         return
-    if USE_LOCAL_MODEL:
-        if not _transformers_available:
-            logger.error("Transformers not available to load local model.")
-            return
-        logger.info("Loading local text model: %s", LOCAL_MODEL_NAME)
-        _text_tokenizer = AutoTokenizer.from_pretrained(LLaMA_MODEL_NAME)
-        _text_model = AutoModelForCausalLM.from_pretrained(
-            LLaMA_MODEL_NAME,
-            device_map="auto",
-            torch_dtype=torch.float16  # save VRAM
-        )
-        logger.info("✅ LLaMA model loaded")
+    if not USE_LOCAL_MODEL:
+        logger.info("USE_LOCAL_MODEL is false; skipping local model load")
+        return
+    if not _transformers_available:
+        logger.error("Transformers not available. Install transformers and torch to load local models.")
+        return
+
+    logger.info("Loading local text model: %s", LOCAL_MODEL_NAME)
+    try:
+        _text_tokenizer = AutoTokenizer.from_pretrained(LOCAL_MODEL_NAME, use_fast=True)
+        # try to load with automatic device mapping; use float16 if CUDA available
+        if torch.cuda.is_available():
+            _text_model = AutoModelForCausalLM.from_pretrained(
+                LOCAL_MODEL_NAME,
+                device_map="auto",
+                torch_dtype=torch.float16
+            )
+        else:
+            _text_model = AutoModelForCausalLM.from_pretrained(LOCAL_MODEL_NAME, device_map="auto")
+        logger.info("✅ Local text model loaded")
+    except Exception as e:
+        logger.exception("Failed to load local text model: %s", e)
+        # ensure variables are cleared to avoid partially initialised state
+        _text_tokenizer = None
+        _text_model = None
 
 async def load_image_model_if_needed():
     global _image_pipe
@@ -106,54 +132,57 @@ async def load_image_model_if_needed():
     if _image_pipe is not None:
         return
     if not _diffusers_available:
-        logger.error("Diffusers not available; enable IMAGE via external API or install diffusers/torch.")
+        logger.error("Diffusers not installed; install diffusers and torch to enable image generation.")
         return
-    logger.info("Loading image pipeline (may require GPU)...")
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    _image_pipe = StableDiffusionPipeline.from_pretrained(IMAGE_MODEL).to(device)
-    logger.info("✅ Image model ready on %s", device)
+    try:
+        device = "cuda" if ("torch" in globals() and torch.cuda.is_available()) else "cpu"
+        _image_pipe = StableDiffusionPipeline.from_pretrained(IMAGE_MODEL)
+        _image_pipe.to(device)
+        logger.info("✅ Image pipeline ready on %s", device)
+    except Exception as e:
+        logger.exception("Failed loading image pipeline: %s", e)
+        _image_pipe = None
 
-# ---------- Pydantic request/response models ----------
+# ---------- Pydantic models ----------
 class Message(BaseModel):
     role: str
     content: str
 
 class ChatRequest(BaseModel):
-    messages: List[Message]
+    messages: list[Message]
     persona: Optional[str] = "default"
     stream: Optional[bool] = False
-    code_mode: Optional[bool] = False  # new: focus on code output
+    code_mode: Optional[bool] = False
 
 class ImageRequest(BaseModel):
     prompt: str
     width: Optional[int] = 512
     height: Optional[int] = 512
 
-# ---------- Helper utilities ----------
+# ---------- Helpers ----------
 def safe_filename(prefix="out", ext="png"):
     return f"{prefix}-{uuid.uuid4().hex}.{ext}"
 
 async def generate_text_local(prompt: str, max_new_tokens: int = 256):
     """
-    Generate text using local model (transformers).
+    Generate text with local model. This may be slow and memory heavy.
     """
     if _text_model is None or _text_tokenizer is None:
-        raise RuntimeError("Local text model is not loaded")
+        raise RuntimeError("Local model not loaded")
     inputs = _text_tokenizer(prompt, return_tensors="pt", truncation=True).to(_text_model.device)
     out = _text_model.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=True, top_p=0.95, top_k=50, temperature=0.8)
     text = _text_tokenizer.decode(out[0], skip_special_tokens=True)
-    # remove prompt prefix if model echoes it
+    # remove echo of prompt, if present
     if text.startswith(prompt):
         text = text[len(prompt):].strip()
     return text
 
 async def generate_text_remote_hf(prompt: str):
     """
-    Call Hugging Face Inference API synchronously (simple).
-    Requires HF_API_KEY to be set.
+    Use Hugging Face Inference API (requires HF_API_KEY)
     """
     if not HF_API_KEY:
-        raise RuntimeError("HF_API_KEY not configured")
+        raise RuntimeError("HF_API_KEY not set")
     import httpx
     headers = {"Authorization": f"Bearer {HF_API_KEY}"}
     url = f"https://api-inference.huggingface.co/models/{LOCAL_MODEL_NAME}"
@@ -162,38 +191,26 @@ async def generate_text_remote_hf(prompt: str):
         r = await client.post(url, headers=headers, json=payload)
         r.raise_for_status()
         data = r.json()
-        if isinstance(data, dict) and data.get("error"):
-            raise RuntimeError("HF inference error: " + data["error"])
-        # HF returns a list with generated_text
         if isinstance(data, list) and len(data) > 0:
-            return data[0].get("generated_text", "")
+            return data[0].get("generated_text", "") or str(data)
         return str(data)
 
-def extract_code_blocks(text):
+def extract_code_blocks(text: str):
+    """
+    finds triple-backtick code blocks and returns list of {language, code}
+    """
     pattern = r"```(python|js|node|html|css)?\n(.*?)```"
-    matches = re.findall(pattern, text, re.DOTALL)
+    matches = re.findall(pattern, text, re.DOTALL | re.IGNORECASE)
     blocks = []
     for lang, code in matches:
-        blocks.append({"language": lang or "text", "code": code.strip()})
+        blocks.append({"language": (lang or "text").lower(), "code": code.strip()})
     return blocks
 
-ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "shaynengunga15@gmail.com")
-
-# Add at the top after imports
-# Add at the top after imports
-ABOUT_INFO = {
-    "creator": "GoldBoy",
-    "age": 17,
-    "bio": "I am a 17-year-old programmer working on multiple projects/sites.",
-    "contact": "GoldBoy on instagram",
-    "projects": ["NGG", "ST", "MZ, BB, NL"]
-}
-
-# Public /about endpoint
+# ---------- Public info endpoints ----------
 @app.get("/about")
 async def about():
     """
-    Returns info about the creator and projects without revealing what they are about.
+    Returns creator and project list but refuses to disclose project details.
     """
     return {
         "creator": ABOUT_INFO["creator"],
@@ -201,73 +218,90 @@ async def about():
         "projects": ABOUT_INFO["projects"],
         "message": "Project details are private and will not be disclosed."
     }
-    
+
+# ---------- Admin notification endpoint ----------
 @app.post("/notify_admin")
 async def notify_admin(reason: str = Form(...)):
+    """
+    Sends a short email to ADMIN_EMAIL. Uses SMTP env settings if provided,
+    otherwise attempts localhost SMTP.
+    """
     msg = EmailMessage()
-    msg.set_content(f"User reported an AI issue: {reason}")
+    msg.set_content(f"User reported AI issue: {reason}")
     msg["Subject"] = "AI Service Alert"
     msg["From"] = ADMIN_EMAIL
     msg["To"] = ADMIN_EMAIL
 
     try:
-        with smtplib.SMTP("localhost") as s:
-            s.send_message(msg)
+        if SMTP_HOST and SMTP_HOST != "localhost" and SMTP_USER:
+            server = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=10)
+            server.starttls()
+            server.login(SMTP_USER, SMTP_PASS)
+            server.send_message(msg)
+            server.quit()
+        else:
+            # try localhost
+            with smtplib.SMTP("localhost") as s:
+                s.send_message(msg)
         return {"status": "notification sent"}
     except Exception as e:
+        logger.exception("notify_admin failed: %s", e)
         return {"status": "failed", "error": str(e)}
 
+# ---------- Startup tasks ----------
 @app.on_event("startup")
 async def startup_event():
-    # Connect Redis
+    # Try connect redis (non-fatal)
     try:
         await get_redis()
     except Exception as e:
         logger.warning("Redis not available at startup: %s", e)
 
-    # Optionally pre-load small models in background:
+    # Preload local model if requested (background)
     if USE_LOCAL_MODEL:
-        # load in background
         asyncio.create_task(load_text_model_if_needed())
     if ENABLE_IMAGE_GEN:
         asyncio.create_task(load_image_model_if_needed())
 
-@app.get("/health")
-async def health():
-    return {"status": "ok"}
-
+# ---------- Chat endpoints ----------
 @app.post("/chat")
 async def chat(req: ChatRequest):
     """
-    Single-shot chat endpoint.
-    Returns normal text and optionally code blocks if code_mode=True.
+    Single-shot chat endpoint. Tries (in order):
+      1) local model (if USE_LOCAL_MODEL)
+      2) Hugging Face Inference (if HF_API_KEY)
+      3) OpenAI fallback (if OPENAI_API_KEY)
+    Returns JSON { response: str, code_blocks?: [] }
     """
     persona_map = {
         "default": "You are a helpful assistant.",
         "teacher": "You are a calm teacher.",
-        "funny": "You are a witty assistant.",
+        "funny": "You are a witty assistant."
     }
     persona_prompt = persona_map.get(req.persona, persona_map["default"])
 
-    # Build prompt with chat history
     history = ""
     for m in req.messages:
         if m.role == "user":
             history += f"User: {m.content}\n"
         elif m.role == "assistant":
             history += f"Assistant: {m.content}\n"
+
     prompt = persona_prompt + "\n\n" + history + "Assistant:"
 
     out = None
 
-    # 1) Local model
-    if USE_LOCAL_MODEL and _text_model is not None:
+    # 1) local model
+    if USE_LOCAL_MODEL:
         try:
-            out = await generate_text_local(prompt)
+            # ensure loaded
+            await load_text_model_if_needed()
+            if _text_model is not None:
+                out = await generate_text_local(prompt)
         except Exception:
-            logger.exception("Local text generation failed.")
+            logger.exception("Local generation failed, will try remote backends.")
 
-    # 2) Hugging Face API
+    # 2) HF inference
     if out is None and HF_API_KEY:
         try:
             out = await generate_text_remote_hf(prompt)
@@ -279,125 +313,121 @@ async def chat(req: ChatRequest):
         try:
             import httpx
             headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
-            body = {"model": "gpt-4o-mini", "messages": [{"role": "user", "content": prompt}], "max_tokens": 256}
+            body = {"model": "gpt-4o-mini", "messages": [{"role": "user", "content": prompt}], "max_tokens": 512}
             async with httpx.AsyncClient(timeout=30) as client:
                 r = await client.post("https://api.openai.com/v1/chat/completions", headers=headers, json=body)
                 r.raise_for_status()
                 out = r.json()["choices"][0]["message"]["content"]
         except Exception:
-            logger.exception("OpenAI call failed.")
+            logger.exception("OpenAI fallback failed.")
 
     if not out:
         raise HTTPException(status_code=503, detail="No text generation backend available")
 
-    # Extract code blocks if code_mode is enabled
     response = {"response": out}
     if req.code_mode:
-        code_blocks = extract_code_blocks(out)
-        response["code_blocks"] = code_blocks
+        response["code_blocks"] = extract_code_blocks(out)
+    return JSONResponse(response)
 
-    return response
-    
 @app.post("/chat/stream")
 async def chat_stream(req: ChatRequest):
     """
-    Streaming chat endpoint via Server-Sent Events (SSE).
-    Supports code_mode to extract code blocks from generated text.
+    SSE streaming endpoint. Streams chunks of generated text.
+    When finished, streams code blocks JSON (if code_mode) and [DONE].
     """
     persona_map = {"default": "You are a helpful assistant."}
     persona_prompt = persona_map.get(req.persona, persona_map["default"])
 
-    # Build prompt with chat history
     history = ""
     for m in req.messages:
         if m.role == "user":
             history += f"User: {m.content}\n"
         elif m.role == "assistant":
             history += f"Assistant: {m.content}\n"
+
     prompt = persona_prompt + "\n\n" + history + "Assistant:"
 
-    # Generate text
     text = None
     try:
-        if USE_LOCAL_MODEL and _text_model is not None:
-            text = await generate_text_local(prompt)
+        if USE_LOCAL_MODEL:
+            await load_text_model_if_needed()
+            if _text_model is not None:
+                text = await generate_text_local(prompt)
     except Exception:
-        logger.exception("Local generation error (stream).")
+        logger.exception("Local streaming generation failed.")
 
-    if text is None:
-        if HF_API_KEY:
+    if text is None and HF_API_KEY:
+        try:
             text = await generate_text_remote_hf(prompt)
-        elif OPENAI_API_KEY:
+        except Exception:
+            logger.exception("HF streaming fallback failed.")
+
+    if text is None and OPENAI_API_KEY:
+        try:
             import httpx
             headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
-            body = {"model": "gpt-4o-mini", "messages":[{"role":"user","content":prompt}], "max_tokens":256}
+            body = {"model": "gpt-4o-mini", "messages":[{"role":"user","content":prompt}], "max_tokens":512}
             async with httpx.AsyncClient(timeout=30) as client:
                 r = await client.post("https://api.openai.com/v1/chat/completions", headers=headers, json=body)
                 r.raise_for_status()
                 text = r.json()["choices"][0]["message"]["content"]
+        except Exception:
+            logger.exception("OpenAI streaming fallback failed.")
 
     if not text:
         raise HTTPException(status_code=500, detail="Generation failed")
 
-    # Extract code blocks if code_mode enabled
     code_blocks = extract_code_blocks(text) if req.code_mode else []
 
     async def event_stream():
         chunk_size = 60
-        # Stream the text in chunks
         for i in range(0, len(text), chunk_size):
             chunk = text[i:i+chunk_size]
             yield f"data: {chunk}\n\n"
-            await asyncio.sleep(0.05)
-        # Send code blocks at the end if any
+            await asyncio.sleep(0.04)
         if code_blocks:
-            import json
             yield f"data: {json.dumps({'code_blocks': code_blocks})}\n\n"
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
-    
-@app.post("/image", response_class=JSONResponse)
+
+# ---------- Image generation ----------
+@app.post("/image")
 async def gen_image(req: ImageRequest, background: BackgroundTasks):
     """
-    Generate an image. If ENABLE_IMAGE_GEN and diffusers available, generate locally.
-    Otherwise throw an error (or integrate remote HF API).
-    Returns { "url": "/generated/..." } (file saved to tmp or static folder).
+    Generates an image using diffusers (if enabled).
+    Returns path to served static path (temporary).
     """
     if not ENABLE_IMAGE_GEN:
-        raise HTTPException(status_code=503, detail="Image generation disabled on this service")
+        raise HTTPException(status_code=503, detail="Image generation disabled")
 
     await load_image_model_if_needed()
     if _image_pipe is None:
         raise HTTPException(status_code=503, detail="Image model not loaded")
 
-    # generate image synchronously (this can block - consider backgrounding)
-    logger.info("Generating image for prompt: %s", req.prompt)
-    img = _image_pipe(req.prompt, height=req.height or 1024, width=req.width or 1024).images[0]
+    try:
+        img = _image_pipe(req.prompt, height=req.height or 512, width=req.width or 512).images[0]
+        tmp_dir = tempfile.gettempdir()
+        fname = safe_filename("img", "png")
+        path = os.path.join(tmp_dir, fname)
+        img.save(path)
+        return {"path": f"/static_temp/{fname}", "tmp_path": path}
+    except Exception as e:
+        logger.exception("Image generation failed: %s", e)
+        raise HTTPException(status_code=500, detail="Image generation failed")
 
-    tmp_dir = tempfile.gettempdir()
-    fname = safe_filename("img", "png")
-    path = os.path.join(tmp_dir, fname)
-    img.save(path)
-
-    # optionally move to static folder for serving
-    return {"path": f"/static_temp/{fname}", "tmp_path": path}
-
-# Serve generated images from /static_temp (don't rely on tmp to persist in production)
+# serve generated images from tmp
 STATIC_TEMP_DIR = tempfile.gettempdir()
 app.mount("/static_temp", StaticFiles(directory=STATIC_TEMP_DIR), name="static_temp")
 
-# ---------- Matchmaking helpers (example using Redis hashes) ----------
+# ---------- Minimal matchmaking helpers (Redis) ----------
 @app.post("/enqueue")
 async def enqueue_user(payload: dict):
-    """
-    Expected payload includes uid and prefs, e.g. {"uid": "user1", "gender":"any","location":"any","interests": [...]}
-    """
     r = await get_redis()
     uid = payload.get("uid")
     if not uid:
         raise HTTPException(status_code=400, detail="Missing uid")
-    await r.hset("matchQueue", uid, json_serialize(payload))
+    await r.hset("matchQueue", uid, json.dumps(payload))
     return {"status": "queued"}
 
 @app.post("/dequeue")
@@ -409,13 +439,8 @@ async def dequeue_user(payload: dict):
     await r.hdel("matchQueue", uid)
     return {"status": "removed"}
 
-async def json_serialize(obj):
-    import json
-    return json.dumps(obj)
-
-# ---------- Simple WebSocket chat example ----------
+# ---------- Simple WebSocket example ----------
 active_ws_connections = {}
-
 @app.websocket("/ws/{uid}")
 async def websocket_endpoint(websocket: WebSocket, uid: str):
     await websocket.accept()
@@ -423,13 +448,11 @@ async def websocket_endpoint(websocket: WebSocket, uid: str):
     try:
         while True:
             data = await websocket.receive_json()
-            # echo or route message - simplistic example
             target = data.get("to")
             message = data.get("message")
             if target and target in active_ws_connections:
                 await active_ws_connections[target].send_json({"from": uid, "message": message})
             else:
-                # broadcast to all (example)
                 for k, conn in list(active_ws_connections.items()):
                     if k != uid:
                         try:
@@ -441,7 +464,7 @@ async def websocket_endpoint(websocket: WebSocket, uid: str):
     finally:
         active_ws_connections.pop(uid, None)
 
-# ---------- Shutdown gracefully ----------
+# ---------- Shutdown ----------
 @app.on_event("shutdown")
 async def shutdown_event():
     global redis_client
@@ -452,6 +475,5 @@ async def shutdown_event():
             pass
     logger.info("Server shutdown complete")
 
-# ---------- CLI (uvicorn) ----------
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=PORT, log_level="info")
