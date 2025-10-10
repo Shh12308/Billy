@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from email.message import EmailMessage
 import smtplib
 import re
+from typing import Optional
 import os
 import asyncio
 import logging
