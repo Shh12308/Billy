@@ -91,11 +91,13 @@ async def load_text_model_if_needed():
             logger.error("Transformers not available to load local model.")
             return
         logger.info("Loading local text model: %s", LOCAL_MODEL_NAME)
-        _text_tokenizer = AutoTokenizer.from_pretrained(LOCAL_MODEL_NAME, use_fast=True)
-        _text_model = AutoModelForCausalLM.from_pretrained(LOCAL_MODEL_NAME, device_map="auto")
-        logger.info("✅ Local text model loaded")
-    else:
-        logger.info("Local model disabled; will use remote inference APIs (HF/OpenAI) if configured.")
+        _text_tokenizer = AutoTokenizer.from_pretrained(LLaMA_MODEL_NAME)
+        _text_model = AutoModelForCausalLM.from_pretrained(
+            LLaMA_MODEL_NAME,
+            device_map="auto",
+            torch_dtype=torch.float16  # save VRAM
+        )
+        logger.info("✅ LLaMA model loaded")
 
 async def load_image_model_if_needed():
     global _image_pipe
@@ -177,6 +179,29 @@ def extract_code_blocks(text):
 
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "shaynengunga15@gmail.com")
 
+# Add at the top after imports
+# Add at the top after imports
+ABOUT_INFO = {
+    "creator": "GoldBoy",
+    "age": 17,
+    "bio": "I am a 17-year-old programmer working on multiple projects/sites.",
+    "contact": "GoldBoy on instagram",
+    "projects": ["NGG", "ST", "MZ, BB, NL"]
+}
+
+# Public /about endpoint
+@app.get("/about")
+async def about():
+    """
+    Returns info about the creator and projects without revealing what they are about.
+    """
+    return {
+        "creator": ABOUT_INFO["creator"],
+        "bio": ABOUT_INFO["bio"],
+        "projects": ABOUT_INFO["projects"],
+        "message": "Project details are private and will not be disclosed."
+    }
+    
 @app.post("/notify_admin")
 async def notify_admin(reason: str = Form(...)):
     msg = EmailMessage()
