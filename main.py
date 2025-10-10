@@ -268,10 +268,9 @@ async def startup_event():
 @app.post("/chat")
 async def chat(req: ChatRequest):
     """
-    Single-shot chat endpoint. Tries (in order):
-      1) local model (if USE_LOCAL_MODEL)
-      2) Hugging Face Inference (if HF_API_KEY)
-      3) OpenAI fallback (if OPENAI_API_KEY)
+    Lightweight chat endpoint using:
+      1) Hugging Face Inference API
+      2) OpenAI fallback
     Returns JSON { response: str, code_blocks?: [] }
     """
     persona_map = {
@@ -281,38 +280,38 @@ async def chat(req: ChatRequest):
     }
     persona_prompt = persona_map.get(req.persona, persona_map["default"])
 
+    # Build conversation history
     history = ""
     for m in req.messages:
-        if m.role == "user":
-            history += f"User: {m.content}\n"
-        elif m.role == "assistant":
-            history += f"Assistant: {m.content}\n"
+        role = "User" if m.role == "user" else "Assistant"
+        history += f"{role}: {m.content}\n"
 
     prompt = persona_prompt + "\n\n" + history + "Assistant:"
-
     out = None
 
-    # 1) local model
-    if USE_LOCAL_MODEL:
+    # 1) Hugging Face Inference API
+    if HF_API_KEY:
+        import httpx
         try:
-            # ensure loaded
-            await load_text_model_if_needed()
-            if _text_model is not None:
-                out = await generate_text_local(prompt)
-        except Exception:
-            logger.exception("Local generation failed, will try remote backends.")
-
-    # 2) HF inference
-    if out is None and HF_API_KEY:
-        try:
-            out = await generate_text_remote_hf(prompt)
+            headers = {"Authorization": f"Bearer {HF_API_KEY}"}
+            url = f"https://api-inference.huggingface.co/models/{LOCAL_MODEL_NAME}"
+            payload = {
+                "inputs": prompt,
+                "parameters": {"max_new_tokens": 256, "top_p": 0.95, "temperature": 0.8}
+            }
+            async with httpx.AsyncClient(timeout=30) as client:
+                r = await client.post(url, headers=headers, json=payload)
+                r.raise_for_status()
+                data = r.json()
+                if isinstance(data, list) and len(data) > 0:
+                    out = data[0].get("generated_text", "")
         except Exception:
             logger.exception("HF inference failed.")
 
-    # 3) OpenAI fallback
+    # 2) OpenAI fallback
     if out is None and OPENAI_API_KEY:
+        import httpx
         try:
-            import httpx
             headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
             body = {"model": "gpt-4o-mini", "messages": [{"role": "user", "content": prompt}], "max_tokens": 512}
             async with httpx.AsyncClient(timeout=30) as client:
@@ -333,39 +332,47 @@ async def chat(req: ChatRequest):
 @app.post("/chat/stream")
 async def chat_stream(req: ChatRequest):
     """
-    SSE streaming endpoint. Streams chunks of generated text.
-    When finished, streams code blocks JSON (if code_mode) and [DONE].
+    SSE streaming endpoint using only cloud APIs.
+    Streams text in chunks, then sends code blocks (if code_mode) and [DONE].
     """
-    persona_map = {"default": "You are a helpful assistant."}
+    persona_map = {
+        "default": "You are a helpful assistant.",
+        "teacher": "You are a calm teacher.",
+        "funny": "You are a witty assistant."
+    }
     persona_prompt = persona_map.get(req.persona, persona_map["default"])
 
     history = ""
     for m in req.messages:
-        if m.role == "user":
-            history += f"User: {m.content}\n"
-        elif m.role == "assistant":
-            history += f"Assistant: {m.content}\n"
+        role = "User" if m.role == "user" else "Assistant"
+        history += f"{role}: {m.content}\n"
 
     prompt = persona_prompt + "\n\n" + history + "Assistant:"
-
     text = None
-    try:
-        if USE_LOCAL_MODEL:
-            await load_text_model_if_needed()
-            if _text_model is not None:
-                text = await generate_text_local(prompt)
-    except Exception:
-        logger.exception("Local streaming generation failed.")
 
-    if text is None and HF_API_KEY:
+    # 1) Hugging Face API
+    if HF_API_KEY:
+        import httpx
         try:
-            text = await generate_text_remote_hf(prompt)
+            headers = {"Authorization": f"Bearer {HF_API_KEY}"}
+            url = f"https://api-inference.huggingface.co/models/{LOCAL_MODEL_NAME}"
+            payload = {
+                "inputs": prompt,
+                "parameters": {"max_new_tokens": 256, "top_p": 0.95, "temperature": 0.8}
+            }
+            async with httpx.AsyncClient(timeout=60) as client:
+                r = await client.post(url, headers=headers, json=payload)
+                r.raise_for_status()
+                data = r.json()
+                if isinstance(data, list) and len(data) > 0:
+                    text = data[0].get("generated_text", "")
         except Exception:
-            logger.exception("HF streaming fallback failed.")
+            logger.exception("HF streaming failed.")
 
+    # 2) OpenAI fallback
     if text is None and OPENAI_API_KEY:
+        import httpx
         try:
-            import httpx
             headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
             body = {"model": "gpt-4o-mini", "messages":[{"role":"user","content":prompt}], "max_tokens":512}
             async with httpx.AsyncClient(timeout=30) as client:
@@ -383,8 +390,7 @@ async def chat_stream(req: ChatRequest):
     async def event_stream():
         chunk_size = 60
         for i in range(0, len(text), chunk_size):
-            chunk = text[i:i+chunk_size]
-            yield f"data: {chunk}\n\n"
+            yield f"data: {text[i:i+chunk_size]}\n\n"
             await asyncio.sleep(0.04)
         if code_blocks:
             yield f"data: {json.dumps({'code_blocks': code_blocks})}\n\n"
@@ -394,32 +400,48 @@ async def chat_stream(req: ChatRequest):
 
 # ---------- Image generation ----------
 @app.post("/image")
-async def gen_image(req: ImageRequest, background: BackgroundTasks):
+async def gen_image(req: ImageRequest):
     """
-    Generates an image using diffusers (if enabled).
-    Returns path to served static path (temporary).
+    Cloud-only image generation. Uses:
+      1) Hugging Face Inference API (preferred)
+      2) OpenAI DALL·E fallback
+    Returns URL/base64 image string (no GPU needed)
     """
-    if not ENABLE_IMAGE_GEN:
-        raise HTTPException(status_code=503, detail="Image generation disabled")
+    import httpx
+    import base64
+    if HF_API_KEY:
+        try:
+            headers = {"Authorization": f"Bearer {HF_API_KEY}"}
+            url = f"https://api-inference.huggingface.co/models/{IMAGE_MODEL}"
+            payload = {"inputs": req.prompt, "parameters": {"width": req.width, "height": req.height}}
+            async with httpx.AsyncClient(timeout=60) as client:
+                r = await client.post(url, headers=headers, json=payload)
+                r.raise_for_status()
+                data = r.json()
+                # Hugging Face returns base64-encoded images in some models
+                if isinstance(data, dict) and "image" in data:
+                    return {"image_base64": data["image"]}
+                # fallback: some APIs return list of dicts
+                elif isinstance(data, list) and len(data) > 0 and "image_base64" in data[0]:
+                    return {"image_base64": data[0]["image_base64"]}
+        except Exception:
+            logger.exception("HF image generation failed.")
 
-    await load_image_model_if_needed()
-    if _image_pipe is None:
-        raise HTTPException(status_code=503, detail="Image model not loaded")
+    if OPENAI_API_KEY:
+        try:
+            headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
+            import json
+            body = {"prompt": req.prompt, "size": f"{req.width}x{req.height}"}
+            async with httpx.AsyncClient(timeout=60) as client:
+                r = await client.post("https://api.openai.com/v1/images/generations", headers=headers, json=body)
+                r.raise_for_status()
+                data = r.json()
+                img_b64 = data["data"][0]["b64_json"]
+                return {"image_base64": img_b64}
+        except Exception:
+            logger.exception("OpenAI DALL·E generation failed.")
 
-    try:
-        img = _image_pipe(req.prompt, height=req.height or 512, width=req.width or 512).images[0]
-        tmp_dir = tempfile.gettempdir()
-        fname = safe_filename("img", "png")
-        path = os.path.join(tmp_dir, fname)
-        img.save(path)
-        return {"path": f"/static_temp/{fname}", "tmp_path": path}
-    except Exception as e:
-        logger.exception("Image generation failed: %s", e)
-        raise HTTPException(status_code=500, detail="Image generation failed")
-
-# serve generated images from tmp
-STATIC_TEMP_DIR = tempfile.gettempdir()
-app.mount("/static_temp", StaticFiles(directory=STATIC_TEMP_DIR), name="static_temp")
+    raise HTTPException(status_code=503, detail="No cloud image generation backend available")
 
 # ---------- Minimal matchmaking helpers (Redis) ----------
 @app.post("/enqueue")
