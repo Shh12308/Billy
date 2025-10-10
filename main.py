@@ -1,20 +1,7 @@
-# main.py
-"""
-ProAI - FastAPI "main" application with text & image generation endpoints,
-streaming support, Redis-based helpers, and safe lazy loading of heavy models.
-
-Environment variables expected (examples):
-- PORT (render provides this)
-- REDIS_URL (e.g. redis://:password@host:port or redis://localhost:6379)
-- USE_LOCAL_MODEL (true/false) -> whether to attempt to load local HF model
-- LOCAL_MODEL_NAME (e.g. "gpt2" or a path)
-- HF_API_KEY (optional) -> use Hugging Face Inference API if local model disabled
-- OPENAI_API_KEY (optional) -> fallback to OpenAI if provided
-- ENABLE_IMAGE_GEN (true/false)
-- IMAGE_MODEL (model id for diffusers or remote API)
-- S3_BUCKET / S3_CREDS if you want to save generated images
-"""
-
+from fastapi import Form
+from email.message import EmailMessage
+import smtplib
+import re
 import os
 import asyncio
 import logging
@@ -133,6 +120,7 @@ class ChatRequest(BaseModel):
     messages: List[Message]
     persona: Optional[str] = "default"
     stream: Optional[bool] = False
+    code_mode: Optional[bool] = False  # new: focus on code output
 
 class ImageRequest(BaseModel):
     prompt: str
@@ -179,7 +167,30 @@ async def generate_text_remote_hf(prompt: str):
             return data[0].get("generated_text", "")
         return str(data)
 
-# ---------- Endpoints ----------
+def extract_code_blocks(text):
+    pattern = r"```(python|js|node|html|css)?\n(.*?)```"
+    matches = re.findall(pattern, text, re.DOTALL)
+    blocks = []
+    for lang, code in matches:
+        blocks.append({"language": lang or "text", "code": code.strip()})
+    return blocks
+
+ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "shaynengunga15@gmail.com")
+
+@app.post("/notify_admin")
+async def notify_admin(reason: str = Form(...)):
+    msg = EmailMessage()
+    msg.set_content(f"User reported an AI issue: {reason}")
+    msg["Subject"] = "AI Service Alert"
+    msg["From"] = ADMIN_EMAIL
+    msg["To"] = ADMIN_EMAIL
+
+    try:
+        with smtplib.SMTP("localhost") as s:
+            s.send_message(msg)
+        return {"status": "notification sent"}
+    except Exception as e:
+        return {"status": "failed", "error": str(e)}
 
 @app.on_event("startup")
 async def startup_event():
@@ -204,9 +215,11 @@ async def health():
 async def chat(req: ChatRequest):
     """
     Single-shot chat endpoint.
-    If USE_LOCAL_MODEL is true and model is loaded -> use local generation.
-    Otherwise, if HF_API_KEY set -> call HF inference API.
-    Otherwise if OPENAI_API_KEY set -> call OpenAI completions (not implemented here).
+    Supports:
+    - Local transformer model (if USE_LOCAL_MODEL)
+    - Hugging Face Inference API (if HF_API_KEY)
+    - OpenAI API fallback (if OPENAI_API_KEY)
+    - Optional code extraction if req.code_mode = True
     """
     persona_map = {
         "default": "You are a helpful assistant.",
@@ -224,51 +237,61 @@ async def chat(req: ChatRequest):
             history += f"Assistant: {m.content}\n"
     prompt = persona_prompt + "\n\n" + history + "Assistant:"
 
-    # Decide generation backend
-    # 1) local transformers
+    out = None  # final text to return
+
+    # 1) Local transformers
     if USE_LOCAL_MODEL and _text_model is not None:
         try:
             out = await generate_text_local(prompt)
-            return {"response": out}
         except Exception as e:
             logger.exception("Local text generation failed: %s", e)
-            # fallthrough to remote
-    # 2) HF inference API
-    if HF_API_KEY:
+
+    # 2) Hugging Face Inference API
+    if out is None and HF_API_KEY:
         try:
             out = await generate_text_remote_hf(prompt)
-            return {"response": out}
         except Exception as e:
             logger.exception("HF inference failed: %s", e)
-    # 3) OpenAI fallback (if key present) - example minimal usage
-    if OPENAI_API_KEY:
+
+    # 3) OpenAI fallback
+    if out is None and OPENAI_API_KEY:
         try:
-            import httpx, json
+            import httpx
             headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
             body = {
-                "model": "gpt-4o-mini",  # change to appropriate model
-                "messages": [{"role":"user", "content": prompt}],
+                "model": "gpt-4o-mini",
+                "messages": [{"role": "user", "content": prompt}],
                 "max_tokens": 256
             }
             async with httpx.AsyncClient(timeout=30) as client:
                 r = await client.post("https://api.openai.com/v1/chat/completions", headers=headers, json=body)
                 r.raise_for_status()
-                data = r.json()
-                text = data["choices"][0]["message"]["content"]
-                return {"response": text}
+                out = r.json()["choices"][0]["message"]["content"]
         except Exception as e:
             logger.exception("OpenAI call failed: %s", e)
-    raise HTTPException(status_code=503, detail="No text generation backend available")
 
+    if not out:
+        raise HTTPException(status_code=503, detail="No text generation backend available")
+
+    # Extract code blocks if requested
+    if req.code_mode:
+        code_blocks = extract_code_blocks(out)
+        return {"response": out, "code_blocks": code_blocks}
+
+    return {"response": out}
+    
 @app.post("/chat/stream")
 async def chat_stream(req: ChatRequest):
     """
-    Very simple streaming via Server-Sent Events (SSE) using async generator.
-    For local model true streaming with transformers requires TextStreamer and sync APIs;
-    here we provide a chunked async simulation if a streaming model isn't available.
+    Streaming chat endpoint using SSE (Server-Sent Events).
+    Supports code_mode: sends code blocks as soon as they appear.
     """
-    persona_map = {"default": "You are a helpful assistant."}
+    persona_map = {
+        "default": "You are a helpful assistant."
+    }
     persona_prompt = persona_map.get(req.persona, persona_map["default"])
+
+    # Build prompt with chat history
     history = ""
     for m in req.messages:
         if m.role == "user":
@@ -277,38 +300,72 @@ async def chat_stream(req: ChatRequest):
             history += f"Assistant: {m.content}\n"
     prompt = persona_prompt + "\n\n" + history + "Assistant:"
 
-    # If local model with streaming isn't configured, fallback to chunked send of single response
-    text = None
-    try:
-        if USE_LOCAL_MODEL and _text_model is not None:
-            text = await generate_text_local(prompt)
-    except Exception:
-        logger.exception("Local generation error (stream).")
-    if text is None:
-        if HF_API_KEY:
-            text = await generate_text_remote_hf(prompt)
-        elif OPENAI_API_KEY:
-            # simple OpenAI call
+    out = None
+
+    # Local model
+    if USE_LOCAL_MODEL and _text_model is not None:
+        try:
+            out = await generate_text_local(prompt)
+        except Exception:
+            logger.exception("Local generation error (stream).")
+
+    # Hugging Face API
+    if out is None and HF_API_KEY:
+        try:
+            out = await generate_text_remote_hf(prompt)
+        except Exception:
+            logger.exception("HF inference error (stream).")
+
+    # OpenAI fallback
+    if out is None and OPENAI_API_KEY:
+        try:
             import httpx
             headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
-            body = {"model":"gpt-4o-mini", "messages":[{"role":"user","content":prompt}], "max_tokens":256}
+            body = {"model": "gpt-4o-mini", "messages": [{"role": "user", "content": prompt}], "max_tokens": 256}
             async with httpx.AsyncClient(timeout=30) as client:
                 r = await client.post("https://api.openai.com/v1/chat/completions", headers=headers, json=body)
                 r.raise_for_status()
-                text = r.json()["choices"][0]["message"]["content"]
-    if not text:
+                out = r.json()["choices"][0]["message"]["content"]
+        except Exception:
+            logger.exception("OpenAI error (stream).")
+
+    if not out:
         raise HTTPException(status_code=500, detail="Generation failed")
 
     async def event_stream():
-        # naive chunking
-        chunk_size = 60
-        for i in range(0, len(text), chunk_size):
-            chunk = text[i:i+chunk_size]
-            yield f"data: {chunk}\n\n"
-            await asyncio.sleep(0.05)
-        yield "data: [DONE]\n\n"
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
+        import json
+        import re
 
+        # Regex to detect code blocks
+        code_pattern = r"```(python|js|node|html|css)?\n(.*?)```"
+        last_index = 0
+
+        for match in re.finditer(code_pattern, out, re.DOTALL):
+            # Send normal text before this code block
+            pre_text = out[last_index:match.start()]
+            chunk_size = 60
+            for i in range(0, len(pre_text), chunk_size):
+                yield f"data: {pre_text[i:i+chunk_size]}\n\n"
+                await asyncio.sleep(0.05)
+
+            # Send code block as JSON
+            lang = match.group(1) or "text"
+            code = match.group(2).strip()
+            yield f"data: {json.dumps({'language': lang, 'code': code})}\n\n"
+            await asyncio.sleep(0.05)
+
+            last_index = match.end()
+
+        # Send remaining text after last code block
+        remaining = out[last_index:]
+        for i in range(0, len(remaining), 60):
+            yield f"data: {remaining[i:i+60]}\n\n"
+            await asyncio.sleep(0.05)
+
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+    
 @app.post("/image", response_class=JSONResponse)
 async def gen_image(req: ImageRequest, background: BackgroundTasks):
     """
@@ -325,7 +382,7 @@ async def gen_image(req: ImageRequest, background: BackgroundTasks):
 
     # generate image synchronously (this can block - consider backgrounding)
     logger.info("Generating image for prompt: %s", req.prompt)
-    img = _image_pipe(req.prompt, height=req.height or 512, width=req.width or 512).images[0]
+    img = _image_pipe(req.prompt, height=req.height or 1024, width=req.width or 1024).images[0]
 
     tmp_dir = tempfile.gettempdir()
     fname = safe_filename("img", "png")
