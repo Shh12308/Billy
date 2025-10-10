@@ -215,11 +215,7 @@ async def health():
 async def chat(req: ChatRequest):
     """
     Single-shot chat endpoint.
-    Supports:
-    - Local transformer model (if USE_LOCAL_MODEL)
-    - Hugging Face Inference API (if HF_API_KEY)
-    - OpenAI API fallback (if OPENAI_API_KEY)
-    - Optional code extraction if req.code_mode = True
+    Returns normal text and optionally code blocks if code_mode=True.
     """
     persona_map = {
         "default": "You are a helpful assistant.",
@@ -237,58 +233,53 @@ async def chat(req: ChatRequest):
             history += f"Assistant: {m.content}\n"
     prompt = persona_prompt + "\n\n" + history + "Assistant:"
 
-    out = None  # final text to return
+    out = None
 
-    # 1) Local transformers
+    # 1) Local model
     if USE_LOCAL_MODEL and _text_model is not None:
         try:
             out = await generate_text_local(prompt)
-        except Exception as e:
-            logger.exception("Local text generation failed: %s", e)
+        except Exception:
+            logger.exception("Local text generation failed.")
 
-    # 2) Hugging Face Inference API
+    # 2) Hugging Face API
     if out is None and HF_API_KEY:
         try:
             out = await generate_text_remote_hf(prompt)
-        except Exception as e:
-            logger.exception("HF inference failed: %s", e)
+        except Exception:
+            logger.exception("HF inference failed.")
 
     # 3) OpenAI fallback
     if out is None and OPENAI_API_KEY:
         try:
             import httpx
             headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
-            body = {
-                "model": "gpt-4o-mini",
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": 256
-            }
+            body = {"model": "gpt-4o-mini", "messages": [{"role": "user", "content": prompt}], "max_tokens": 256}
             async with httpx.AsyncClient(timeout=30) as client:
                 r = await client.post("https://api.openai.com/v1/chat/completions", headers=headers, json=body)
                 r.raise_for_status()
                 out = r.json()["choices"][0]["message"]["content"]
-        except Exception as e:
-            logger.exception("OpenAI call failed: %s", e)
+        except Exception:
+            logger.exception("OpenAI call failed.")
 
     if not out:
         raise HTTPException(status_code=503, detail="No text generation backend available")
 
-    # Extract code blocks if requested
+    # Extract code blocks if code_mode is enabled
+    response = {"response": out}
     if req.code_mode:
         code_blocks = extract_code_blocks(out)
-        return {"response": out, "code_blocks": code_blocks}
+        response["code_blocks"] = code_blocks
 
-    return {"response": out}
+    return response
     
 @app.post("/chat/stream")
 async def chat_stream(req: ChatRequest):
     """
-    Streaming chat endpoint using SSE (Server-Sent Events).
-    Supports code_mode: sends code blocks as soon as they appear.
+    Streaming chat endpoint via Server-Sent Events (SSE).
+    Supports code_mode to extract code blocks from generated text.
     """
-    persona_map = {
-        "default": "You are a helpful assistant."
-    }
+    persona_map = {"default": "You are a helpful assistant."}
     persona_prompt = persona_map.get(req.persona, persona_map["default"])
 
     # Build prompt with chat history
@@ -300,68 +291,43 @@ async def chat_stream(req: ChatRequest):
             history += f"Assistant: {m.content}\n"
     prompt = persona_prompt + "\n\n" + history + "Assistant:"
 
-    out = None
+    # Generate text
+    text = None
+    try:
+        if USE_LOCAL_MODEL and _text_model is not None:
+            text = await generate_text_local(prompt)
+    except Exception:
+        logger.exception("Local generation error (stream).")
 
-    # Local model
-    if USE_LOCAL_MODEL and _text_model is not None:
-        try:
-            out = await generate_text_local(prompt)
-        except Exception:
-            logger.exception("Local generation error (stream).")
-
-    # Hugging Face API
-    if out is None and HF_API_KEY:
-        try:
-            out = await generate_text_remote_hf(prompt)
-        except Exception:
-            logger.exception("HF inference error (stream).")
-
-    # OpenAI fallback
-    if out is None and OPENAI_API_KEY:
-        try:
+    if text is None:
+        if HF_API_KEY:
+            text = await generate_text_remote_hf(prompt)
+        elif OPENAI_API_KEY:
             import httpx
             headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
-            body = {"model": "gpt-4o-mini", "messages": [{"role": "user", "content": prompt}], "max_tokens": 256}
+            body = {"model": "gpt-4o-mini", "messages":[{"role":"user","content":prompt}], "max_tokens":256}
             async with httpx.AsyncClient(timeout=30) as client:
                 r = await client.post("https://api.openai.com/v1/chat/completions", headers=headers, json=body)
                 r.raise_for_status()
-                out = r.json()["choices"][0]["message"]["content"]
-        except Exception:
-            logger.exception("OpenAI error (stream).")
+                text = r.json()["choices"][0]["message"]["content"]
 
-    if not out:
+    if not text:
         raise HTTPException(status_code=500, detail="Generation failed")
 
+    # Extract code blocks if code_mode enabled
+    code_blocks = extract_code_blocks(text) if req.code_mode else []
+
     async def event_stream():
-        import json
-        import re
-
-        # Regex to detect code blocks
-        code_pattern = r"```(python|js|node|html|css)?\n(.*?)```"
-        last_index = 0
-
-        for match in re.finditer(code_pattern, out, re.DOTALL):
-            # Send normal text before this code block
-            pre_text = out[last_index:match.start()]
-            chunk_size = 60
-            for i in range(0, len(pre_text), chunk_size):
-                yield f"data: {pre_text[i:i+chunk_size]}\n\n"
-                await asyncio.sleep(0.05)
-
-            # Send code block as JSON
-            lang = match.group(1) or "text"
-            code = match.group(2).strip()
-            yield f"data: {json.dumps({'language': lang, 'code': code})}\n\n"
+        chunk_size = 60
+        # Stream the text in chunks
+        for i in range(0, len(text), chunk_size):
+            chunk = text[i:i+chunk_size]
+            yield f"data: {chunk}\n\n"
             await asyncio.sleep(0.05)
-
-            last_index = match.end()
-
-        # Send remaining text after last code block
-        remaining = out[last_index:]
-        for i in range(0, len(remaining), 60):
-            yield f"data: {remaining[i:i+60]}\n\n"
-            await asyncio.sleep(0.05)
-
+        # Send code blocks at the end if any
+        if code_blocks:
+            import json
+            yield f"data: {json.dumps({'code_blocks': code_blocks})}\n\n"
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
