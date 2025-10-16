@@ -160,20 +160,6 @@ async def chat(req: ChatRequest):
     if req.code_mode:
         response["code_blocks"] = extract_code_blocks(out)
     return JSONResponse(response)
-
-
-@app.get("/", response_class=HTMLResponse)
-async def home():
-    return """
-    <html>
-        <head><title>ZyNara AI</title></head>
-        <body style="font-family: sans-serif; text-align: center; margin-top: 50px;">
-            <h1>🤖 Welcome to ZyNara AI</h1>
-            <p>Your intelligent AI assistant is running successfully on Render!</p>
-            <p>API is live at <code>/chat</code> or other endpoints.</p>
-        </body>
-    </html>
-    """
     
 @app.post("/chat/stream")
 async def chat_stream(req: ChatRequest):
