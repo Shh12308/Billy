@@ -1,51 +1,39 @@
 # main.py
-from fastapi import FastAPI, Form, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse
 from pydantic import BaseModel
 import os
 import asyncio
 import logging
 import json
-import uuid
-from email.message import EmailMessage
-import smtplib
-
 import httpx
-import base64
+import random
+import re
+from typing import Optional
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("proai")
+logger = logging.getLogger("zynara")
 
-# ---------- Config (env driven) ----------
+# ---------- Config ----------
 PORT = int(os.getenv("PORT", "8000"))
 CLIENT_ORIGINS = os.getenv("CLIENT_ORIGINS", "*").split(",")
-ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "shaynengunga15@gmail.com")
+HF_API_KEY = os.getenv("HF_API_KEY")  # e.g. hf_xxx
+LOCAL_MODEL_PATH = os.getenv("LOCAL_MODEL_PATH")  # path to a .gguf LLaMA model if you upload one
+LOCAL_MODEL_NAME = os.getenv("LOCAL_MODEL_NAME", "mistralai/Mistral-7B-Instruct-v0.1")  # used for HF inference
+IMAGE_MODEL = os.getenv("IMAGE_MODEL", "stabilityai/stable-diffusion")  # optional HF image model
 
-HF_API_KEY = os.getenv("HF_API_KEY", None)
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", None)
-
-# SMTP settings for notify_admin
-SMTP_HOST = os.getenv("SMTP_HOST", "localhost")
-SMTP_PORT = int(os.getenv("SMTP_PORT", "25"))
-SMTP_USER = os.getenv("SMTP_USER", None)
-SMTP_PASS = os.getenv("SMTP_PASS", None)
-
-# Chat model name for HF
-LOCAL_MODEL_NAME = os.getenv("LOCAL_MODEL_NAME", "mistralai/Mistral-7B-Instruct-v0.1")
-IMAGE_MODEL = os.getenv("IMAGE_MODEL", "CompVis/stable-diffusion-v1-4")
-
-# ---------- FastAPI app ----------
-app = FastAPI(title="ProAI - GoldBoy")
+# ---------- App ----------
+app = FastAPI(title="ZyNara (Billy) API")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=CLIENT_ORIGINS,
+    allow_origins=CLIENT_ORIGINS or ["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ---------- Pydantic models ----------
+# ---------- Models ----------
 class Message(BaseModel):
     role: str
     content: str
@@ -61,200 +49,206 @@ class ImageRequest(BaseModel):
     width: int = 512
     height: int = 512
 
+# ---------- Optional local Llama (llama_cpp) ----------
+local_llm = None
+try:
+    if LOCAL_MODEL_PATH:
+        # llama_cpp import is optional; only used if LOCAL_MODEL_PATH is set and package installed
+        from llama_cpp import Llama
+        logger.info("Attempting to load local Llama model at %s", LOCAL_MODEL_PATH)
+        local_llm = Llama(model_path=LOCAL_MODEL_PATH, n_ctx=2048)
+        logger.info("Local Llama loaded (llama_cpp).")
+    else:
+        logger.info("No LOCAL_MODEL_PATH provided; skipping local model load.")
+except Exception as e:
+    logger.warning("Local Llama not available or failed to load: %s", e)
+    local_llm = None
+
 # ---------- Helpers ----------
 def extract_code_blocks(text: str):
-    import re
     pattern = r"```(python|js|node|html|css)?\n(.*?)```"
     matches = re.findall(pattern, text, re.DOTALL | re.IGNORECASE)
-    blocks = []
-    for lang, code in matches:
-        blocks.append({"language": (lang or "text").lower(), "code": code.strip()})
-    return blocks
+    return [{"language": (lang or "text").lower(), "code": code.strip()} for lang, code in matches]
 
-# ---------- Public info endpoints ----------
-@app.get("/about")
-async def about():
-    return {
-        "creator": "GoldBoy",
-        "bio": "I am a 17-year-old programmer working on multiple projects/sites.",
-        "projects": ["NGG", "ST", "MZ, BB, NL"],
-        "message": "Project details are private and will not be disclosed."
+def simple_fallback(prompt: str) -> str:
+    choices = [
+        f"Hey — ZyNara here. My main model is unavailable; quick thought about \"{prompt}\": try breaking it down into smaller steps.",
+        f"ZyNara (fallback): I can't reach the main brain right now, but regarding \"{prompt}\", ask me for more details and I'll help as much as I can.",
+        f"Sorry — main model offline. For \"{prompt}\", I'd suggest starting with the basics and building up."
+    ]
+    return random.choice(choices)
+
+def build_persona_prompt(persona: str) -> str:
+    persona_map = {
+        "default": "You are a helpful assistant.",
+        "teacher": "You are a calm teacher.",
+        "funny": "You are a witty assistant."
     }
+    return persona_map.get(persona, persona_map["default"])
 
-# ---------- Admin notification endpoint ----------
-@app.post("/notify_admin")
-async def notify_admin(reason: str = Form(...)):
-    msg = EmailMessage()
-    msg.set_content(f"User reported AI issue: {reason}")
-    msg["Subject"] = "AI Service Alert"
-    msg["From"] = ADMIN_EMAIL
-    msg["To"] = ADMIN_EMAIL
+# ---------- Routes ----------
+@app.get("/", response_class=HTMLResponse)
+async def home():
+    return """
+    <html>
+      <head><title>ZyNara</title></head>
+      <body style="font-family: sans-serif; text-align:center; padding:40px;">
+        <h1>🤖 ZyNara (Billy) API</h1>
+        <p>Backend is running. Use <code>/chat</code> POST endpoint to interact.</p>
+        <p>Env: LOCAL_MODEL_PATH={}, HF_API_KEY set: {}</p>
+      </body>
+    </html>
+    """.format(bool(LOCAL_MODEL_PATH), bool(HF_API_KEY))
 
-    try:
-        if SMTP_HOST and SMTP_HOST != "localhost" and SMTP_USER:
-            server = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=10)
-            server.starttls()
-            server.login(SMTP_USER, SMTP_PASS)
-            server.send_message(msg)
-            server.quit()
-        else:
-            with smtplib.SMTP("localhost") as s:
-                s.send_message(msg)
-        return {"status": "notification sent"}
-    except Exception as e:
-        logger.exception("notify_admin failed: %s", e)
-        return {"status": "failed", "error": str(e)}
-
-# ---------- Chat endpoints ----------
+# ---------- Chat endpoint ----------
 @app.post("/chat")
 async def chat(req: ChatRequest):
-    persona_map = {
-        "default": "You are a helpful assistant.",
-        "teacher": "You are a calm teacher.",
-        "funny": "You are a witty assistant."
-    }
-    persona_prompt = persona_map.get(req.persona, persona_map["default"])
-
-    history = ""
+    # Build prompt
+    persona_prompt = build_persona_prompt(req.persona)
+    history_lines = []
     for m in req.messages:
-        role = "User" if m.role == "user" else "Assistant"
-        history += f"{role}: {m.content}\n"
+        who = "User" if m.role == "user" else "Assistant"
+        history_lines.append(f"{who}: {m.content}")
+    history = "\n".join(history_lines)
+    prompt = f"{persona_prompt}\n\n{history}\nAssistant:"
 
-    prompt = persona_prompt + "\n\n" + history + "Assistant:"
-    out = None
+    # 1) Try local Llama (preferred if present)
+    if local_llm:
+        try:
+            logger.info("Using local Llama model for generation.")
+            out = local_llm.create(prompt=prompt, max_tokens=256, temperature=0.7)
+            # llama_cpp returns different structures; handle safely
+            text = ""
+            if isinstance(out, dict):
+                # new llama_cpp returns 'choices' with 'text'
+                choices = out.get("choices")
+                if choices and isinstance(choices, list):
+                    text = "".join([c.get("text","") for c in choices])
+                else:
+                    text = out.get("text", "")
+            else:
+                text = str(out)
+            if not text:
+                raise RuntimeError("Local model produced empty text")
+            response = {"response": text}
+            if req.code_mode:
+                response["code_blocks"] = extract_code_blocks(text)
+            return JSONResponse(response)
+        except Exception as e:
+            logger.exception("Local model failed, falling back: %s", e)
 
-    # Hugging Face Inference API
+    # 2) Try Hugging Face Inference API
     if HF_API_KEY:
         try:
             headers = {"Authorization": f"Bearer {HF_API_KEY}"}
             url = f"https://api-inference.huggingface.co/models/{LOCAL_MODEL_NAME}"
-            payload = {
-                "inputs": prompt,
-                "parameters": {"max_new_tokens": 256, "top_p": 0.95, "temperature": 0.8}
-            }
-            async with httpx.AsyncClient(timeout=30) as client:
-                r = await client.post(url, headers=headers, json=payload)
-                r.raise_for_status()
-                data = r.json()
-                if isinstance(data, list) and len(data) > 0:
-                    out = data[0].get("generated_text", "")
-        except Exception:
-            logger.exception("HF inference failed.")
-
-    # OpenAI fallback
-    if out is None and OPENAI_API_KEY:
-        try:
-            headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
-            body = {"model": "gpt-4o-mini", "messages": [{"role": "user", "content": prompt}], "max_tokens": 512}
-            async with httpx.AsyncClient(timeout=30) as client:
-                r = await client.post("https://api.openai.com/v1/chat/completions", headers=headers, json=body)
-                r.raise_for_status()
-                out = r.json()["choices"][0]["message"]["content"]
-        except Exception:
-            logger.exception("OpenAI fallback failed.")
-
-    if not out:
-        raise HTTPException(status_code=503, detail="No text generation backend available")
-
-    response = {"response": out}
-    if req.code_mode:
-        response["code_blocks"] = extract_code_blocks(out)
-    return JSONResponse(response)
-    
-@app.post("/chat/stream")
-async def chat_stream(req: ChatRequest):
-    # same logic as /chat, streaming in chunks
-    persona_map = {
-        "default": "You are a helpful assistant.",
-        "teacher": "You are a calm teacher.",
-        "funny": "You are a witty assistant."
-    }
-    persona_prompt = persona_map.get(req.persona, persona_map["default"])
-    history = ""
-    for m in req.messages:
-        role = "User" if m.role == "user" else "Assistant"
-        history += f"{role}: {m.content}\n"
-    prompt = persona_prompt + "\n\n" + history + "Assistant:"
-    text = None
-
-    # HF API
-    if HF_API_KEY:
-        try:
-            headers = {"Authorization": f"Bearer {HF_API_KEY}"}
-            url = f"https://api-inference.huggingface.co/models/{LOCAL_MODEL_NAME}"
-            payload = {"inputs": prompt, "parameters": {"max_new_tokens": 256, "top_p":0.95,"temperature":0.8}}
+            payload = {"inputs": prompt, "parameters": {"max_new_tokens": 256, "top_p": 0.95, "temperature": 0.8}}
             async with httpx.AsyncClient(timeout=60) as client:
                 r = await client.post(url, headers=headers, json=payload)
-                r.raise_for_status()
-                data = r.json()
-                if isinstance(data, list) and len(data) > 0:
-                    text = data[0].get("generated_text","")
-        except Exception:
-            logger.exception("HF streaming failed.")
+                if r.status_code == 200:
+                    data = r.json()
+                    if isinstance(data, list) and len(data) > 0:
+                        text = data[0].get("generated_text") or data[0].get("generated_text", "") or str(data[0])
+                    else:
+                        text = str(data)
+                    response = {"response": text}
+                    if req.code_mode:
+                        response["code_blocks"] = extract_code_blocks(text)
+                    return JSONResponse(response)
+                else:
+                    logger.warning("HF inference returned status %s: %s", r.status_code, r.text[:400])
+        except Exception as e:
+            logger.exception("Hugging Face call failed: %s", e)
 
-    # OpenAI fallback
-    if text is None and OPENAI_API_KEY:
+    # 3) Final fallback (friendly)
+    logger.info("Using final fallback response.")
+    fallback_text = simple_fallback(req.messages[-1].content if req.messages else "your request")
+    return JSONResponse({"response": fallback_text})
+
+# ---------- Stream Chat (SSE) ----------
+@app.post("/chat/stream")
+async def chat_stream(req: ChatRequest):
+    persona_prompt = build_persona_prompt(req.persona)
+    history = "\n".join([f"{'User' if m.role=='user' else 'Assistant'}: {m.content}" for m in req.messages])
+    prompt = f"{persona_prompt}\n\n{history}\nAssistant:"
+
+    # Attempt local model streaming if available
+    text = None
+    if local_llm:
         try:
-            headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
-            body = {"model":"gpt-4o-mini","messages":[{"role":"user","content":prompt}],"max_tokens":512}
-            async with httpx.AsyncClient(timeout=30) as client:
-                r = await client.post("https://api.openai.com/v1/chat/completions", headers=headers, json=body)
-                r.raise_for_status()
-                text = r.json()["choices"][0]["message"]["content"]
-        except Exception:
-            logger.exception("OpenAI streaming fallback failed.")
+            out = local_llm.create(prompt=prompt, max_tokens=256, temperature=0.7)
+            if isinstance(out, dict):
+                choices = out.get("choices")
+                if choices and isinstance(choices, list):
+                    text = "".join([c.get("text","") for c in choices])
+                else:
+                    text = out.get("text","")
+            else:
+                text = str(out)
+        except Exception as e:
+            logger.exception("Local streaming failed: %s", e)
+            text = None
+
+    # Otherwise try HF
+    if text is None and HF_API_KEY:
+        try:
+            headers = {"Authorization": f"Bearer {HF_API_KEY}"}
+            url = f"https://api-inference.huggingface.co/models/{LOCAL_MODEL_NAME}"
+            payload = {"inputs": prompt, "parameters": {"max_new_tokens": 256}}
+            async with httpx.AsyncClient(timeout=60) as client:
+                r = await client.post(url, headers=headers, json=payload)
+                if r.status_code == 200:
+                    data = r.json()
+                    if isinstance(data, list) and len(data) > 0:
+                        text = data[0].get("generated_text", "")
+                    else:
+                        text = str(data)
+                else:
+                    logger.warning("HF stream returned %s: %s", r.status_code, r.text[:400])
+        except Exception as e:
+            logger.exception("HF streaming failed: %s", e)
+            text = None
 
     if not text:
-        raise HTTPException(status_code=500, detail="Generation failed")
-
-    code_blocks = extract_code_blocks(text) if req.code_mode else []
+        text = simple_fallback(req.messages[-1].content if req.messages else "request")
 
     async def event_stream():
         chunk_size = 60
-        for i in range(0,len(text),chunk_size):
+        for i in range(0, len(text), chunk_size):
             yield f"data: {text[i:i+chunk_size]}\n\n"
-            await asyncio.sleep(0.04)
-        if code_blocks:
-            yield f"data: {json.dumps({'code_blocks': code_blocks})}\n\n"
+            await asyncio.sleep(0.03)
+        if req.code_mode:
+            blocks = extract_code_blocks(text)
+            if blocks:
+                yield f"data: {json.dumps({'code_blocks': blocks})}\n\n"
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
-# ---------- Image generation (cloud-only) ----------
+# ---------- Image generation (HF only) ----------
 @app.post("/image")
 async def gen_image(req: ImageRequest):
-    if HF_API_KEY:
+    if HF_API_KEY and IMAGE_MODEL:
         try:
             headers = {"Authorization": f"Bearer {HF_API_KEY}"}
             url = f"https://api-inference.huggingface.co/models/{IMAGE_MODEL}"
-            payload = {"inputs": req.prompt, "parameters":{"width":req.width,"height":req.height}}
-            async with httpx.AsyncClient(timeout=60) as client:
+            payload = {"inputs": req.prompt, "parameters": {"width": req.width, "height": req.height}}
+            async with httpx.AsyncClient(timeout=120) as client:
                 r = await client.post(url, headers=headers, json=payload)
                 r.raise_for_status()
                 data = r.json()
+                # HF image responses vary — try common fields
                 if isinstance(data, dict) and "image" in data:
                     return {"image_base64": data["image"]}
-                elif isinstance(data, list) and len(data) > 0 and "image_base64" in data[0]:
+                if isinstance(data, list) and len(data) > 0 and "image_base64" in data[0]:
                     return {"image_base64": data[0]["image_base64"]}
-        except Exception:
-            logger.exception("HF image generation failed.")
+                return {"result": data}
+        except Exception as e:
+            logger.exception("Image generation failed: %s", e)
+            raise HTTPException(status_code=503, detail="Image generation failed")
+    raise HTTPException(status_code=503, detail="No image backend available")
 
-    if OPENAI_API_KEY:
-        try:
-            headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
-            body = {"prompt": req.prompt, "size": f"{req.width}x{req.height}"}
-            async with httpx.AsyncClient(timeout=60) as client:
-                r = await client.post("https://api.openai.com/v1/images/generations", headers=headers, json=body)
-                r.raise_for_status()
-                data = r.json()
-                img_b64 = data["data"][0]["b64_json"]
-                return {"image_base64": img_b64}
-        except Exception:
-            logger.exception("OpenAI DALL·E generation failed.")
-
-    raise HTTPException(status_code=503, detail="No cloud image generation backend available")
-
-# ---------- WebSocket chat (optional) ----------
+# ---------- WebSocket chat ----------
 active_ws_connections = {}
 @app.websocket("/ws/{uid}")
 async def websocket_endpoint(websocket: WebSocket, uid: str):
