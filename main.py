@@ -32,7 +32,7 @@ SMTP_USER = os.getenv("SMTP_USER", None)
 SMTP_PASS = os.getenv("SMTP_PASS", None)
 
 # Chat model name for HF
-LOCAL_MODEL_NAME = os.getenv("LOCAL_MODEL_NAME", "meta-llama/Meta-Llama-3-8B-Instruct")
+LOCAL_MODEL_NAME = os.getenv("LOCAL_MODEL_NAME", "mistralai/Mistral-7B-Instruct-v0.1")
 IMAGE_MODEL = os.getenv("IMAGE_MODEL", "CompVis/stable-diffusion-v1-4")
 
 # ---------- FastAPI app ----------
