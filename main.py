@@ -296,7 +296,6 @@ async def websocket_endpoint(websocket: WebSocket, uid: str):
     finally:
         active_ws_connections.pop(uid, None)
 
-# ---------- Run ----------
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=PORT, log_level="info")
+@app.head("/")
+async def home_head():
+    return HTMLResponse(status_code=200)
