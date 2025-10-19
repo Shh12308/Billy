@@ -5,7 +5,7 @@ python-multipart
 pydantic
 python-dotenv
 pillow
-torch
+torch --index-url https://download.pytorch.org/whl/cpu
 transformers
 sentence-transformers
 audiocraft
@@ -14,4 +14,3 @@ faster-whisper
 chromadb
 redis
 supabase
-blip2
