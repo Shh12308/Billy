@@ -5,6 +5,7 @@ import uuid
 import logging
 import random
 import re
+import json
 from typing import Optional
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,7 +13,6 @@ from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse
 from pydantic import BaseModel
 from PIL import Image
 import httpx
-import json
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("chloe")
@@ -99,6 +99,10 @@ async def home():
     </html>
     """
 
+@app.head("/")
+async def home_head():
+    return HTMLResponse(status_code=200)
+
 # ---------- Chat endpoint ----------
 @app.post("/chat")
 async def chat(req: ChatRequest):
@@ -127,7 +131,7 @@ async def chat(req: ChatRequest):
         except Exception as e:
             logger.warning(f"Local LLaMA failed: {e}")
 
-    # Hugging Face
+    # Hugging Face API
     if HF_API_KEY:
         try:
             headers = {"Authorization": f"Bearer {HF_API_KEY}"}
@@ -205,7 +209,7 @@ async def chat_stream(req: ChatRequest):
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
-    
+
 # ---------- Image Generation ----------
 @app.post("/image")
 async def gen_image(req: ImageRequest):
@@ -297,7 +301,3 @@ async def websocket_endpoint(websocket: WebSocket, uid: str):
         logger.info(f"WS disconnected {uid}")
     finally:
         active_ws_connections.pop(uid, None)
-
-@app.head("/")
-async def home_head():
-    return HTMLResponse(status_code=200)
