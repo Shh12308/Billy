@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse
 from pydantic import BaseModel
 from PIL import Image
 import httpx
+import json
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("chloe")
@@ -83,15 +84,6 @@ def build_persona_prompt(persona: str) -> str:
         "funny": "You are a witty assistant named Chloe."
     }
     return persona_map.get(persona, persona_map["default"])
-
-async def event_stream():
-    chunk_size = 60
-    for i in range(0, len(text), chunk_size):
-        yield f"data: {text[i:i+chunk_size]}\n\n"
-        await asyncio.sleep(0.03)
-    yield "data: [DONE]\n\n"
-
-return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 # ---------- Home ----------
 @app.get("/", response_class=HTMLResponse)
@@ -249,10 +241,11 @@ def init_vision():
     global BLIP_PROCESSOR, BLIP_MODEL
     if BLIP_MODEL is None and Blip2Processor and Blip2ForConditionalGeneration:
         try:
+            import torch
             model_name = "Salesforce/blip2-flan-t5-base"
             BLIP_PROCESSOR = Blip2Processor.from_pretrained(model_name)
             BLIP_MODEL = Blip2ForConditionalGeneration.from_pretrained(model_name)
-            device = "cuda" if (torch and torch.cuda.is_available()) else "cpu"
+            device = "cuda" if torch.cuda.is_available() else "cpu"
             BLIP_MODEL.to(device)
             logger.info(f"✅ BLIP-2 vision model loaded on {device}")
         except Exception as e:
