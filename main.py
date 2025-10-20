@@ -213,9 +213,6 @@ async def chat_stream(req: ChatRequest):
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
-
-@app.post("/chat/stream")
-async def chat_stream(req: ChatRequest):
     
 # ---------- Image Generation ----------
 @app.post("/image")
