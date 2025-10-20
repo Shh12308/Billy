@@ -266,6 +266,7 @@ def analyze_image(image_path: str) -> str:
     out_ids = model.generate(**inputs, max_new_tokens=64)
     caption = proc.decode(out_ids[0], skip_special_tokens=True)
     return f"Chloe sees: {caption}\n💡 Recommendation: Based on this, you might try something similar or explore related ideas."
+return {"message": "Hello"}  # ❌ This line is outside the function → invalid
 
 @app.post("/image/analyze")
 async def analyze_image_endpoint(file: bytes = None):
