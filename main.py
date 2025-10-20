@@ -257,17 +257,6 @@ def init_vision():
             BLIP_PROCESSOR = BLIP_MODEL = None
     return BLIP_PROCESSOR, BLIP_MODEL
 
-def analyze_image(image_path: str) -> str:
-    proc, model = init_vision()
-    if not proc or not model:
-        return "Chloe cannot analyze images right now."
-    img = Image.open(image_path).convert("RGB")
-    inputs = proc(images=img, return_tensors="pt").to(model.device)
-    out_ids = model.generate(**inputs, max_new_tokens=64)
-    caption = proc.decode(out_ids[0], skip_special_tokens=True)
-    return f"Chloe sees: {caption}\n💡 Recommendation: Based on this, you might try something similar or explore related ideas."
-return {"message": "Hello"}  # ❌ This line is outside the function → invalid
-
 @app.post("/image/analyze")
 async def analyze_image_endpoint(file: bytes = None):
     if not file:
