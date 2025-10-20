@@ -1,14 +1,19 @@
-fastapi
-uvicorn[standard]
-httpx
-python-multipart
-pydantic
-python-dotenv
-pillow
-torch --index-url https://download.pytorch.org/whl/cpu
-transformers
-sentence-transformers
-faster-whisper
-chromadb
-redis
-supabase
+# Web
+fastapi==0.111.1
+uvicorn[standard]==0.23.2
+httpx==0.24.1
+python-multipart==0.0.6
+python-dotenv==1.0.1
+pydantic==2.5.1
+pillow==10.1.0
+
+# Machine Learning / NLP
+torch==2.3.1 --index-url https://download.pytorch.org/whl/cpu
+transformers==4.33.2
+sentence-transformers==2.2.2
+faster-whisper==1.2.0
+chromadb==0.4.7
+
+# Databases / APIs
+redis==5.3.7
+supabase==3.14.0
