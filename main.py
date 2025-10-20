@@ -84,6 +84,15 @@ def build_persona_prompt(persona: str) -> str:
     }
     return persona_map.get(persona, persona_map["default"])
 
+async def event_stream():
+    chunk_size = 60
+    for i in range(0, len(text), chunk_size):
+        yield f"data: {text[i:i+chunk_size]}\n\n"
+        await asyncio.sleep(0.03)
+    yield "data: [DONE]\n\n"
+
+return StreamingResponse(event_stream(), media_type="text/event-stream")
+
 # ---------- Home ----------
 @app.get("/", response_class=HTMLResponse)
 async def home():
@@ -205,6 +214,9 @@ async def chat_stream(req: ChatRequest):
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
+@app.post("/chat/stream")
+async def chat_stream(req: ChatRequest):
+    
 # ---------- Image Generation ----------
 @app.post("/image")
 async def gen_image(req: ImageRequest):
