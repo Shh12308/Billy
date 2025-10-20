@@ -7,7 +7,7 @@ import random
 import re
 import json
 from typing import Optional
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse
 from pydantic import BaseModel
@@ -257,13 +257,22 @@ def init_vision():
             BLIP_PROCESSOR = BLIP_MODEL = None
     return BLIP_PROCESSOR, BLIP_MODEL
 
+def analyze_image(image_path: str) -> str:
+    proc, model = init_vision()
+    if not proc or not model:
+        return "Chloe cannot analyze images right now."
+    img = Image.open(image_path).convert("RGB")
+    inputs = proc(images=img, return_tensors="pt").to(model.device)
+    out_ids = model.generate(**inputs, max_new_tokens=64)
+    caption = proc.decode(out_ids[0], skip_special_tokens=True)
+    return f"Chloe sees: {caption}\n💡 Recommendation: Based on this, you might try something similar or explore related ideas."
+
 @app.post("/image/analyze")
-async def analyze_image_endpoint(file: bytes = None):
-    if not file:
-        raise HTTPException(status_code=400, detail="No image uploaded")
+async def analyze_image_endpoint(file: UploadFile = File(...)):
+    data = await file.read()
     tmp_path = f"/tmp/chloe_img_{uuid.uuid4().hex}.png"
     with open(tmp_path, "wb") as f:
-        f.write(file)
+        f.write(data)
     result = analyze_image(tmp_path)
     return JSONResponse({"analysis": result})
 
@@ -291,3 +300,8 @@ async def websocket_endpoint(websocket: WebSocket, uid: str):
         logger.info(f"WS disconnected {uid}")
     finally:
         active_ws_connections.pop(uid, None)
+
+# ---------- Run server ----------
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=PORT, reload=True)
