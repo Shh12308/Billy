@@ -15,5 +15,5 @@ faster-whisper==1.2.0
 chromadb==0.4.7
 
 # Databases / APIs
-redis==5.3.7
+redis==6.4.0
 supabase==3.14.0
