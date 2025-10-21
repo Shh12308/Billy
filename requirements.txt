@@ -16,4 +16,4 @@ chromadb==0.4.7
 
 # Databases / APIs
 redis==6.4.0
-supabase==3.14.0
+supabase==2.22.0
