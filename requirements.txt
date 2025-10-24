@@ -10,7 +10,7 @@ sentencepiece
 numpy
 scipy
 pydantic
-python
+python==3.11.10
 
 # === Whisper & Audio ===
 openai-whisper
