@@ -4,7 +4,7 @@ uvicorn==0.23.2
 
 # Machine learning
 transformers==4.57.1
-torch==2.1.0          # compatible with Python 3.10/3.11
+torch==2.5.1        # compatible with Python 3.10/3.11
 diffusers==0.35.2
 TTS==0.13.0           # Coqui TTS, compatible with torch 2.x
 openai-whisper==20230314
