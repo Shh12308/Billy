@@ -1,91 +1,128 @@
-# main.py
-import io
-import torch
+import io, os, torch, base64, asyncio, tempfile
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 from transformers import pipeline, AutoProcessor, BlipForConditionalGeneration
-from langdetect import detect
-from TTS.api import TTS
+from PIL import Image
 import whisper
+from TTS.api import TTS
 import chromadb
 
-# === App init ===
-app = FastAPI(title="Billy-Free AI")
+# === APP SETUP ===
+app = FastAPI(title="Billy-Free AI v2")
 
-# === Memory DB ===
+# Allow all origins for demo / frontend use
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# === MEMORY (ChromaDB) ===
 chroma = chromadb.Client()
-if "billy_facts" not in [c.name for c in chroma.list_collections()]:
-    chroma.create_collection("billy_facts")
-memory = chroma.get_collection("billy_facts")
+if "billy_memory" not in [c.name for c in chroma.list_collections()]:
+    chroma.create_collection("billy_memory")
+memory = chroma.get_collection("billy_memory")
 
-# === Text Generation (Small Model) ===
-chat_model = pipeline("text-generation", model="EleutherAI/gpt-neo-125M")
+# === MODELS (tiny + CPU friendly) ===
+device = "cuda" if torch.cuda.is_available() else "cpu"
+chat_model = pipeline("text-generation", model="EleutherAI/gpt-neo-125M", device=0 if device=="cuda" else -1)
 
-# === Vision (Image Captioning) ===
 vision_processor = AutoProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
-vision_model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base")
+vision_model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base").to(device)
 
-# === STT / Whisper ===
 whisper_model = whisper.load_model("tiny")
+tts_model = TTS(model_name="tts_models/en/ljspeech/tacotron2-DDC", progress_bar=False, gpu=False)
 
-# === TTS / Coqui ===
-tts_model = TTS(model_name="tts_models/en/ljspeech/tacotron2-DDC")
-
-# === Helpers ===
+# === HELPERS ===
 def store_context(prompt, answer):
-    memory.add(
-        documents=[f"{prompt} => {answer}"],
-        metadatas=[{"source": "chat"}],
-        ids=[f"id_{hash(prompt)}"]
-    )
+    try:
+        memory.add(
+            documents=[f"{prompt} => {answer}"],
+            metadatas=[{"type": "chat"}],
+            ids=[f"id_{abs(hash(prompt))}"]
+        )
+    except Exception as e:
+        print("Memory store failed:", e)
 
 def retrieve_context(prompt, n=3):
-    results = memory.query(query_texts=[prompt], n_results=n)
-    return results["documents"][0] if results["documents"] else []
+    try:
+        results = memory.query(query_texts=[prompt], n_results=n)
+        return "\n".join(results["documents"][0]) if results["documents"] else ""
+    except Exception:
+        return ""
 
-# === Routes ===
+# === ROUTES ===
 
 @app.get("/")
 def root():
-    return {"message": "✅ Billy-Free AI is online!"}
+    return {"message": "🤖 Billy-Free AI v2 is online and ready!"}
 
+# 💬 Chat
 @app.post("/chat")
-def chat(prompt: str = Form(...)):
-    # retrieve memory
+async def chat(prompt: str = Form(...)):
     context = retrieve_context(prompt)
-    full_prompt = (context + "\n" if context else "") + prompt
-    # generate response
-    output = chat_model(full_prompt, max_length=200, do_sample=True)[0]['generated_text']
-    # store in memory
+    full_prompt = f"{context}\n{prompt}" if context else prompt
+    output = chat_model(full_prompt, max_length=180, do_sample=True, temperature=0.8)[0]["generated_text"]
     store_context(prompt, output)
-    return {"response": output}
+    return {"response": output.strip()}
 
+# 🔊 Text-to-Speech
 @app.post("/tts")
-def tts(prompt: str = Form(...)):
-    with io.BytesIO() as f:
-        tts_model.tts_to_file(text=prompt, file_path="temp.wav")
-        with open("temp.wav", "rb") as wav:
-            audio_bytes = wav.read()
+async def tts(prompt: str = Form(...)):
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
+        tts_model.tts_to_file(text=prompt, file_path=temp_file.name)
+        with open(temp_file.name, "rb") as f:
+            audio_bytes = f.read()
+    os.remove(temp_file.name)
     return StreamingResponse(io.BytesIO(audio_bytes), media_type="audio/wav")
 
+# 🎙️ Speech-to-Text
 @app.post("/stt")
-def stt(file: UploadFile = File(...)):
-    audio_bytes = file.file.read()
+async def stt(file: UploadFile = File(...)):
+    audio_bytes = await file.read()
     with open("temp.wav", "wb") as f:
         f.write(audio_bytes)
     result = whisper_model.transcribe("temp.wav")
     return {"transcription": result["text"]}
 
+# 🖼️ Image Captioning
 @app.post("/image-caption")
-def image_caption(image: UploadFile = File(...)):
-    img_bytes = image.file.read()
-    from PIL import Image
+async def image_caption(image: UploadFile = File(...)):
+    img_bytes = await image.read()
     img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-    inputs = vision_processor(images=img, return_tensors="pt")
+    inputs = vision_processor(images=img, return_tensors="pt").to(device)
     output_ids = vision_model.generate(**inputs)
     caption = vision_processor.decode(output_ids[0], skip_special_tokens=True)
     return {"caption": caption}
 
+# 🎨 Stable Diffusion (CPU-safe)
+@app.post("/generate-image")
+async def generate_image(prompt: str = Form(...)):
+    from diffusers import StableDiffusionPipeline
+    pipe = StableDiffusionPipeline.from_pretrained(
+        "stabilityai/stable-diffusion-2-base",
+        torch_dtype=torch.float32
+    )
+    pipe.to(device)
+    image = pipe(prompt, guidance_scale=7.5).images[0]
+    buf = io.BytesIO()
+    image.save(buf, format="PNG")
+    buf.seek(0)
+    return StreamingResponse(buf, media_type="image/png")
+
+# 📡 Simple Stream Relay (demo)
+@app.get("/stream")
+async def stream():
+    async def event_stream():
+        for i in range(10):
+            yield f"data: Stream update #{i}\n\n"
+            await asyncio.sleep(1)
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+# 🧠 Memory Dump
 @app.get("/memory")
 def get_memory():
     docs = memory.get()["documents"]
