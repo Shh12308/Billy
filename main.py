@@ -1,7 +1,6 @@
 import io
 import os
 import torch
-import base64
 import asyncio
 import tempfile
 from fastapi import FastAPI, UploadFile, File, Form
@@ -12,7 +11,6 @@ from PIL import Image
 import whisper
 from TTS.api import TTS
 import chromadb
-const port = process.env.PORT || 4000
 
 # === APP SETUP ===
 app = FastAPI(title="Billy-Free AI v2")
@@ -32,9 +30,13 @@ if "billy_memory" not in [c.name for c in chroma.list_collections()]:
     chroma.create_collection("billy_memory")
 memory = chroma.get_collection("billy_memory")
 
-# === MODELS (tiny + CPU friendly) ===
+# === MODELS ===
 device = "cuda" if torch.cuda.is_available() else "cpu"
-chat_model = pipeline("text-generation", model="EleutherAI/gpt-neo-125M", device=0 if device=="cuda" else -1)
+chat_model = pipeline(
+    "text-generation",
+    model="EleutherAI/gpt-neo-125M",
+    device=0 if device == "cuda" else -1
+)
 
 vision_processor = AutoProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
 vision_model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base").to(device)
@@ -61,12 +63,10 @@ def retrieve_context(prompt, n=3):
         return ""
 
 # === ROUTES ===
-
 @app.get("/")
 def root():
     return {"message": "🤖 Billy-Free AI v2 is online and ready!"}
 
-# 💬 Chat
 @app.post("/chat")
 async def chat(prompt: str = Form(...)):
     context = retrieve_context(prompt)
@@ -75,7 +75,6 @@ async def chat(prompt: str = Form(...)):
     store_context(prompt, output)
     return {"response": output.strip()}
 
-# 🔊 Text-to-Speech
 @app.post("/tts")
 async def tts(prompt: str = Form(...)):
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
@@ -85,7 +84,6 @@ async def tts(prompt: str = Form(...)):
     os.remove(temp_file.name)
     return StreamingResponse(io.BytesIO(audio_bytes), media_type="audio/wav")
 
-# 🎙️ Speech-to-Text
 @app.post("/stt")
 async def stt(file: UploadFile = File(...)):
     audio_bytes = await file.read()
@@ -94,7 +92,6 @@ async def stt(file: UploadFile = File(...)):
     result = whisper_model.transcribe("temp.wav")
     return {"transcription": result["text"]}
 
-# 🖼️ Image Captioning
 @app.post("/image-caption")
 async def image_caption(image: UploadFile = File(...)):
     img_bytes = await image.read()
@@ -104,7 +101,6 @@ async def image_caption(image: UploadFile = File(...)):
     caption = vision_processor.decode(output_ids[0], skip_special_tokens=True)
     return {"caption": caption}
 
-# 🎨 Stable Diffusion (CPU-safe)
 @app.post("/generate-image")
 async def generate_image(prompt: str = Form(...)):
     from diffusers import StableDiffusionPipeline
@@ -119,7 +115,6 @@ async def generate_image(prompt: str = Form(...)):
     buf.seek(0)
     return StreamingResponse(buf, media_type="image/png")
 
-# 📡 Simple Stream Relay (demo)
 @app.get("/stream")
 async def stream():
     async def event_stream():
@@ -128,16 +123,13 @@ async def stream():
             await asyncio.sleep(1)
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
-# 🧠 Memory Dump
 @app.get("/memory")
 def get_memory():
     docs = memory.get()["documents"]
     return {"memory": docs}
 
-# === RUN WITH RENDER PORT ===
+# === RUN APP ===
 if __name__ == "__main__":
     import uvicorn
-
-    # Use Render-assigned port, fallback to 8080 locally
-    port = int(os.environ.get("PORT", 8080))
-    uvicorn.run("main:app", host="0.0.0.0", port=port)
+    port = int(os.environ.get("PORT", 8080))  # Use Render port, fallback to 8080 locally
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
