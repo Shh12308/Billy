@@ -133,11 +133,10 @@ def get_memory():
     docs = memory.get()["documents"]
     return {"memory": docs}
 
+# === RUN WITH RENDER PORT ===
 if __name__ == "__main__":
     import uvicorn
-    import os
 
-    # Use the port assigned by the host, default to 8080 locally
+    # Use Render-assigned port, fallback to 8080 locally
     port = int(os.environ.get("PORT", 8080))
-
-    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
