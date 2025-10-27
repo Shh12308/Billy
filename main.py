@@ -1,4 +1,9 @@
-import io, os, torch, base64, asyncio, tempfile
+import io
+import os
+import torch
+import base64
+import asyncio
+import tempfile
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -127,3 +132,7 @@ async def stream():
 def get_memory():
     docs = memory.get()["documents"]
     return {"memory": docs}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=8080, reload=True)
