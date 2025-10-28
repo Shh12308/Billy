@@ -32,6 +32,7 @@ memory = chroma.get_collection("billy_memory")
 
 # === MODELS ===
 device = "cuda" if torch.cuda.is_available() else "cpu"
+
 chat_model = pipeline(
     "text-generation",
     model="EleutherAI/gpt-neo-125M",
@@ -39,7 +40,9 @@ chat_model = pipeline(
 )
 
 vision_processor = AutoProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
-vision_model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base").to(device)
+vision_model = BlipForConditionalGeneration.from_pretrained(
+    "Salesforce/blip-image-captioning-base"
+).to(device)
 
 whisper_model = whisper.load_model("tiny")
 tts_model = TTS(model_name="tts_models/en/ljspeech/tacotron2-DDC", progress_bar=False, gpu=False)
