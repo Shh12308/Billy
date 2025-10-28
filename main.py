@@ -11,7 +11,6 @@ from PIL import Image
 import whisper
 from TTS.api import TTS
 import chromadb
-const port = process.env.PORT || 8080
 
 # === APP SETUP ===
 app = FastAPI(title="Billy-Free AI v2")
