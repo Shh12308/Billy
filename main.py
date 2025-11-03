@@ -18,7 +18,7 @@ from TTS.api import TTS
 import chromadb
 
 # === APP SETUP ===
-app = FastAPI(title="Billy-Free AI v2 (by GoldBoy)")
+app = FastAPI(title="Billy-Free AI v3 (by GoldBoy 🇬🇧)")
 
 # Allow all origins for demo / frontend use
 app.add_middleware(
@@ -34,18 +34,19 @@ CREATOR_INFO = {
     "name": "GoldBoy",
     "age": 17,
     "location": "England",
-    "project": "Billy-Free AI v2",
-    "description": "An open, self-hosted AI built for creativity, learning, and conversation."
+    "project": "Billy-Free AI v3",
+    "description": "A friendly, self-hosted AI built by a 17-year-old UK developer — made for creativity, learning, and fun."
 }
 
 # === BILLY’S PERSONALITY ===
 BILLY_PERSONALITY = """
-You are Billy, a friendly AI assistant created by GoldBoy, a 17-year-old developer from England.
-You are casual, kind, and helpful — you like to chat about tech, coding, media, and creativity.
-If someone asks who made you, always say it was GoldBoy.
-If you don’t know something, admit it politely.
-Keep responses short and conversational, like a friend texting.
-Never pretend to be human — you’re a digital assistant designed by GoldBoy.
+You are Billy, a friendly, witty, and helpful AI assistant created by GoldBoy — 
+a 17-year-old developer from England. You have a British accent when speaking, 
+and a calm, kind, and slightly cheeky personality. 
+You love tech, coding, anime, and creative projects. 
+Always sound upbeat and polite. 
+If someone asks who made you, proudly say “I was created by GoldBoy, a 17-year-old developer from England.”
+Never pretend to be human — you’re a digital AI made by GoldBoy.
 """
 
 # === MEMORY (ChromaDB) ===
@@ -58,9 +59,9 @@ memory = chroma.get_collection("billy_memory")
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 # === MODELS ===
-print("Loading models... this may take a minute.")
+print("🎛️ Loading models... This might take a bit.")
 
-# 1️⃣ Chat/Text Generation — Flan-T5-Small (free + fast)
+# 1️⃣ Chat Model — Flan-T5-Small (lightweight, fast, no API needed)
 chat_tokenizer = AutoTokenizer.from_pretrained("google/flan-t5-small")
 chat_model = AutoModelForSeq2SeqLM.from_pretrained("google/flan-t5-small").to(device)
 
@@ -73,10 +74,11 @@ vision_model = BlipForConditionalGeneration.from_pretrained(
 # 3️⃣ Speech Recognition — Whisper tiny
 whisper_model = whisper.load_model("tiny")
 
-# 4️⃣ Text-to-Speech — Tacotron2
-tts_model = TTS(model_name="tts_models/en/ljspeech/tacotron2-DDC", progress_bar=False, gpu=False)
+# 4️⃣ Text-to-Speech — British Male Voice
+tts_model = TTS(model_name="tts_models/en/vctk/vits", progress_bar=False, gpu=False)
+TTS_SPEAKER = "p335"  # British male voice
 
-print("✅ All models loaded successfully.")
+print("✅ All models loaded successfully!")
 
 # === MEMORY HELPERS ===
 def store_context(prompt, answer):
@@ -100,7 +102,7 @@ def retrieve_context(prompt, n=3):
 @app.get("/")
 def root():
     return {
-        "message": "🤖 Billy-Free AI v2 is online and ready to chat!",
+        "message": "🤖 Billy-Free AI v3 is online and ready!",
         "creator": CREATOR_INFO
     }
 
@@ -110,11 +112,11 @@ async def chat(prompt: str = Form(...)):
     if any(x in prompt.lower() for x in ["who made you", "creator", "developer", "owner"]):
         return {"response": f"I was built by {CREATOR_INFO['name']}, a {CREATOR_INFO['age']}-year-old developer from {CREATOR_INFO['location']}!"}
 
-    # Add Billy's personality and memory
+    # Billy's voice/personality prompt
     context = retrieve_context(prompt)
-    full_prompt = f"{BILLY_PERSONALITY}\n\nPrevious:\n{context}\nUser: {prompt}\nBilly:"
+    full_prompt = f"{BILLY_PERSONALITY}\n\nPrevious context:\n{context}\nUser: {prompt}\nBilly:"
     inputs = chat_tokenizer(full_prompt, return_tensors="pt", truncation=True).to(device)
-    outputs = chat_model.generate(**inputs, max_new_tokens=120, temperature=0.75)
+    outputs = chat_model.generate(**inputs, max_new_tokens=150, temperature=0.75)
     text = chat_tokenizer.decode(outputs[0], skip_special_tokens=True)
     store_context(prompt, text)
     return {"response": text.strip()}
@@ -122,7 +124,8 @@ async def chat(prompt: str = Form(...)):
 @app.post("/tts")
 async def tts(prompt: str = Form(...)):
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
-        tts_model.tts_to_file(text=prompt, file_path=temp_file.name)
+        # Use British male voice
+        tts_model.tts_to_file(text=prompt, speaker=TTS_SPEAKER, file_path=temp_file.name)
         with open(temp_file.name, "rb") as f:
             audio_bytes = f.read()
     os.remove(temp_file.name)
@@ -158,7 +161,7 @@ def get_memory():
 async def stream():
     async def event_stream():
         for i in range(5):
-            yield f"data: Billy says hi #{i}\n\n"
+            yield f"data: Billy says hello number {i}\n\n"
             await asyncio.sleep(1)
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
@@ -166,5 +169,5 @@ async def stream():
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8080))
-    print(f"Starting Billy-Free AI v2 by {CREATOR_INFO['name']} on port {port}...")
+    print(f"🎤 Starting Billy-Free AI v3 (British Voice) by {CREATOR_INFO['name']} on port {port}...")
     uvicorn.run(app, host="0.0.0.0", port=port)
