@@ -58,29 +58,16 @@ memory = chroma.get_collection("billy_memory")
 # === DEVICE ===
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-# === MODELS ===
-print("🎛️ Loading models... This might take a bit.")
-
-# Chat Model — Flan-T5-Small
-chat_tokenizer = AutoTokenizer.from_pretrained("google/flan-t5-small")
-chat_model = AutoModelForSeq2SeqLM.from_pretrained("google/flan-t5-small").to(device)
-
-# Image Captioning — BLIP base
-vision_processor = AutoProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
-vision_model = BlipForConditionalGeneration.from_pretrained(
-    "Salesforce/blip-image-captioning-base"
-).to(device)
-
-# Speech Recognition — Whisper tiny
-whisper_model = whisper.load_model("tiny")
-
-# Text-to-Speech — British Male Voice
-tts_model = TTS(model_name="tts_models/en/vctk/vits", progress_bar=False, gpu=False)
+# === MODELS INITIALIZED AS NONE ===
+chat_tokenizer = None
+chat_model = None
+vision_processor = None
+vision_model = None
+whisper_model = None
+tts_model = None
 TTS_SPEAKER = "p335"  # British male voice
 
-print("✅ All models loaded successfully!")
-
-# === MEMORY HELPERS ===
+# === HELPER: MEMORY ===
 def store_context(prompt, answer):
     try:
         memory.add(
@@ -98,6 +85,35 @@ def retrieve_context(prompt, n=3):
     except Exception:
         return ""
 
+# === BACKGROUND MODEL LOADER ===
+async def load_models():
+    global chat_tokenizer, chat_model, vision_processor, vision_model, whisper_model, tts_model
+    print("🎛️ Loading models in background...")
+
+    # Chat model
+    chat_tokenizer = AutoTokenizer.from_pretrained("google/flan-t5-small")
+    chat_model = AutoModelForSeq2SeqLM.from_pretrained("google/flan-t5-small").to(device)
+
+    # Image captioning
+    vision_processor = AutoProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
+    vision_model = BlipForConditionalGeneration.from_pretrained(
+        "Salesforce/blip-image-captioning-base"
+    ).to(device)
+
+    # Whisper
+    whisper_model = whisper.load_model("tiny")
+
+    # TTS
+    tts_model = TTS(model_name="tts_models/en/vctk/vits", progress_bar=False, gpu=False)
+
+    print("✅ All models loaded!")
+
+# === STARTUP EVENT ===
+@app.on_event("startup")
+async def startup_event():
+    print("🤖 Billy-Free AI v3 is starting up!")
+    asyncio.create_task(load_models())  # load models in background
+
 # === ROUTES ===
 @app.get("/")
 def root():
@@ -108,11 +124,12 @@ def root():
 
 @app.post("/chat")
 async def chat(prompt: str = Form(...)):
-    # Handle creator questions manually
+    if chat_model is None:
+        return {"response": "Models are still loading, please try again in a few seconds!"}
+
     if any(x in prompt.lower() for x in ["who made you", "creator", "developer", "owner"]):
         return {"response": f"I was built by {CREATOR_INFO['name']}, a {CREATOR_INFO['age']}-year-old developer from {CREATOR_INFO['location']}!"}
 
-    # Billy's personality + memory
     context = retrieve_context(prompt)
     full_prompt = f"{BILLY_PERSONALITY}\n\nPrevious context:\n{context}\nUser: {prompt}\nBilly:"
     inputs = chat_tokenizer(full_prompt, return_tensors="pt", truncation=True).to(device)
@@ -122,7 +139,10 @@ async def chat(prompt: str = Form(...)):
     return {"response": text.strip()}
 
 @app.post("/tts")
-async def tts(prompt: str = Form(...)):
+async def tts_endpoint(prompt: str = Form(...)):
+    if tts_model is None:
+        return StreamingResponse(io.BytesIO(b""), media_type="audio/wav")
+
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
         tts_model.tts_to_file(text=prompt, speaker=TTS_SPEAKER, file_path=temp_file.name)
         with open(temp_file.name, "rb") as f:
@@ -132,6 +152,9 @@ async def tts(prompt: str = Form(...)):
 
 @app.post("/stt")
 async def stt(file: UploadFile = File(...)):
+    if whisper_model is None:
+        return {"transcription": "Models are still loading, please try again later."}
+
     audio_bytes = await file.read()
     with open("temp.wav", "wb") as f:
         f.write(audio_bytes)
@@ -141,6 +164,9 @@ async def stt(file: UploadFile = File(...)):
 
 @app.post("/image-caption")
 async def image_caption(image: UploadFile = File(...)):
+    if vision_model is None:
+        return {"caption": "Models are still loading, please try again later."}
+
     img_bytes = await image.read()
     img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
     inputs = vision_processor(images=img, return_tensors="pt").to(device)
@@ -163,8 +189,3 @@ async def stream():
             yield f"data: Billy says hello number {i}\n\n"
             await asyncio.sleep(1)
     return StreamingResponse(event_stream(), media_type="text/event-stream")
-
-# === FASTAPI STARTUP LOG (Render-compatible) ===
-@app.on_event("startup")
-async def startup_event():
-    print("🤖 Billy-Free AI v3 is starting up and ready to serve requests!")
