@@ -17,10 +17,10 @@ import whisper
 from TTS.api import TTS
 import chromadb
 
-# === APP SETUP ===
+# === FASTAPI SETUP ===
 app = FastAPI(title="Billy-Free AI v3 (by GoldBoy 🇬🇧)")
 
-# Allow all origins for demo / frontend use
+# Allow all origins (for frontend or testing)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -35,21 +35,18 @@ CREATOR_INFO = {
     "age": 17,
     "location": "England",
     "project": "Billy-Free AI v3",
-    "description": "A friendly, self-hosted AI built by a 17-year-old UK developer — made for creativity, learning, and fun."
+    "description": "A self-hosted AI made by a 17-year-old UK developer for creativity, learning, and fun!"
 }
 
-# === BILLY’S PERSONALITY ===
+# === BILLY PERSONALITY ===
 BILLY_PERSONALITY = """
-You are Billy, a friendly, witty, and helpful AI assistant created by GoldBoy — 
-a 17-year-old developer from England. You have a British accent when speaking, 
-and a calm, kind, and slightly cheeky personality. 
-You love tech, coding, anime, and creative projects. 
-Always sound upbeat and polite. 
-If someone asks who made you, proudly say “I was created by GoldBoy, a 17-year-old developer from England.”
-Never pretend to be human — you’re a digital AI made by GoldBoy.
+You are Billy — a witty, kind, and curious AI assistant created by GoldBoy,
+a 17-year-old developer from England 🇬🇧. You have a friendly and slightly cheeky tone.
+If someone asks who made you, proudly say:
+"I was built by GoldBoy, a 17-year-old developer from England."
 """
 
-# === MEMORY (ChromaDB) ===
+# === MEMORY ===
 chroma = chromadb.Client()
 if "billy_memory" not in [c.name for c in chroma.list_collections()]:
     chroma.create_collection("billy_memory")
@@ -57,35 +54,27 @@ memory = chroma.get_collection("billy_memory")
 
 # === DEVICE ===
 device = "cuda" if torch.cuda.is_available() else "cpu"
-
-# === MODEL STATUS FLAG ===
 models_ready = False
 
-# === BACKGROUND MODEL LOADER ===
+# === MODEL LOADER (Async Background Task) ===
 async def load_models():
-    global chat_tokenizer, chat_model, vision_processor, vision_model, whisper_model, tts_model, models_ready
+    global models_ready, chat_tokenizer, chat_model, vision_processor, vision_model, whisper_model, tts_model, TTS_SPEAKER
     print("🎛️ Loading models in background...")
 
-    # Chat model
+    # Load lightweight models for faster boot
     chat_tokenizer = AutoTokenizer.from_pretrained("google/flan-t5-small")
     chat_model = AutoModelForSeq2SeqLM.from_pretrained("google/flan-t5-small").to(device)
 
-    # Image captioning
     vision_processor = AutoProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
-    vision_model = BlipForConditionalGeneration.from_pretrained(
-        "Salesforce/blip-image-captioning-base"
-    ).to(device)
+    vision_model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base").to(device)
 
-    # Whisper
     whisper_model = whisper.load_model("tiny")
 
-    # TTS
     tts_model = TTS(model_name="tts_models/en/vctk/vits", progress_bar=False, gpu=False)
-    global TTS_SPEAKER
     TTS_SPEAKER = "p335"  # British male voice
 
     models_ready = True
-    print("✅ All models loaded! Billy is ready.")
+    print("✅ Billy is fully ready!")
 
 # === MEMORY HELPERS ===
 def store_context(prompt, answer):
@@ -96,7 +85,7 @@ def store_context(prompt, answer):
             ids=[f"id_{abs(hash(prompt))}"]
         )
     except Exception as e:
-        print("Memory store failed:", e)
+        print("⚠️ Memory store failed:", e)
 
 def retrieve_context(prompt, n=3):
     try:
@@ -108,10 +97,7 @@ def retrieve_context(prompt, n=3):
 # === ROUTES ===
 @app.get("/")
 def root():
-    return {
-        "message": "🤖 Billy-Free AI v3 is online and ready!",
-        "creator": CREATOR_INFO
-    }
+    return {"message": "🤖 Billy-Free AI v3 is online!", "creator": CREATOR_INFO}
 
 @app.get("/status")
 def status():
@@ -120,36 +106,34 @@ def status():
 @app.post("/chat")
 async def chat(prompt: str = Form(...)):
     if not models_ready:
-        return {"response": "⚠️ Billy is still loading models. Please wait a few moments..."}
+        return {"response": "⚙️ Billy is still warming up his brain. Try again in a moment!"}
 
-    # Handle creator questions manually
     if any(x in prompt.lower() for x in ["who made you", "creator", "developer", "owner"]):
         return {"response": f"I was built by {CREATOR_INFO['name']}, a {CREATOR_INFO['age']}-year-old developer from {CREATOR_INFO['location']}!"}
 
-    # Billy's personality + memory
     context = retrieve_context(prompt)
-    full_prompt = f"{BILLY_PERSONALITY}\n\nPrevious context:\n{context}\nUser: {prompt}\nBilly:"
+    full_prompt = f"{BILLY_PERSONALITY}\n\nPrevious chat:\n{context}\nUser: {prompt}\nBilly:"
     inputs = chat_tokenizer(full_prompt, return_tensors="pt", truncation=True).to(device)
     outputs = chat_model.generate(**inputs, max_new_tokens=150, temperature=0.75)
-    text = chat_tokenizer.decode(outputs[0], skip_special_tokens=True)
-    store_context(prompt, text)
-    return {"response": text.strip()}
+    response = chat_tokenizer.decode(outputs[0], skip_special_tokens=True)
+    store_context(prompt, response)
+    return {"response": response.strip()}
 
 @app.post("/tts")
-async def tts_endpoint(prompt: str = Form(...)):
+async def tts(prompt: str = Form(...)):
     if not models_ready:
         return StreamingResponse(io.BytesIO(b""), media_type="audio/wav")
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
-        tts_model.tts_to_file(text=prompt, speaker=TTS_SPEAKER, file_path=temp_file.name)
-        with open(temp_file.name, "rb") as f:
-            audio_bytes = f.read()
-    os.remove(temp_file.name)
-    return StreamingResponse(io.BytesIO(audio_bytes), media_type="audio/wav")
+
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+        tts_model.tts_to_file(text=prompt, speaker=TTS_SPEAKER, file_path=tmp.name)
+        audio_data = tmp.read()
+    os.remove(tmp.name)
+    return StreamingResponse(io.BytesIO(audio_data), media_type="audio/wav")
 
 @app.post("/stt")
 async def stt(file: UploadFile = File(...)):
     if not models_ready:
-        return {"transcription": ""}
+        return {"transcription": "Models still loading..."}
     audio_bytes = await file.read()
     with open("temp.wav", "wb") as f:
         f.write(audio_bytes)
@@ -160,22 +144,14 @@ async def stt(file: UploadFile = File(...)):
 @app.post("/image-caption")
 async def image_caption(image: UploadFile = File(...)):
     if not models_ready:
-        return {"caption": ""}
-    img_bytes = await image.read()
-    img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+        return {"caption": "Models still loading..."}
+    img = Image.open(io.BytesIO(await image.read())).convert("RGB")
     inputs = vision_processor(images=img, return_tensors="pt").to(device)
-    output_ids = vision_model.generate(**inputs)
-    caption = vision_processor.decode(output_ids[0], skip_special_tokens=True)
+    out_ids = vision_model.generate(**inputs)
+    caption = vision_processor.decode(out_ids[0], skip_special_tokens=True)
     return {"caption": caption}
 
-@app.get("/memory")
-def get_memory():
-    try:
-        docs = memory.get()["documents"]
-        return {"memory": docs}
-    except Exception as e:
-        return {"error": str(e)}
-
+# === STREAMING TEST ROUTE ===
 @app.get("/stream")
 async def stream():
     async def event_stream():
@@ -184,15 +160,15 @@ async def stream():
             await asyncio.sleep(1)
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
-# === FASTAPI STARTUP ===
+# === STARTUP EVENT ===
 @app.on_event("startup")
 async def startup_event():
-    print("🤖 Billy-Free AI v3 starting up...")
-    asyncio.create_task(load_models())  # Load models in background
+    print("🚀 Starting Billy-Free AI v3...")
+    asyncio.create_task(load_models())  # don’t block startup
 
-# === RUN APP (Render-compatible) ===
+# === MAIN ENTRY (Render compatible) ===
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.environ.get("PORT", 8080))  # Render dynamically assigns a port
-    print(f"Starting server on 0.0.0.0:{port}...")
+    port = int(os.environ.get("PORT", 8080))
+    print(f"🌍 Running on 0.0.0.0:{port}")
     uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
