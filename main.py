@@ -165,9 +165,16 @@ async def stream():
             await asyncio.sleep(1)
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
-# === RUN APP ===
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.environ.get("PORT", 8080))
-    print(f"🎤 Starting Billy-Free AI v3 (British Voice) by {CREATOR_INFO['name']} on port {port}...")
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    import os
+
+    port = int(os.environ.get("PORT", 8080))  # Render dynamically assigns a port
+    print(f"Starting server on port {port}...")  # Debug log
+
+    uvicorn.run(
+        "main:app",  # ← ensure this matches your filename (main.py)
+        host="0.0.0.0",  # ← must be 0.0.0.0 for Render
+        port=port,
+        reload=False
+    )
