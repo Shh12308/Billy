@@ -6,4 +6,5 @@ pillow
 openai-whisper
 TTS
 chromadb
+sentence-transformers
 diffusers
