@@ -35,8 +35,18 @@ CREATOR_INFO = {
     "age": 17,
     "location": "England",
     "project": "Billy-Free AI v2",
-    "description": "An open, self-hosted AI project built for learning and creative experimentation."
+    "description": "An open, self-hosted AI built for creativity, learning, and conversation."
 }
+
+# === BILLY’S PERSONALITY ===
+BILLY_PERSONALITY = """
+You are Billy, a friendly AI assistant created by GoldBoy, a 17-year-old developer from England.
+You are casual, kind, and helpful — you like to chat about tech, coding, media, and creativity.
+If someone asks who made you, always say it was GoldBoy.
+If you don’t know something, admit it politely.
+Keep responses short and conversational, like a friend texting.
+Never pretend to be human — you’re a digital assistant designed by GoldBoy.
+"""
 
 # === MEMORY (ChromaDB) ===
 chroma = chromadb.Client()
@@ -50,7 +60,7 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 # === MODELS ===
 print("Loading models... this may take a minute.")
 
-# 1️⃣ Chat/Text Generation — Flan-T5-Small (light + smart)
+# 1️⃣ Chat/Text Generation — Flan-T5-Small (free + fast)
 chat_tokenizer = AutoTokenizer.from_pretrained("google/flan-t5-small")
 chat_model = AutoModelForSeq2SeqLM.from_pretrained("google/flan-t5-small").to(device)
 
@@ -63,7 +73,7 @@ vision_model = BlipForConditionalGeneration.from_pretrained(
 # 3️⃣ Speech Recognition — Whisper tiny
 whisper_model = whisper.load_model("tiny")
 
-# 4️⃣ Text-to-Speech — lightweight Tacotron2
+# 4️⃣ Text-to-Speech — Tacotron2
 tts_model = TTS(model_name="tts_models/en/ljspeech/tacotron2-DDC", progress_bar=False, gpu=False)
 
 print("✅ All models loaded successfully.")
@@ -90,20 +100,21 @@ def retrieve_context(prompt, n=3):
 @app.get("/")
 def root():
     return {
-        "message": "🤖 Billy-Free AI v2 (Render Optimized) is online!",
+        "message": "🤖 Billy-Free AI v2 is online and ready to chat!",
         "creator": CREATOR_INFO
     }
 
 @app.post("/chat")
 async def chat(prompt: str = Form(...)):
-    # Add built-in self-awareness
+    # Handle creator questions manually
     if any(x in prompt.lower() for x in ["who made you", "creator", "developer", "owner"]):
-        return {"response": f"I was created by {CREATOR_INFO['name']}, a {CREATOR_INFO['age']}-year-old developer from {CREATOR_INFO['location']}."}
+        return {"response": f"I was built by {CREATOR_INFO['name']}, a {CREATOR_INFO['age']}-year-old developer from {CREATOR_INFO['location']}!"}
 
+    # Add Billy's personality and memory
     context = retrieve_context(prompt)
-    full_prompt = f"{context}\nUser: {prompt}\nAssistant:" if context else f"User: {prompt}\nAssistant:"
+    full_prompt = f"{BILLY_PERSONALITY}\n\nPrevious:\n{context}\nUser: {prompt}\nBilly:"
     inputs = chat_tokenizer(full_prompt, return_tensors="pt", truncation=True).to(device)
-    outputs = chat_model.generate(**inputs, max_new_tokens=120, temperature=0.7)
+    outputs = chat_model.generate(**inputs, max_new_tokens=120, temperature=0.75)
     text = chat_tokenizer.decode(outputs[0], skip_special_tokens=True)
     store_context(prompt, text)
     return {"response": text.strip()}
@@ -135,14 +146,6 @@ async def image_caption(image: UploadFile = File(...)):
     caption = vision_processor.decode(output_ids[0], skip_special_tokens=True)
     return {"caption": caption}
 
-@app.get("/stream")
-async def stream():
-    async def event_stream():
-        for i in range(10):
-            yield f"data: Stream update #{i}\n\n"
-            await asyncio.sleep(1)
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
-
 @app.get("/memory")
 def get_memory():
     try:
@@ -151,9 +154,17 @@ def get_memory():
     except Exception as e:
         return {"error": str(e)}
 
+@app.get("/stream")
+async def stream():
+    async def event_stream():
+        for i in range(5):
+            yield f"data: Billy says hi #{i}\n\n"
+            await asyncio.sleep(1)
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
 # === RUN APP ===
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.environ.get("PORT", 8080))  # Render sets this automatically
+    port = int(os.environ.get("PORT", 8080))
     print(f"Starting Billy-Free AI v2 by {CREATOR_INFO['name']} on port {port}...")
     uvicorn.run(app, host="0.0.0.0", port=port)
