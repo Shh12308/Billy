@@ -61,20 +61,20 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 # === MODELS ===
 print("🎛️ Loading models... This might take a bit.")
 
-# 1️⃣ Chat Model — Flan-T5-Small (lightweight, fast, no API needed)
+# Chat Model — Flan-T5-Small
 chat_tokenizer = AutoTokenizer.from_pretrained("google/flan-t5-small")
 chat_model = AutoModelForSeq2SeqLM.from_pretrained("google/flan-t5-small").to(device)
 
-# 2️⃣ Image Captioning — BLIP base
+# Image Captioning — BLIP base
 vision_processor = AutoProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
 vision_model = BlipForConditionalGeneration.from_pretrained(
     "Salesforce/blip-image-captioning-base"
 ).to(device)
 
-# 3️⃣ Speech Recognition — Whisper tiny
+# Speech Recognition — Whisper tiny
 whisper_model = whisper.load_model("tiny")
 
-# 4️⃣ Text-to-Speech — British Male Voice
+# Text-to-Speech — British Male Voice
 tts_model = TTS(model_name="tts_models/en/vctk/vits", progress_bar=False, gpu=False)
 TTS_SPEAKER = "p335"  # British male voice
 
@@ -112,7 +112,7 @@ async def chat(prompt: str = Form(...)):
     if any(x in prompt.lower() for x in ["who made you", "creator", "developer", "owner"]):
         return {"response": f"I was built by {CREATOR_INFO['name']}, a {CREATOR_INFO['age']}-year-old developer from {CREATOR_INFO['location']}!"}
 
-    # Billy's voice/personality prompt
+    # Billy's personality + memory
     context = retrieve_context(prompt)
     full_prompt = f"{BILLY_PERSONALITY}\n\nPrevious context:\n{context}\nUser: {prompt}\nBilly:"
     inputs = chat_tokenizer(full_prompt, return_tensors="pt", truncation=True).to(device)
@@ -124,7 +124,6 @@ async def chat(prompt: str = Form(...)):
 @app.post("/tts")
 async def tts(prompt: str = Form(...)):
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
-        # Use British male voice
         tts_model.tts_to_file(text=prompt, speaker=TTS_SPEAKER, file_path=temp_file.name)
         with open(temp_file.name, "rb") as f:
             audio_bytes = f.read()
@@ -165,16 +164,7 @@ async def stream():
             await asyncio.sleep(1)
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
-if __name__ == "__main__":
-    import uvicorn
-    import os
-
-    port = int(os.environ.get("PORT", 8080))  # Render dynamically assigns a port
-    print(f"Starting server on port {port}...")  # Debug log
-
-    uvicorn.run(
-        "main:app",  # ← ensure this matches your filename (main.py)
-        host="0.0.0.0",  # ← must be 0.0.0.0 for Render
-        port=port,
-        reload=False
-    )
+# === FASTAPI STARTUP LOG (Render-compatible) ===
+@app.on_event("startup")
+async def startup_event():
+    print("🤖 Billy-Free AI v3 is starting up and ready to serve requests!")
