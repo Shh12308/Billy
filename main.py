@@ -166,9 +166,8 @@ async def startup_event():
     print("🚀 Starting Billy-Free AI v3...")
     asyncio.create_task(load_models())  # don’t block startup
 
-# === MAIN ENTRY (Render compatible) ===
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.environ.get("PORT", 8080))
-    print(f"🌍 Running on 0.0.0.0:{port}")
-    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
+    port = int(os.environ.get("PORT", 10000))  # Render assigns dynamically
+    print(f"🌍 Running Billy-Free AI v3 on 0.0.0.0:{port}")
+    uvicorn.run(app, host="0.0.0.0", port=port)
