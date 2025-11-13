@@ -96,8 +96,8 @@ else:
     print("⚠️ Supabase not configured (SUPABASE_URL/SUPABASE_KEY missing or supabase lib not installed)")
 
 # HF Inference helper
-HF_INFERENCE_URL = "https://router.huggingface.co/hf-inference/{}"
-async def hf_inference(model_id: str, inputs, params: dict = None):
+async def hf_inference(model_id, inputs, params=None):
+    url = f"https://router.huggingface.co/hf-inference/v1/models/{model_id}"
     """
     Call Hugging Face Inference API if HF_TOKEN is set. Returns dict or raises.
     """
@@ -218,7 +218,7 @@ async def chat(prompt: str = Form(...), user_id: Optional[str] = Form("guest")):
             return {"source": "local", "response": resp}
         # fallback to HF
         if HF_TOKEN:
-            j = await hf_inference("google/flan-t5-small", prompt_full, params={"max_new_tokens":200})
+            j = await hf_inference("google/gemma-2b-it", prompt_full, params={"max_new_tokens":200})
             # HF returns text in many shapes; try to extract
             if isinstance(j, list) and "generated_text" in j[0]:
                 resp = j[0]["generated_text"]
