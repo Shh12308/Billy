@@ -184,13 +184,12 @@ def health():
 
 # -------------------------
 # TEXT: chat, translate, summarize, sentiment, QA, codegen
-# -------------------------
-@app.post("/chat")
+# -------------------------@app.post("/chat")
 async def chat(prompt: str = Form(...), user_id: Optional[str] = Form("guest")):
     """
     Chat endpoint:
-      - tries local flan-t5-small if installed
-      - otherwise uses Hugging Face Inference API fallback
+      - Tries local flan-t5-small if installed
+      - Otherwise uses Hugging Face Inference API fallback
     """
     try:
         # --- 1. Load memory from Supabase if available ---
@@ -232,13 +231,13 @@ async def chat(prompt: str = Form(...), user_id: Optional[str] = Form("guest")):
 
                 return {"source": "local", "response": resp}
             except Exception as e:
-                print("⚠️ Local model failed:", e)  # fallback to HF
+                print("⚠️ Local model failed, falling back to HF:", e)
 
         # --- 4. HF fallback ---
         if HF_TOKEN:
-            hf_model = "tiiuae/falcon-7b-instruct"  # replace with any valid HF hosted model
+            hf_model = "google/flan-t5-small"  # safe, lightweight model
             try:
-                j = await hf_inference(hf_model, prompt_full, params={"max_new_tokens":200})
+                j = await hf_inference(hf_model, prompt_full, params={"max_new_tokens": 200})
             except Exception as e:
                 print("⚠️ HF inference failed:", e)
                 raise HTTPException(status_code=503, detail=f"HF call failed: {str(e)}")
