@@ -1,10 +1,30 @@
-fastapi
-uvicorn
-torch
-transformers
-pillow
-openai-whisper
-TTS
-chromadb
-sentence-transformers
-diffusers
+# ---------------------- CORE WEB / SERVER ----------------------
+fastapi==0.115.2
+uvicorn==0.23.2
+aiofiles==24.1.0
+python-multipart==0.0.9
+requests==2.32.3
+python-dotenv==1.0.1
+
+# ---------------------- LIGHT ML / AI / TEXT ----------------------
+httpx>=0.27,<0.30           # For async HF API calls
+huggingface-hub==0.25.1     # HF utilities
+
+# ---------------------- NLP / TEXT PROCESSING ----------------------
+langchain==0.3.3
+textblob==0.18.0
+sumy==0.11.0
+deep-translator==1.10.1
+
+# ---------------------- DATA / VISUALIZATION ----------------------
+matplotlib==3.9.2
+pandas>=1.4,<2.0
+plotly==5.24.1
+
+# ---------------------- VALIDATION / SETTINGS ----------------------
+pydantic==2.9.2
+pydantic-settings==2.4.0
+
+# ---------------------- OPTIONAL SUPABASE ----------------------
+supabase>=2.6.0,<3.0
+chromadb==0.5.4
