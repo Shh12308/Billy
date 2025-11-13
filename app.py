@@ -158,7 +158,7 @@ def log_event(name: str, payload: dict):
 def start_gradio():
     import requests
 
-    BASE = "http://localhost:7860"
+    BASE = "http://localhost:8080"
 
     def chat_ui(prompt):
         resp = requests.post(f"{BASE}/chat", data={"prompt": prompt, "user_id": "guest"}).json()
@@ -168,7 +168,7 @@ def start_gradio():
         prompt_input = gr.Textbox(label="Prompt")
         chat_output = gr.Textbox(label="Response")
         prompt_input.submit(chat_ui, prompt_input, chat_output)
-    demo.launch(server_name="0.0.0.0", server_port=7861)  # Gradio on a separate port
+    demo.launch(server_name="0.0.0.0", server_port=8080)  # Gradio on a separate port
 
 # -------------------------
 # ROUTES: Basic & Health
