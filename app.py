@@ -96,7 +96,7 @@ else:
     print("⚠️ Supabase not configured (SUPABASE_URL/SUPABASE_KEY missing or supabase lib not installed)")
 
 # HF Inference helper
-HF_INFERENCE_URL = "https://api-inference.huggingface.co/models/{}"
+HF_INFERENCE_URL = "https://router.huggingface.co/hf-inference/{}"
 async def hf_inference(model_id: str, inputs, params: dict = None):
     """
     Call Hugging Face Inference API if HF_TOKEN is set. Returns dict or raises.
