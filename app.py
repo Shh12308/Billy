@@ -75,6 +75,7 @@ HF_TOKEN = os.getenv("HF_TOKEN")  # Hugging Face Inference API token (optional)
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 ELEVEN_API_KEY = os.getenv("ELEVEN_API_KEY")  # for voice cloning if you want
+HF_INFERENCE_URL = "https://router.huggingface.co/hf-inference/v1/models/{}"
 
 # Basic app
 app = FastAPI(title="Billy-AllInOne (GoldBoy Edition)")
