@@ -237,7 +237,7 @@ async def chat(prompt: str = Form(...), user_id: Optional[str] = Form("guest")):
 
         # --- 4. Hugging Face fallback ---
         if HF_TOKEN:
-            hf_model = "tiiuae/falcon-7b-instruct"  # choose any valid HF model
+            hf_model = "google/gemma-2b"  # choose any valid HF model
             try:
                 j = await hf_inference(hf_model, prompt_full, params={"max_new_tokens":200})
 
