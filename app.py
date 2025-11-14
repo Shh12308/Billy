@@ -184,12 +184,14 @@ def health():
 
 # -------------------------
 # TEXT: chat, translate, summarize, sentiment, QA, codegen
-# -------------------------@app.post("/chat")
+# -------------------------
+@app.post("/chat")
 async def chat(prompt: str = Form(...), user_id: Optional[str] = Form("guest")):
     """
-    Chat endpoint:
-      - Tries local flan-t5-small if installed
-      - Otherwise uses Hugging Face Inference API fallback
+    Unified chat endpoint:
+      1. Tries local Flan-T5 if installed
+      2. Falls back to Hugging Face Inference API if HF_TOKEN is set
+      3. Safely handles HF JSON output to avoid 'detail not found'
     """
     try:
         # --- 1. Load memory from Supabase if available ---
@@ -198,15 +200,15 @@ async def chat(prompt: str = Form(...), user_id: Optional[str] = Form("guest")):
             try:
                 rows = supabase.table("chat_memory").select("*")\
                     .eq("user_id", user_id).order("created_at", {"ascending": False}).limit(5).execute()
-                data = rows.data or []
-                memory_text = "\n".join([f"User:{r['prompt']}\nBot:{r['response']}" for r in data])
+                data = getattr(rows, 'data', []) or []
+                memory_text = "\n".join([f"User:{r.get('prompt','')}\nBot:{r.get('response','')}" for r in data])
             except Exception:
                 memory_text = ""
 
         # --- 2. Build full prompt ---
         prompt_full = f"{PERSONALITY}\nPrevious:\n{memory_text}\nUser: {prompt}\nBilly:"
 
-        # --- 3. Try local model if available ---
+        # --- 3. Try local model first ---
         local = load_local_nlp()
         if local:
             try:
@@ -233,43 +235,51 @@ async def chat(prompt: str = Form(...), user_id: Optional[str] = Form("guest")):
             except Exception as e:
                 print("⚠️ Local model failed, falling back to HF:", e)
 
-        # --- 4. HF fallback ---
+        # --- 4. Hugging Face fallback ---
         if HF_TOKEN:
-            hf_model = "google/flan-t5-small"  # safe, lightweight model
+            hf_model = "tiiuae/falcon-7b-instruct"  # choose any valid HF model
             try:
-                j = await hf_inference(hf_model, prompt_full, params={"max_new_tokens": 200})
+                j = await hf_inference(hf_model, prompt_full, params={"max_new_tokens":200})
+
+                # --- Safe parsing of HF output ---
+                resp = ""
+                if isinstance(j, list) and len(j) > 0:
+                    if isinstance(j[0], dict) and "generated_text" in j[0]:
+                        resp = j[0]["generated_text"]
+                    else:
+                        resp = str(j[0])
+                elif isinstance(j, dict) and j.get("generated_text"):
+                    resp = j["generated_text"]
+                else:
+                    resp = str(j)
+
+                log_event("chat_hf", {"user": user_id, "prompt": prompt})
+
+                # store memory
+                if supabase:
+                    try:
+                        supabase.table("chat_memory").insert({
+                            "user_id": user_id,
+                            "prompt": prompt,
+                            "response": resp,
+                            "created_at": int(time.time())
+                        }).execute()
+                    except Exception:
+                        pass
+
+                return {"source": "hf", "response": resp}
+
             except Exception as e:
+                # HF call failed
                 print("⚠️ HF inference failed:", e)
                 raise HTTPException(status_code=503, detail=f"HF call failed: {str(e)}")
-
-            # Safe extraction of generated text
-            if isinstance(j, list) and len(j) > 0 and "generated_text" in j[0]:
-                resp = j[0]["generated_text"]
-            elif isinstance(j, dict) and j.get("generated_text"):
-                resp = j["generated_text"]
-            else:
-                resp = str(j)
-
-            log_event("chat_hf", {"user": user_id, "prompt": prompt})
-
-            # store memory
-            if supabase:
-                try:
-                    supabase.table("chat_memory").insert({
-                        "user_id": user_id,
-                        "prompt": prompt,
-                        "response": resp,
-                        "created_at": int(time.time())
-                    }).execute()
-                except Exception:
-                    pass
-
-            return {"source": "hf", "response": resp}
 
         # --- 5. No model available ---
         raise HTTPException(status_code=503, detail="No local model available and HF_TOKEN not set")
 
     except Exception as e:
+        # unexpected error
+        import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
