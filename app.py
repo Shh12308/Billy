@@ -96,27 +96,41 @@ if create_client and SUPABASE_URL and SUPABASE_KEY:
 else:
     print("⚠️ Supabase not configured (SUPABASE_URL/SUPABASE_KEY missing or supabase lib not installed)")
 
-# HF Inference helper
-async def hf_inference(model_id, inputs, params=None):
-    url = f"https://router.huggingface.co/hf-inference/v1/models/{model_id}"
+HF_INFERENCE_URL = "https://router.huggingface.co/hf-inference/v1/models/{}"
+
+async def hf_inference(model_id, inputs, params=None, is_binary=False):
     """
-    Call Hugging Face Inference API if HF_TOKEN is set. Returns dict or raises.
+    Hugging Face router-compatible inference.
+    Supports:
+      - text (JSON)
+      - image/audio bytes (binary multipart)
     """
     if not HF_TOKEN:
-        raise RuntimeError("HF_TOKEN not set")
-    if not httpx:
-        raise RuntimeError("httpx not installed")
-    headers = {"Authorization": f"Bearer {HF_TOKEN}"}
-    url = HF_INFERENCE_URL.format(model_id)
-    try:
-        async with httpx.AsyncClient(timeout=120) as client:
-            resp = await client.post(url, headers=headers, json={"inputs": inputs, "parameters": params or {}})
-            if resp.status_code >= 400:
-                raise RuntimeError(f"HF inference error {resp.status_code}: {resp.text}")
-            return resp.json()
-    except Exception as e:
-        raise
+        raise RuntimeError("HF_TOKEN missing")
 
+    url = HF_INFERENCE_URL.format(model_id)
+    headers = {"Authorization": f"Bearer {HF_TOKEN}"}
+
+    async with httpx.AsyncClient(timeout=120) as client:
+        if is_binary:
+            # For images/audio
+            files = {"file": inputs}
+            data = {"parameters": json.dumps(params or {})}
+            resp = await client.post(url, headers=headers, data=data, files=files)
+        else:
+            # For text
+            payload = {"inputs": inputs}
+            if params:
+                payload["parameters"] = params
+            resp = await client.post(url, headers=headers, json=payload, headers=headers)
+
+    if resp.status_code >= 400:
+        raise RuntimeError(f"{resp.status_code}: {resp.text}")
+
+    try:
+        return resp.json()
+    except:
+        return resp.text
 # Small local model loader examples (guarded)
 _local_models = {}
 
@@ -505,7 +519,7 @@ async def caption(file: UploadFile = File(...)):
         except Exception:
             pass
         if HF_TOKEN:
-            out = await hf_inference("Salesforce/blip-image-captioning-large", open(tmp, "rb").read())
+            out = await hf_inference("Salesforce/blip-image-captioning-large", open(tmp, "rb").read(), is_binary=True)
             return {"source":"hf","caption": out}
         raise HTTPException(status_code=503, detail="Caption model not available")
     except Exception as e:
@@ -569,7 +583,7 @@ async def remove_bg(image: UploadFile = File(...)):
         with open(tmp, "wb") as f:
             f.write(await image.read())
         if HF_TOKEN:
-            out = await hf_inference("photoroom/background-removal", open(tmp, "rb").read())
+            out = await hf_inference("photoroom/background-removal", open(tmp, "rb").read(), is_binary=True)
             return {"source":"hf", "result": out}
         return {"error": "Enable HF_TOKEN or provide local background removal model (u2net/robust)"}
     except Exception as e:
@@ -606,7 +620,7 @@ async def ocr(file: UploadFile = File(...)):
         with open(tmp, "wb") as f:
             f.write(await file.read())
         if HF_TOKEN:
-            out = await hf_inference("microsoft/trocr-base-handwritten", open(tmp, "rb").read())
+            out = await hf_inference("microsoft/trocr-base-handwritten", open(tmp, "rb").read(), is_binary=True)
             return {"source":"hf","text": out}
         # No local fallback in this minimal script
         raise HTTPException(status_code=503, detail="OCR requires HF_TOKEN or local trocr")
