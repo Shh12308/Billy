@@ -146,7 +146,7 @@ async def ws_stream(socket: WebSocket):
             resp_text = str(resp)
 
         # Stream character by character
-        for word in resp_text.split():
+      for word in resp_text.split():
     await socket.send_json({"delta": word + " "})
     await asyncio.sleep(0.05)
 
