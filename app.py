@@ -84,7 +84,7 @@ def creator():
 async def chat(prompt: str = Form(...), user_id: Optional[str] = Form("guest")):
     prompt_full = f"{PERSONALITY}\nUser: {prompt}\nBilly:"
     if HF_TOKEN:
-        hf_model = "google/flan-t5-large"
+        hf_model = "mistralai/Mistral-7B-Instruct-v0.3"
         resp = await hf_inference(hf_model, prompt_full, params={"max_new_tokens":200})
         resp_text = ""
         if isinstance(resp, list) and len(resp) > 0:
