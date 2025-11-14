@@ -251,7 +251,7 @@ async def chat(prompt: str = Form(...), user_id: Optional[str] = Form("guest")):
 
         # --- 4. Hugging Face fallback ---
         if HF_TOKEN:
-  hf_model = "meta-llama/Llama-3-7b-chat-hf" # choose any valid HF model
+            hf_model = "google/flan-t5-large"  # safe public HF text model
             try:
                 j = await hf_inference(hf_model, prompt_full, params={"max_new_tokens":200})
 
@@ -296,7 +296,7 @@ async def chat(prompt: str = Form(...), user_id: Optional[str] = Form("guest")):
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
-
+      
 @app.post("/translate")
 async def translate(text: str = Form(...), to: str = Form("fr")):
     """
