@@ -2,6 +2,7 @@
 import uvicorn
 import os, io, uuid, json, time, tempfile
 from typing import Optional, List
+from fastapi import WebSocket
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -109,6 +110,51 @@ async def translate(text: str = Form(...), to: str = Form("fr")):
         return {"source":"hf","translation": str(resp)}
     raise HTTPException(status_code=503, detail="HF_TOKEN not set")
 
+
+@app.websocket("/ws/stream")
+async def ws_stream(socket: WebSocket):
+    await socket.accept()
+    try:
+        data = await socket.receive_json()
+        prompt = data.get("prompt", "")
+        if not prompt:
+            await socket.send_json({"error": "Empty prompt"})
+            await socket.close()
+            return
+
+        # Prepend personality
+        prompt_full = f"{PERSONALITY}\nUser: {prompt}\nBilly:"
+
+        if not HF_TOKEN:
+            await socket.send_json({"error": "HF_TOKEN not set"})
+            await socket.close()
+            return
+
+        # Use HF async inference with streaming simulation
+        # Replace this loop with actual streaming chunks from your model if supported
+        resp = await hf_inference("mistralai/Mistral-7B-Instruct-v0.3", prompt_full, params={"max_new_tokens":200})
+        resp_text = ""
+        if isinstance(resp, list) and len(resp) > 0:
+            if isinstance(resp[0], dict) and "generated_text" in resp[0]:
+                resp_text = resp[0]["generated_text"]
+            else:
+                resp_text = str(resp[0])
+        elif isinstance(resp, dict) and resp.get("generated_text"):
+            resp_text = resp["generated_text"]
+        else:
+            resp_text = str(resp)
+
+        # Stream character by character
+        for char in resp_text:
+            await socket.send_json({"delta": char})
+            await asyncio.sleep(0.01)  # tiny delay to simulate streaming
+
+        await socket.send_json({"done": True})
+
+    except Exception as e:
+        await socket.send_json({"error": str(e)})
+        await socket.close()
+        
 @app.post("/summarize")
 async def summarize(text: str = Form(...)):
     if HF_TOKEN:
