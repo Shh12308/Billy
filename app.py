@@ -1,5 +1,6 @@
 # billy_allinone_render.py
 import uvicorn
+import asyncio
 import os, io, uuid, json, time, tempfile
 from typing import Optional, List
 from fastapi import WebSocket
@@ -145,9 +146,9 @@ async def ws_stream(socket: WebSocket):
             resp_text = str(resp)
 
         # Stream character by character
-        for char in resp_text:
-            await socket.send_json({"delta": char})
-            await asyncio.sleep(0.01)  # tiny delay to simulate streaming
+        for word in resp_text.split():
+    await socket.send_json({"delta": word + " "})
+    await asyncio.sleep(0.05)
 
         await socket.send_json({"done": True})
 
