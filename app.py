@@ -146,8 +146,8 @@ async def ws_stream(socket: WebSocket):
             resp_text = str(resp)
 
         # Stream character by character
-      for word in resp_text.split():
-    await socket.send_json({"delta": word + " "})
+     for word in resp_text.split():
+    await socket.send_json({"delta": word + " "})  # 4 spaces indentation
     await asyncio.sleep(0.05)
 
         await socket.send_json({"done": True})
