@@ -113,44 +113,41 @@ async def translate(text: str = Form(...), to: str = Form("fr")):
 
 
 @app.websocket("/ws/stream")
-async def ws_stream(socket: WebSocket):
+async def stream_socket(socket: WebSocket):
     await socket.accept()
+
     try:
-        data = await socket.receive_json()
-        prompt = data.get("prompt", "")
+        message = await socket.receive_json()
+        prompt = message.get("prompt")
+
         if not prompt:
-            await socket.send_json({"error": "Empty prompt"})
+            await socket.send_json({"error": "No prompt provided"})
             await socket.close()
             return
 
-        # Prepend personality
-        prompt_full = f"{PERSONALITY}\nUser: {prompt}\nBilly:"
+        # Call HuggingFace model
+        payload = {
+            "inputs": prompt,
+            "parameters": {"max_new_tokens": 200}
+        }
 
-        if not HF_TOKEN:
-            await socket.send_json({"error": "HF_TOKEN not set"})
+        response = requests.post(HF_API_URL, headers=HF_HEADERS, data=json.dumps(payload))
+
+        if response.status_code != 200:
+            await socket.send_json({"error": f"HF error: {response.text}"})
             await socket.close()
             return
 
-        # Use HF async inference with streaming simulation
-        # Replace this loop with actual streaming chunks from your model if supported
-        resp = await hf_inference("mistralai/Mistral-7B-Instruct-v0.3", prompt_full, params={"max_new_tokens":200})
-        resp_text = ""
-        if isinstance(resp, list) and len(resp) > 0:
-            if isinstance(resp[0], dict) and "generated_text" in resp[0]:
-                resp_text = resp[0]["generated_text"]
-            else:
-                resp_text = str(resp[0])
-        elif isinstance(resp, dict) and resp.get("generated_text"):
-            resp_text = resp["generated_text"]
-        else:
-            resp_text = str(resp)
+        data = response.json()
+        resp_text = data[0]["generated_text"]
 
-        # Stream character by character
-     for word in resp_text.split():
-    await socket.send_json({"delta": word + " "})  # 4 spaces indentation
-    await asyncio.sleep(0.05)
+        # Stream word-by-word
+        for word in resp_text.split():
+            await socket.send_json({"delta": word + " "})
+            await asyncio.sleep(0.03)
 
         await socket.send_json({"done": True})
+        await socket.close()
 
     except Exception as e:
         await socket.send_json({"error": str(e)})
