@@ -83,6 +83,7 @@ async def groq_invoke(model: str, prompt: str, stream=False, parameters=None):
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
     payload = {"model": model, "input": prompt}
     if parameters: payload["parameters"] = parameters
+
     async with httpx.AsyncClient(timeout=PROVIDER_TIMEOUT) as client:
         if stream:
             async with client.stream("POST", url, headers=headers, json=payload) as resp:
@@ -92,8 +93,11 @@ async def groq_invoke(model: str, prompt: str, stream=False, parameters=None):
         else:
             r = await client.post(url, headers=headers, json=payload)
             r.raise_for_status()
-            try: return r.json()
-            except: return r.text
+            try:
+                data = r.json()
+            except Exception:
+                data = r.text
+            return data  # ✅ this is fine because stream=False never uses yield
 
 # -----------------------
 # Health
