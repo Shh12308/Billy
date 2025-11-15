@@ -76,29 +76,39 @@ async def moderate_text(text: str) -> (bool, Optional[str]):
 # -----------------------
 # Provider call wrapper
 # -----------------------
-async def groq_invoke(model: str, prompt: str, stream=False, parameters=None):
+async def groq_invoke(model: str, prompt: str, parameters=None):
+    """Normal async call, returns the full result."""
     if not GROQ_API_URL or not GROQ_API_KEY:
         raise HTTPException(status_code=503, detail="Provider not configured")
     url = GROQ_API_URL.format(model=model) if "{model}" in GROQ_API_URL else GROQ_API_URL
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
     payload = {"model": model, "input": prompt}
-    if parameters: payload["parameters"] = parameters
+    if parameters:
+        payload["parameters"] = parameters
 
     async with httpx.AsyncClient(timeout=PROVIDER_TIMEOUT) as client:
-        if stream:
-            async with client.stream("POST", url, headers=headers, json=payload) as resp:
-                async for chunk in resp.aiter_text():
-                    if chunk:
-                        yield chunk
-        else:
-            r = await client.post(url, headers=headers, json=payload)
-            r.raise_for_status()
-            try:
-                data = r.json()
-            except Exception:
-                data = r.text
-            return data  # ✅ this is fine because stream=False never uses yield
+        r = await client.post(url, headers=headers, json=payload)
+        r.raise_for_status()
+        try:
+            return r.json()
+        except Exception:
+            return r.text
 
+async def groq_invoke_stream(model: str, prompt: str, parameters=None):
+    """Streaming async generator for chunked output."""
+    if not GROQ_API_URL or not GROQ_API_KEY:
+        raise HTTPException(status_code=503, detail="Provider not configured")
+    url = GROQ_API_URL.format(model=model) if "{model}" in GROQ_API_URL else GROQ_API_URL
+    headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
+    payload = {"model": model, "input": prompt}
+    if parameters:
+        payload["parameters"] = parameters
+
+    async with httpx.AsyncClient(timeout=PROVIDER_TIMEOUT) as client:
+        async with client.stream("POST", url, headers=headers, json=payload) as resp:
+            async for chunk in resp.aiter_text():
+                if chunk:
+                    yield chunk
 # -----------------------
 # Health
 # -----------------------
@@ -120,10 +130,13 @@ async def generate(request: Request):
     model = body.get("model", DEFAULT_MODEL)
     parameters = body.get("parameters", {})
     client_id = request.client.host if request.client else "anon"
+
     check_rate_limit(client_id)
     allowed, reason = await moderate_text(prompt)
-    if not allowed: raise HTTPException(status_code=400, detail=f"Moderation blocked: {reason}")
-    out = await groq_invoke(model, prompt, stream=False, parameters=parameters)
+    if not allowed:
+        raise HTTPException(status_code=400, detail=f"Moderation blocked: {reason}")
+
+    out = await groq_invoke(model, prompt, parameters=parameters)
     text = out.get("text") if isinstance(out, dict) else str(out)
     return {"source": "provider", "model": model, "text": text}
 
@@ -131,16 +144,22 @@ async def generate(request: Request):
 async def chat(user_id: Optional[str] = Form("guest"), prompt: Optional[str] = Form(None)):
     if not prompt:
         raise HTTPException(status_code=400, detail="Missing prompt")
+
     check_rate_limit(user_id)
     allowed, reason = await moderate_text(prompt)
-    if not allowed: raise HTTPException(status_code=400, detail=f"Moderation blocked: {reason}")
+    if not allowed:
+        raise HTTPException(status_code=400, detail=f"Moderation blocked: {reason}")
+
     history = CHAT_MEMORY.setdefault(user_id, [])
     convo = "\n".join([f"User: {m['user']}\nAssistant: {m['assistant']}" for m in history[-6:]])
     composed = f"{convo}\nUser: {prompt}\nAssistant:"
+
     out = await groq_invoke(DEFAULT_MODEL, composed)
     text = out.get("text") if isinstance(out, dict) else str(out)
+
     history.append({"user": prompt, "assistant": text})
     CHAT_MEMORY[user_id] = history[-64:]
+
     return {"source": "provider", "model": DEFAULT_MODEL, "response": text}
 
 @app.post("/translate")
@@ -225,20 +244,26 @@ async def ws_stream(websocket: WebSocket):
         prompt = meta.get("prompt")
         model = meta.get("model", DEFAULT_MODEL)
         client_id = websocket.client.host if websocket.client else "anon"
+
         check_rate_limit(client_id)
         allowed, reason = await moderate_text(prompt)
         if not allowed:
             await websocket.send_json({"error": f"Moderation blocked: {reason}"})
-            await websocket.close(); return
-        async for chunk in groq_invoke(model, prompt, stream=True):
+            await websocket.close()
+            return
+
+        async for chunk in groq_invoke_stream(model, prompt):
             await websocket.send_json({"delta": chunk})
+
         await websocket.send_json({"done": True})
         await websocket.close()
+
     except WebSocketDisconnect:
         logger.info("WebSocket disconnected")
     except Exception as e:
         logger.exception("WS error: %s", e)
-        await websocket.send_json({"error": str(e)}); await websocket.close()
+        await websocket.send_json({"error": str(e)})
+        await websocket.close()
 
 # -----------------------
 # Run
