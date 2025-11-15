@@ -14,7 +14,7 @@ import threading
 
 # Hugging Face token
 HF_TOKEN = os.getenv("HF_TOKEN")
-HF_INFERENCE_URL = "https://router.huggingface.co/hf-inference/v1/models/{}"
+https://api-inference.huggingface.co/models/tiiuae/falcon-7b
 
 # Supabase (optional)
 try:
