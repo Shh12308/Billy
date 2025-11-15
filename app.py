@@ -18,7 +18,7 @@ import httpx
 # Hugging Face token (required for HF inference fallback)
 HF_TOKEN = os.getenv("HF_TOKEN")
 # Use a template, we'll fill model id in calls: hf_api_url.format(model_id)
-HF_API_URL = "https://api-inference.huggingface.co/models/{}"
+HF_API_URL = "https://router.huggingface.co/hf-inference/models/{}"
 HF_HEADERS = {"Authorization": f"Bearer {HF_TOKEN}"} if HF_TOKEN else {}
 
 # Optional Supabase (keeps original behavior)
