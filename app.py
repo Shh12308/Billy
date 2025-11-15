@@ -14,7 +14,7 @@ import threading
 
 # Hugging Face token
 HF_TOKEN = os.getenv("HF_TOKEN")
-https://api-inference.huggingface.co/models/tiiuae/falcon-7b
+HF_API_URL = "https://api-inference.huggingface.co/models/tiiuae/falcon-7b"
 
 # Supabase (optional)
 try:
