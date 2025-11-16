@@ -17,7 +17,7 @@ logger = logging.getLogger("render-ai-server")
 GROQ_API_URL = os.getenv("GROQ_API_URL")         # Must start with https://
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")     # Optional moderation
-DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "gpt-like-model")
+DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "gpt-neo-125M")
 EMBED_MODEL = os.getenv("EMBED_MODEL", "embed-model")
 PROVIDER_TIMEOUT = int(os.getenv("PROVIDER_TIMEOUT", "60"))
 
