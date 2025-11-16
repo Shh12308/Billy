@@ -4,7 +4,7 @@ import json
 import time
 import logging
 from typing import Optional, Dict, List
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Form, UploadFile, File, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
 
@@ -14,10 +14,10 @@ logger = logging.getLogger("render-ai-server")
 # -----------------------
 # Config
 # -----------------------
-GROQ_API_URL = os.getenv("GROQ_API_URL")         # Must start with https://
+GROQ_API_URL = os.getenv("GROQ_API_URL")         # e.g., https://router.huggingface.co/hf-inference
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")     # Optional moderation
-DEFAULT_MODEL = os.getenv("DEFAULT_MODEL")
+DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "gpt2")
 EMBED_MODEL = os.getenv("EMBED_MODEL", "embed-model")
 PROVIDER_TIMEOUT = int(os.getenv("PROVIDER_TIMEOUT", "60"))
 
@@ -87,15 +87,14 @@ async def groq_invoke(model: str, messages, parameters=None):
         "Content-Type": "application/json",
     }
 
-    payload = {
-        "model": model,
-        "messages": messages,
-    }
+    payload = {"model": model, "messages": messages}
     if parameters:
         payload["parameters"] = parameters
 
+    url = f"{GROQ_API_URL}/{model}"
+
     async with httpx.AsyncClient(timeout=PROVIDER_TIMEOUT) as client:
-        r = await client.post(GROQ_API_URL, headers=headers, json=payload)
+        r = await client.post(url, headers=headers, json=payload)
         r.raise_for_status()
         return r.json()
 
@@ -109,14 +108,17 @@ async def groq_invoke_stream(model: str, messages, parameters=None):
         "Content-Type": "application/json",
     }
 
-    payload = {"model": model, "inputs": prompt}
-if parameters:
-    payload["parameters"] = parameters
+    payload = {"model": model, "messages": messages}
+    if parameters:
+        payload["parameters"] = parameters
+
+    url = f"{GROQ_API_URL}/{model}"
 
     async with httpx.AsyncClient(timeout=PROVIDER_TIMEOUT) as client:
-        async with client.stream("POST", GROQ_API_URL, headers=headers, json=payload) as resp:
-            async for raw in resp.aiter_text():
-                yield raw
+        async with client.stream("POST", url, headers=headers, json=payload) as resp:
+            async for chunk in resp.aiter_text():
+                if chunk:
+                    yield chunk
 
 # -----------------------
 # Routes
@@ -150,12 +152,14 @@ async def generate(request: Request):
     if not allowed:
         raise HTTPException(status_code=400, detail=f"Moderation blocked: {reason}")
 
-    out = await groq_invoke(model, prompt, parameters=parameters)
-    # Extract text if provider returns standard chat structure
-    if isinstance(out, dict) and "choices" in out:
-        text = out["choices"][0]["message"]["content"]
+    messages = [{"role": "user", "content": prompt}]
+    out = await groq_invoke(model, messages, parameters=parameters)
+
+    if isinstance(out, list):
+        text = out[0].get("generated_text", str(out[0])) if isinstance(out[0], dict) else str(out[0])
     else:
         text = str(out)
+
     return {"source": "provider", "model": model, "text": text}
 
 @app.post("/chat")
@@ -169,19 +173,23 @@ async def chat(user_id: Optional[str] = Form("guest"), prompt: Optional[str] = F
         raise HTTPException(status_code=400, detail=f"Moderation blocked: {reason}")
 
     history = CHAT_MEMORY.setdefault(user_id, [])
-    messages = [{"role": "user", "content": prompt}]
+    messages = []
     for h in history[-6:]:
         messages.append({"role": "user", "content": h["user"]})
         messages.append({"role": "assistant", "content": h["assistant"]})
+    messages.append({"role": "user", "content": prompt})
 
     out = await groq_invoke(DEFAULT_MODEL, messages)
 
-    text = out["choices"][0]["message"]["content"]
+    text = out[0].get("generated_text", str(out[0])) if isinstance(out, list) and isinstance(out[0], dict) else str(out)
 
     history.append({"user": prompt, "assistant": text})
     CHAT_MEMORY[user_id] = history[-64:]
 
     return {"source": "provider", "model": DEFAULT_MODEL, "response": text}
+
+# -----------------------
+# WebSocket streaming
 # -----------------------
 @app.websocket("/ws/stream")
 async def ws_stream(websocket: WebSocket):
@@ -200,7 +208,8 @@ async def ws_stream(websocket: WebSocket):
             await websocket.close()
             return
 
-        async for chunk in groq_invoke_stream(model, prompt):
+        messages = [{"role": "user", "content": prompt}]
+        async for chunk in groq_invoke_stream(model, messages):
             await websocket.send_json({"delta": chunk})
 
         await websocket.send_json({"done": True})
