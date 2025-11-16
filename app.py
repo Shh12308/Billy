@@ -109,9 +109,9 @@ async def groq_invoke_stream(model: str, messages, parameters=None):
         "Content-Type": "application/json",
     }
 
-    payload = {"model": model, "messages": messages}
-    if parameters:
-        payload["parameters"] = parameters
+    payload = {"model": model, "inputs": prompt}
+if parameters:
+    payload["parameters"] = parameters
 
     async with httpx.AsyncClient(timeout=PROVIDER_TIMEOUT) as client:
         async with client.stream("POST", GROQ_API_URL, headers=headers, json=payload) as resp:
