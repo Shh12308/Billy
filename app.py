@@ -1,10 +1,9 @@
-# main.py - Full-featured, small footprint AI server for Render Free
+# main.py - Render-Free AI Server (fixed)
 import os
 import json
-import asyncio
 import time
 import logging
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, List
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Form, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
@@ -15,8 +14,8 @@ logger = logging.getLogger("render-ai-server")
 # -----------------------
 # Config
 # -----------------------
-GROQ_API_URL = os.getenv("GROQ_API_URL")         # Provider API endpoint
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")         # Provider API key
+GROQ_API_URL = os.getenv("GROQ_API_URL")         # Must start with https://
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")     # Optional moderation
 DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "gpt-like-model")
 EMBED_MODEL = os.getenv("EMBED_MODEL", "embed-model")
@@ -34,7 +33,12 @@ CHAT_MEMORY: Dict[str, List[Dict[str, str]]] = {}
 # App
 # -----------------------
 app = FastAPI(title="Render-Free AI Server")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"]
+)
 
 # -----------------------
 # Rate limiting
@@ -49,16 +53,14 @@ def check_rate_limit(client_id: str):
     _rate_limit_store[client_id] = entries
 
 # -----------------------
-# Simple moderation
+# Moderation
 # -----------------------
 async def moderate_text(text: str) -> (bool, Optional[str]):
     if not text:
         return True, None
-    # heuristic
     banned = ["bomb", "kill", "terror", "child abuse"]
     if any(word in text.lower() for word in banned):
         return False, "Blocked by heuristic"
-    # optional OpenAI moderation
     if OPENAI_API_KEY:
         try:
             url = "https://api.openai.com/v1/moderations"
@@ -74,15 +76,21 @@ async def moderate_text(text: str) -> (bool, Optional[str]):
     return True, None
 
 # -----------------------
-# Provider call wrapper
+# Provider wrapper
 # -----------------------
-async def groq_invoke(model: str, prompt: str, parameters=None):
-    """Normal async call, returns the full result."""
+async def groq_invoke(model: str, prompt, parameters=None):
     if not GROQ_API_URL or not GROQ_API_KEY:
         raise HTTPException(status_code=503, detail="Provider not configured")
+    
     url = GROQ_API_URL.format(model=model) if "{model}" in GROQ_API_URL else GROQ_API_URL
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
-    payload = {"model": model, "input": prompt}
+    
+    # Support chat models (messages array)
+    payload = {"model": model}
+    if isinstance(prompt, str):
+        payload["messages"] = [{"role": "user", "content": prompt}]
+    else:
+        payload["messages"] = prompt
     if parameters:
         payload["parameters"] = parameters
 
@@ -94,13 +102,16 @@ async def groq_invoke(model: str, prompt: str, parameters=None):
         except Exception:
             return r.text
 
-async def groq_invoke_stream(model: str, prompt: str, parameters=None):
-    """Streaming async generator for chunked output."""
+async def groq_invoke_stream(model: str, prompt, parameters=None):
     if not GROQ_API_URL or not GROQ_API_KEY:
         raise HTTPException(status_code=503, detail="Provider not configured")
     url = GROQ_API_URL.format(model=model) if "{model}" in GROQ_API_URL else GROQ_API_URL
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
-    payload = {"model": model, "input": prompt}
+    payload = {"model": model}
+    if isinstance(prompt, str):
+        payload["messages"] = [{"role": "user", "content": prompt}]
+    else:
+        payload["messages"] = prompt
     if parameters:
         payload["parameters"] = parameters
 
@@ -109,9 +120,14 @@ async def groq_invoke_stream(model: str, prompt: str, parameters=None):
             async for chunk in resp.aiter_text():
                 if chunk:
                     yield chunk
+
 # -----------------------
-# Health
+# Routes
 # -----------------------
+@app.get("/")
+async def root():
+    return {"status": "ok", "message": "Render-Free AI Server is running"}
+
 @app.get("/health")
 async def health():
     return {
@@ -120,9 +136,10 @@ async def health():
         "default_model": DEFAULT_MODEL
     }
 
-# -----------------------
-# Text endpoints
-# -----------------------
+@app.head("/health")
+async def health_head():
+    return {"ok": True}
+
 @app.post("/generate")
 async def generate(request: Request):
     body = await request.json()
@@ -137,7 +154,11 @@ async def generate(request: Request):
         raise HTTPException(status_code=400, detail=f"Moderation blocked: {reason}")
 
     out = await groq_invoke(model, prompt, parameters=parameters)
-    text = out.get("text") if isinstance(out, dict) else str(out)
+    # Extract text if provider returns standard chat structure
+    if isinstance(out, dict) and "choices" in out:
+        text = out["choices"][0]["message"]["content"]
+    else:
+        text = str(out)
     return {"source": "provider", "model": model, "text": text}
 
 @app.post("/chat")
@@ -155,82 +176,17 @@ async def chat(user_id: Optional[str] = Form("guest"), prompt: Optional[str] = F
     composed = f"{convo}\nUser: {prompt}\nAssistant:"
 
     out = await groq_invoke(DEFAULT_MODEL, composed)
-    text = out.get("text") if isinstance(out, dict) else str(out)
+    if isinstance(out, dict) and "choices" in out:
+        text = out["choices"][0]["message"]["content"]
+    else:
+        text = str(out)
 
     history.append({"user": prompt, "assistant": text})
     CHAT_MEMORY[user_id] = history[-64:]
-
     return {"source": "provider", "model": DEFAULT_MODEL, "response": text}
 
-@app.post("/translate")
-async def translate(text: str = Form(...), to: str = Form("fr")):
-    model_map = {"fr":"Helsinki-NLP/opus-mt-en-fr","es":"Helsinki-NLP/opus-mt-en-es"}
-    model = model_map.get(to,"Helsinki-NLP/opus-mt-en-fr")
-    out = await groq_invoke(model, text)
-    return {"source": "provider", "translation": out.get("translation_text", str(out)) if isinstance(out, dict) else str(out)}
-
-@app.post("/summarize")
-async def summarize(text: str = Form(...)):
-    out = await groq_invoke("sshleifer/distilbart-cnn-12-6", text)
-    return {"source": "provider", "summary": str(out)}
-
-@app.post("/sentiment")
-async def sentiment(text: str = Form(...)):
-    out = await groq_invoke("distilbert-base-uncased-finetuned-sst-2-english", text)
-    return {"source": "provider", "sentiment": out}
-
-@app.post("/qa")
-async def qa(question: str = Form(...), context: str = Form(...)):
-    out = await groq_invoke("deepset/roberta-base-squad2", {"question": question, "context": context})
-    return {"source": "provider", "answer": out}
-
-@app.post("/codegen")
-async def codegen(prompt: str = Form(...)):
-    out = await groq_invoke("Salesforce/codegen-350M-multi", prompt)
-    return {"source": "provider", "code": str(out)}
-
-# -----------------------
-# Audio endpoints
-# -----------------------
-@app.post("/tts")
-async def tts(text: str = Form(...)):
-    out = await groq_invoke("espnet/kan-bayashi_ljspeech_vits", text)
-    return {"source": "provider", "audio": out}
-
-@app.post("/stt")
-async def stt(file: UploadFile = File(...)):
-    data = await file.read()
-    out = await groq_invoke("openai/whisper-small", data)
-    return {"source": "provider", "text": out}
-
-# -----------------------
-# Image endpoints
-# -----------------------
-@app.post("/caption")
-async def caption(file: UploadFile = File(...)):
-    data = await file.read()
-    out = await groq_invoke("Salesforce/blip-image-captioning-large", data)
-    return {"source": "provider", "caption": out}
-
-@app.post("/vqa")
-async def vqa(file: UploadFile = File(...), question: str = Form(...)):
-    data = await file.read()
-    out = await groq_invoke("Salesforce/blip-vqa-base", {"image": data, "question": question})
-    return {"source": "provider", "answer": out}
-
-@app.post("/detect")
-async def detect(file: UploadFile = File(...)):
-    data = await file.read()
-    out = await groq_invoke("facebook/detr-resnet-50", data)
-    return {"source": "provider", "result": out}
-
-# -----------------------
-# Embeddings
-# -----------------------
-@app.post("/embed")
-async def embed(prompt: str = Form(...)):
-    out = await groq_invoke(EMBED_MODEL, prompt, parameters={"task":"embed"})
-    return {"source": "provider", "embeddings": out}
+# You can add other endpoints (/translate, /summarize, /tts, etc.) as in your original code
+# Just ensure groq_invoke is called properly with either messages or prompt.
 
 # -----------------------
 # WebSocket streaming
