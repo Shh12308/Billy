@@ -6,23 +6,18 @@ python-multipart==0.0.9
 sse-starlette==1.6.1
 python-dotenv==1.0.1
 requests==2.32.3
+httpx==0.27.2
 
-# ---------------------- HTTP CLIENT / PROVIDERS ----------------------
-httpx==0.27.2                # Required for Supabase compatibility
-
-# ---------------------- OPTIONAL ANALYTICS / DATA ----------------------              # Railway-safe prebuilt wheel
-matplotlib==3.9.2
-plotly==5.24.1
-
-# ---------------------- NLP / UTILITIES ----------------------
-textblob==0.18.0
-sumy==0.11.0
-deep-translator==1.10.1
-
-# ---------------------- SUPABASE ----------------------
+# ---------------------- SUPABASE / DATABASE ----------------------
 supabase==2.9.0
-chromadb==0.5.4
+databases[postgresql]==0.7.2
+asyncpg==1.0.1
 
 # ---------------------- Pydantic ----------------------
 pydantic==2.9.2
 pydantic-settings==2.4.0
+
+# ---------------------- OPTIONAL NLP / UTILITIES ----------------------
+textblob==0.18.0
+sumy==0.11.0
+deep-translator==1.10.1
