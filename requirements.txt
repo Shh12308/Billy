@@ -10,8 +10,7 @@ requests==2.32.3
 # ---------------------- HTTP CLIENT / PROVIDERS ----------------------
 httpx==0.27.2                # Required for Supabase compatibility
 
-# ---------------------- OPTIONAL ANALYTICS / DATA ----------------------
-pandas==2.0.3                # Railway-safe prebuilt wheel
+# ---------------------- OPTIONAL ANALYTICS / DATA ----------------------              # Railway-safe prebuilt wheel
 matplotlib==3.9.2
 plotly==5.24.1
 
