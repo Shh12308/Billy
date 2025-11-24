@@ -40,7 +40,7 @@ RATE_LIMIT_MAX = int(os.getenv("RATE_LIMIT_MAX", "30"))
 ADMIN_KEY = os.getenv("ADMIN_KEY")  # simple admin auth for /metrics and admin endpoints
 
 # ---- Supabase / Database ----
-SUPABASE_URL = "https://orozxlbnurnchwodzfdt.supabase.co/"
+SUPABASE_URL = "postgresql://postgres:3kJy7ReRfyhdconb@db.orozxlbnurnchwodzfdt.supabase.co:5432/postgres"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9yb3p4bGJudXJuY2h3b2R6ZmR0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTI0NDc0MzgsImV4cCI6MjA2ODAyMzQzOH0.jSeBmareZr6i3UogGExyoB_cSdlU280uqf7F9b5mX8"
 
 if not SUPABASE_URL or not SUPABASE_KEY:
