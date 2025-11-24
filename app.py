@@ -46,7 +46,11 @@ SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJ
 if not SUPABASE_URL or not SUPABASE_KEY:
     raise RuntimeError("SUPABASE_URL and SUPABASE_KEY must be set")
 
-DATABASE_URL = f"{SUPABASE_URL}?apikey={SUPABASE_KEY}"
+DATABASE_URL = os.getenv("SUPABASE_DB_URL")
+
+if not DATABASE_URL:
+    raise RuntimeError("You must set SUPABASE_DB_URL to the Postgres connection string.")
+
 db = Database(DATABASE_URL)
 
 # ---- In-memory rate-limit store ----
