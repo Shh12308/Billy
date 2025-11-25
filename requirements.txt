@@ -21,3 +21,6 @@ pydantic-settings==2.4.0
 textblob==0.18.0
 sumy==0.11.0
 deep-translator==1.10.1
+
+# ---------------------- OPENAI / LLM PROVIDERS ----------------------
+openai==1.33.0
