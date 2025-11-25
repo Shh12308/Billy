@@ -23,19 +23,19 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("multi-ai-server")
 
 # ---------------- Config ----------------
-PROVIDER = os.getenv("PROVIDER", "mock").lower()  # 'openai', 'hf', 'mock'
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-HF_API_KEY = os.getenv("HF_API_KEY")
-DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "gpt-4o-mini")
-RATE_LIMIT_WINDOW = int(os.getenv("RATE_LIMIT_WINDOW", "60"))
-RATE_LIMIT_MAX = int(os.getenv("RATE_LIMIT_MAX", "30"))
-ADMIN_KEY = os.getenv("ADMIN_KEY")
+PROVIDER = "mock"  # 'openai', 'hf', 'mock'
+DEFAULT_MODEL = "gpt-4o-mini"
+RATE_LIMIT_WINDOW = 60
+RATE_LIMIT_MAX = 30
+
+# Hard-coded admin for testing
+ADMIN_KEY = "admin123"
 
 # ---------------- Supabase REST ----------------
 SUPABASE_URL = "https://orozxlbnurnchwodzfdt.supabase.co/rest/v1"
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-if not SUPABASE_KEY:
-    raise RuntimeError("SUPABASE_KEY must be set!")
+
+# Hard-coded ANON Key for testing (DO NOT use in production)
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9yb3p4bGJudXJuY2h3b2R6ZmR0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTI0NDc0MzgsImV4cCI6MjA2ODAyMzQzOH0.jSeBmareZr6i3UogGExyoB_cSdlU280uqf7F9b5mX8"
 
 SB_HEADERS = {
     "apikey": SUPABASE_KEY,
@@ -82,11 +82,7 @@ async def get_history(user_id: str, limit: int = 64):
         r = await client.get(
             f"{SUPABASE_URL}/history",
             headers=SB_HEADERS,
-            params={
-                "user_id": f"eq.{user_id}",
-                "order": "created_at.asc",
-                "limit": limit
-            },
+            params={"user_id": f"eq.{user_id}", "order": "created_at.asc", "limit": limit}
         )
         r.raise_for_status()
         rows = r.json()
@@ -111,32 +107,8 @@ async def moderate_text(text: str):
 
 # ---------------- Provider layer ----------------
 async def provider_chat(model: str, messages: List[Dict], stream=False, params=None):
-    if PROVIDER == "openai":
-        openai.api_key = OPENAI_API_KEY
-        if not stream:
-            resp = await openai.ChatCompletion.acreate(
-                model=model,
-                messages=messages,
-                **(params or {})
-            )
-            return resp.choices[0].message.content
-        else:
-            async def stream_gen() -> AsyncGenerator[str, None]:
-                async for chunk in await openai.ChatCompletion.acreate(
-                    model=model,
-                    messages=messages,
-                    stream=True,
-                    **(params or {})
-                ):
-                    yield chunk.choices[0].delta.get("content", "")
-            return stream_gen()
-    elif PROVIDER == "hf":
-        # Simple Hugging Face text generation (mock streaming)
-        prompt = messages[-1]["content"]
-        return f"(HF response to: {prompt})"
-    else:
-        # Mock
-        return f"(mock response to: {messages[-1]['content']})"
+    # Mock response always returns simple text for testing
+    return f"(mock response to: {messages[-1]['content']})"
 
 # ---------------- FastAPI ----------------
 app = FastAPI(title="Multi-Provider AI Server (Supabase REST)")
@@ -147,7 +119,6 @@ app.add_middleware(
     allow_headers=["*"]
 )
 
-# ---------- Routes ----------
 @app.get("/")
 async def root():
     return {"status": "ok", "provider": PROVIDER, "model": DEFAULT_MODEL}
@@ -203,12 +174,9 @@ async def metrics(x_admin_key: Optional[str] = Header(None)):
     total = await get_total_messages()
     return {"total_messages": total, "rate_limit": len(_rate_limit_store)}
 
-# ---------- SSE streaming endpoint ----------
 @app.post("/stream")
 async def stream_chat(prompt: str = Form(...), request: Request = None):
     messages = [{"role": "user", "content": prompt}]
     async def event_generator():
-        gen = await provider_chat(DEFAULT_MODEL, messages, stream=True)
-        async for chunk in gen:
-            yield {"data": chunk}
+        yield {"data": f"(mock stream: {prompt})"}
     return EventSourceResponse(event_generator())
