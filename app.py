@@ -23,8 +23,8 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("multi-ai-server")
 
 # ---------------- Config ----------------
-PROVIDER = "mock"  # 'openai', 'hf', 'mock'
-DEFAULT_MODEL = "gpt-4o-mini"
+PROVIDER = "openai"  # 'openai', 'hf', 'mock'
+DEFAULT_MODEL = "gpt-4o"
 RATE_LIMIT_WINDOW = 60
 RATE_LIMIT_MAX = 30
 
