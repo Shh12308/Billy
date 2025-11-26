@@ -11,15 +11,37 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
-# ---------------- Logging & Config ----------------
+# ---------------- Logging ----------------
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("mixtral-groq-server")
 
-# ---------------- Provider / model config ----------------
+# ---------------- Groq Provider ----------------
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "mistral-saba-24b")
-GROQ_BASE = "https://api.groq.com/openai/v1"  # OpenAI-compatible base
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")  # Valid Groq model
+GROQ_BASE = "https://api.groq.com/openai/v1"
 GROQ_CHAT_ENDPOINT = f"{GROQ_BASE}/chat/completions"
+
+async def groq_chat_completion(messages: List[Dict], model: str = GROQ_MODEL, temperature: float = 0.2, max_tokens: int = 512):
+    if not GROQ_API_KEY:
+        raise RuntimeError("GROQ_API_KEY not set")
+    headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
+    payload = {"model": model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        r = await client.post(GROQ_CHAT_ENDPOINT, headers=headers, json=payload)
+        r.raise_for_status()
+        return r.json()
+
+async def provider_chat(messages: List[Dict]):
+    try:
+        j = await groq_chat_completion(messages)
+        choices = j.get("choices", [])
+        if choices:
+            msg = choices[0].get("message", {})
+            return msg.get("content") or choices[0].get("text") or "(empty response)"
+        return "(empty response)"
+    except Exception as e:
+        logger.exception("Groq API error")
+        return f"(Groq error: {str(e)})"
 
 # ---------------- OpenRouter moderation ----------------
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
@@ -28,19 +50,20 @@ async def openrouter_moderate(text: str):
     if not OPENROUTER_API_KEY:
         return {"error": "no_key"}
     url = "https://openrouter.ai/api/v1/moderations"
-    headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json",
-    }
-    payload = {"model": "openai-moderation-latest", "input": text}
+    headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
+    payload = {"model": "openai/moderation-latest", "input": text}
     async with httpx.AsyncClient(timeout=20.0) as client:
         r = await client.post(url, headers=headers, json=payload)
-        r.raise_for_status()
-        return r.json()
+        try:
+            return r.json()
+        except Exception:
+            logger.warning(f"OpenRouter returned non-JSON: {r.text}")
+            return {"error": "bad_json", "text": r.text}
 
 async def moderate_text(text: str):
     if not text:
         return True, None
+    # Quick rule-based check
     banned = ["bomb", "kill", "terror", "rape", "shoot"]
     if any(w in text.lower() for w in banned):
         return False, "Blocked by rule-based safety"
@@ -57,7 +80,7 @@ async def moderate_text(text: str):
             return True, None
     return True, None
 
-# ---------------- Supabase helpers (REST) ----------------
+# ---------------- Supabase helpers ----------------
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 SB_HEADERS = {
@@ -92,6 +115,20 @@ async def get_history(user_id: str, limit: int = 64):
         r.raise_for_status()
         return [{"role": r["role"], "content": r["content"]} for r in r.json()]
 
+async def get_total_messages():
+    if not SUPABASE_KEY:
+        return 0
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        r = await client.get(
+            f"{SUPABASE_URL}/history",
+            headers=SB_HEADERS,
+            params={"select": "count", "count": "exact", "limit": 1},
+        )
+        r.raise_for_status()
+        cr = r.headers.get("content-range", "0/0")
+        parts = cr.split("/")
+        return int(parts[-1]) if parts and parts[-1].isdigit() else 0
+
 # ---------------- Rate-limiter ----------------
 RATE_LIMIT_WINDOW = int(os.getenv("RATE_LIMIT_WINDOW", "60"))
 RATE_LIMIT_MAX = int(os.getenv("RATE_LIMIT_MAX", "30"))
@@ -112,29 +149,6 @@ def rate_limited(client_id: str):
         raise HTTPException(429, "Rate limit exceeded")
     entries.append(now)
     _rate_limit_store[client_id] = entries
-
-# ---------------- Groq (Mixtral) provider ----------------
-async def groq_chat_completion(messages: List[Dict], model: str = GROQ_MODEL, temperature: float = 0.2, max_tokens: int = 512):
-    if not GROQ_API_KEY:
-        raise RuntimeError("GROQ_API_KEY not set")
-    headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
-    payload = {"model": model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        r = await client.post(GROQ_CHAT_ENDPOINT, headers=headers, json=payload)
-        r.raise_for_status()
-        return r.json()
-
-async def provider_chat(messages: List[Dict]):
-    try:
-        j = await groq_chat_completion(messages)
-        choices = j.get("choices", [])
-        if choices:
-            msg = choices[0].get("message", {})
-            return msg.get("content") or choices[0].get("text") or "(empty response)"
-        return "(empty response)"
-    except Exception as e:
-        logger.exception("Groq API error")
-        return f"(Groq error: {str(e)})"
 
 # ---------------- FastAPI app ----------------
 app = FastAPI(title="Mixtral (Groq) Server + OpenRouter moderation")
