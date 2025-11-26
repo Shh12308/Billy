@@ -22,8 +22,7 @@ GROQ_MODEL = os.getenv("GROQ_MODEL", "mistral-saba-24b")
 GROQ_BASE = os.getenv("GROQ_BASE", "https://api.groq.com/v1")  # OpenAI-compatible base
 GROQ_CHAT_ENDPOINT = f"{GROQ_BASE}/chat/completions"  # POST
 
-# Hive moderation
-HIVE_API_KEY = os.getenv("HIVE_API_KEY")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 # Supabase REST
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://orozxlbnurnchwodzfdt.supabase.co/rest/v1")
@@ -107,14 +106,22 @@ async def get_total_messages():
         parts = cr.split("/")
         return int(parts[-1]) if parts and parts[-1].isdigit() else 0
 
-# ---------------- Hive moderation ----------------
-async def hive_moderate(text: str):
-    if not HIVE_API_KEY:
+# ---------------- OpenRouter moderation ----------------
+
+async def openrouter_moderate(text: str):
+    if not OPENROUTER_API_KEY:
         return {"error": "no_key"}
-    headers = {"Authorization": f"Token {HIVE_API_KEY}", "Content-Type": "application/json"}
-    payload = {"text": text, "models": ["text_moderation"]}
-    async with httpx.AsyncClient() as client:
-        r = await client.post("https://api.thehive.ai/api/v2/task/sync", headers=headers, json=payload, timeout=20.0)
+    url = "https://openrouter.ai/api/v1/moderations"
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": "openai-moderation-latest",
+        "input": text
+    }
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        r = await client.post(url, headers=headers, json=payload)
         r.raise_for_status()
         return r.json()
 
@@ -126,19 +133,19 @@ async def moderate_text(text: str):
     low = text.lower()
     if any(w in low for w in banned):
         return False, "Blocked by rule-based safety"
-    # Hive.ai check if available
-    if HIVE_API_KEY:
+
+    # OpenRouter moderation
+    if OPENROUTER_API_KEY:
         try:
-            res = await hive_moderate(text)
-            status = res.get("status", [])
-            if status and isinstance(status, list) and "response" in status[0]:
-                classes = status[0]["response"].get("output_text", {}).get("classes", [])
-                for c in classes:
-                    if c.get("score", 0) > 0.65:
-                        return False, f"Blocked by Hive: {c.get('class')} ({c.get('score'):.2f})"
+            res = await openrouter_moderate(text)
+            categories = res.get("results", [{}])[0].get("categories", {})
+            flagged = any(categories.get(cat, False) for cat in categories)
+            if flagged:
+                return False, "Blocked by OpenRouter moderation"
         except Exception:
-            logger.exception("Hive moderation error — permissive fallback")
+            logger.exception("OpenRouter moderation error — permissive fallback")
             return True, None
+
     return True, None
 
 # ---------------- Groq (Mixtral) provider ----------------
