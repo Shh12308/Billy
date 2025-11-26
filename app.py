@@ -1,9 +1,8 @@
-# app.py — Mixtral via Groq + Hive moderation + Supabase REST
+# app.py — Mistral-Saba (Groq) + Hive moderation + Supabase REST
 import os
 import time
 import uuid
 import logging
-import asyncio
 from typing import Optional, List, Dict
 
 import httpx
@@ -16,30 +15,31 @@ from sse_starlette.sse import EventSourceResponse
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("mixtral-groq-server")
 
-# Provider / model config
+# ---------------- Groq / Mixtral ----------------
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GROQ_MODEL = os.getenv("GROQ_MODEL", "mistral-saba-24b")
-GROQ_BASE = os.getenv("GROQ_BASE", "https://api.groq.com/openai/v1")  # OpenAI-compatible base
-GROQ_CHAT_ENDPOINT = f"{GROQ_BASE}/chat/completions"  # POST
+GROQ_BASE = "https://api.groq.com/openai/v1"  # Correct OpenAI-compatible base
+GROQ_CHAT_ENDPOINT = f"{GROQ_BASE}/chat/completions"
 
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+# ---------------- Hive moderation ----------------
+HIVE_API_KEY = os.getenv("HIVE_API_KEY")
 
-# Supabase REST
+# ---------------- Supabase REST ----------------
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://orozxlbnurnchwodzfdt.supabase.co/rest/v1")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")  # optional for testing
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 SB_HEADERS = {
     "apikey": SUPABASE_KEY or "",
     "Authorization": f"Bearer {SUPABASE_KEY}" if SUPABASE_KEY else "",
     "Content-Type": "application/json",
 }
 
-# Admin / rate-limits
+# ---------------- Admin / Rate Limits ----------------
 ADMIN_KEY = os.getenv("ADMIN_KEY", "admin123")
 RATE_LIMIT_WINDOW = int(os.getenv("RATE_LIMIT_WINDOW", "60"))
 RATE_LIMIT_MAX = int(os.getenv("RATE_LIMIT_MAX", "30"))
 
-# ---------------- Rate-limiter ----------------
 _rate_limit_store: Dict[str, List[float]] = {}
+
 def rate_limited(client_id: str):
     now = time.time()
     entries = _rate_limit_store.get(client_id, [])
@@ -60,10 +60,9 @@ def require_admin(x_admin_key: Optional[str]):
     if x_admin_key != ADMIN_KEY:
         raise HTTPException(403, "Invalid admin key")
 
-# ---------------- Supabase helpers (REST) ----------------
+# ---------------- Supabase helpers ----------------
 async def save_message(user_id: str, role: str, content: str):
     if not SUPABASE_KEY:
-        logger.debug("SUPABASE_KEY not set; skipping save_message.")
         return
     payload = {
         "id": str(uuid.uuid4()),
@@ -102,63 +101,44 @@ async def get_total_messages():
         )
         r.raise_for_status()
         cr = r.headers.get("content-range", "0/0")
-        # content-range like "0-0/123"
         parts = cr.split("/")
         return int(parts[-1]) if parts and parts[-1].isdigit() else 0
 
-# ---------------- OpenRouter moderation ----------------
-
-async def openrouter_moderate(text: str):
-    if not OPENROUTER_API_KEY:
+# ---------------- Hive moderation ----------------
+async def hive_moderate(text: str):
+    if not HIVE_API_KEY:
         return {"error": "no_key"}
-    url = "https://openrouter.ai/api/v1/moderations"
-    headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "model": "openai-moderation-latest",
-        "input": text
-    }
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        r = await client.post(url, headers=headers, json=payload)
+    headers = {"Authorization": f"Token {HIVE_API_KEY}", "Content-Type": "application/json"}
+    payload = {"text": text, "models": ["text_moderation"]}
+    async with httpx.AsyncClient() as client:
+        r = await client.post("https://api.thehive.ai/api/v2/task/sync", headers=headers, json=payload, timeout=20.0)
         r.raise_for_status()
         return r.json()
 
 async def moderate_text(text: str):
-    # quick rule-based checks first
     if not text:
         return True, None
     banned = ["bomb", "kill", "terror", "rape", "shoot"]
-    low = text.lower()
-    if any(w in low for w in banned):
+    if any(w in text.lower() for w in banned):
         return False, "Blocked by rule-based safety"
-
-    # OpenRouter moderation
-    if OPENROUTER_API_KEY:
+    if HIVE_API_KEY:
         try:
-            res = await openrouter_moderate(text)
-            categories = res.get("results", [{}])[0].get("categories", {})
-            flagged = any(categories.get(cat, False) for cat in categories)
-            if flagged:
-                return False, "Blocked by OpenRouter moderation"
+            res = await hive_moderate(text)
+            status = res.get("status", [])
+            if status and isinstance(status, list) and "response" in status[0]:
+                classes = status[0]["response"].get("output_text", {}).get("classes", [])
+                for c in classes:
+                    if c.get("score", 0) > 0.65:
+                        return False, f"Blocked by Hive: {c.get('class')} ({c.get('score'):.2f})"
         except Exception:
-            logger.exception("OpenRouter moderation error — permissive fallback")
+            logger.exception("Hive moderation error — permissive fallback")
             return True, None
-
     return True, None
 
-# ---------------- Groq (Mixtral) provider ----------------
+# ---------------- Groq chat ----------------
 async def groq_chat_completion(messages: List[Dict], model: str = GROQ_MODEL, temperature: float = 0.2, max_tokens: int = 512):
-    """
-    Calls Groq's OpenAI-compatible chat completions endpoint.
-    Endpoint: POST https://api.groq.com/openai/v1/chat/completions
-    Auth: Authorization: Bearer <GROQ_API_KEY>
-    See Groq docs (OpenAI-compatible).  [oai_citation:2‡console.groq.com](https://console.groq.com/docs/api-reference?utm_source=chatgpt.com)
-    """
     if not GROQ_API_KEY:
-        raise RuntimeError("GROQ_API_KEY must be set in env")
-
+        raise RuntimeError("GROQ_API_KEY must be set")
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
     payload = {
         "model": model,
@@ -172,30 +152,20 @@ async def groq_chat_completion(messages: List[Dict], model: str = GROQ_MODEL, te
         return r.json()
 
 async def provider_chat(messages: List[Dict]):
-    # messages = [{"role":"user","content":"..."}] or chat history
     try:
         j = await groq_chat_completion(messages)
-        # OpenAI-compatible response format: choices[0].message.content
         choices = j.get("choices", [])
         if choices:
-            # Some Groq responses put text under 'message' -> 'content' (chat format)
             msg = choices[0].get("message", {})
-            content = msg.get("content")
-            if content is None:
-                # fallback to 'text' or 'output_text'
-                content = choices[0].get("text") or j.get("text") or ""
+            content = msg.get("content") or choices[0].get("text") or j.get("text") or ""
             return content
-        # fallback: some Groq responses might use 'output_text'
-        if "output_text" in j:
-            return j["output_text"]
         return "(empty response)"
     except Exception as e:
         logger.exception("Groq API error")
-        # Provide a friendly fallback so app doesn't crash
         return f"(Groq error: {str(e)})"
 
-# ---------------- FastAPI app ----------------
-app = FastAPI(title="Mixtral (Groq) Server + Hive moderation")
+# ---------------- FastAPI ----------------
+app = FastAPI(title="Mistral-Saba (Groq) Server + Hive moderation")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 class GenerateRequest(BaseModel):
@@ -218,7 +188,6 @@ async def generate(req: GenerateRequest, request: Request, x_api_key: Optional[s
 
     messages = [{"role": "user", "content": req.prompt}]
     out = await provider_chat(messages)
-    # save history best-effort
     try:
         await save_message(client_id, "user", req.prompt)
         await save_message(client_id, "assistant", out)
