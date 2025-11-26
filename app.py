@@ -19,7 +19,7 @@ logger = logging.getLogger("mixtral-groq-server")
 # Provider / model config
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GROQ_MODEL = os.getenv("GROQ_MODEL", "mistral-saba-24b")
-GROQ_BASE = os.getenv("GROQ_BASE", "https://api.groq.com/v1")  # OpenAI-compatible base
+GROQ_BASE = os.getenv("GROQ_BASE", "https://api.groq.com/openai/v1")  # OpenAI-compatible base
 GROQ_CHAT_ENDPOINT = f"{GROQ_BASE}/chat/completions"  # POST
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
