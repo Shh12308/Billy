@@ -111,15 +111,47 @@ async def provider_chat(messages: List[Dict], model: str = GROQ_MODEL):
         return "(empty response)"
 
 # ---------------- SSE Stream ----------------
+
 @app.get("/stream")
 async def stream_chat(prompt: str):
     messages = [{"role": "user", "content": prompt}]
-    async def event_generator():
-        out = await provider_chat(messages)
-        yield f"data: {out}\n\n"
-        yield "data: [DONE]\n\n"
-    return EventSourceResponse(event_generator())
 
+    async def event_generator():
+        headers = {
+            "Authorization": f"Bearer {GROQ_API_KEY}",
+            "Content-Type": "application/json"
+        }
+
+        payload = {
+            "model": GROQ_MODEL,
+            "messages": messages,
+            "stream": True
+        }
+
+        async with httpx.AsyncClient(timeout=None) as client:
+            async with client.stream("POST", GROQ_CHAT_ENDPOINT, headers=headers, json=payload) as response:
+                async for line in response.aiter_lines():
+                    if not line:
+                        continue
+
+                    if not line.startswith("data: "):
+                        continue
+
+                    raw = line[6:]  # remove "data: "
+
+                    if raw.strip() == "[DONE]":
+                        yield "data: [DONE]\n\n"
+                        break
+
+                    try:
+                        chunk = json.loads(raw)
+                        delta = chunk["choices"][0]["delta"].get("content", "")
+                        if delta:
+                            yield f"data: {delta}\n\n"
+                    except:
+                        continue
+
+    return EventSourceResponse(event_generator())
 # ---------------- Chat ----------------
 @app.post("/chat")
 async def chat(user_id: str = Form("guest"), prompt: str = Form(...), request: Request = None, x_api_key: Optional[str] = Header(None)):
