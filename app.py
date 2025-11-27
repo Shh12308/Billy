@@ -305,11 +305,13 @@ async def metrics(x_admin_key: Optional[str] = Header(None)):
     return {"total_messages": total, "rate_limit_store_size": len(_rate_limit_store)}
 
 
-# ---------------- /stream ----------------
-@app.post("/stream")
-async def stream_chat(prompt: str = Form(...)):
-    messages = [{"role":"user","content": prompt}]
+@app.get("/stream")
+async def stream_chat(prompt: str):
+    messages = [{"role": "user", "content": prompt}]
+
     async def event_generator():
         out = await provider_chat(messages)
-        yield {"data": out}
+        yield {"data": out}      # send the AI response
+        yield {"data": "[DONE]"} # indicate end of stream
+
     return EventSourceResponse(event_generator())
