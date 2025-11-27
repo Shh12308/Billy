@@ -36,7 +36,6 @@ async def groq_chat_completion(messages: List[Dict], model: str = GROQ_MODEL):
         return await _call_groq(messages, model)
     except httpx.HTTPStatusError as e:
         logger.error(f"Groq HTTP error: {e}")
-        # Optional retry with default model if first fails
         if e.response.status_code == 400 and model != "mistral-saba-24b":
             logger.info("Retrying Groq with 'mistral-saba-24b'")
             return await _call_groq(messages, "mistral-saba-24b")
