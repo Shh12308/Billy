@@ -176,11 +176,15 @@ async def stt(file: UploadFile = File(...)):
     text = await transcribe_audio(file)
     return {"text": text}
 
+
 @app.get("/stream")
 async def stream_chat(prompt: str):
-    messages = [{"role":"user","content": prompt}]
+    messages = [{"role": "user", "content": prompt}]
+
     async def event_generator():
         out = await provider_chat(messages)
-        yield {"data": out}
-        yield {"data": "[DONE]"}
+        # Each chunk must start with "data: "
+        yield f"data: {out}\n\n"
+        yield "data: [DONE]\n\n"
+
     return EventSourceResponse(event_generator())
