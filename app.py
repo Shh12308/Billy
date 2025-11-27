@@ -19,7 +19,7 @@ logger = logging.getLogger("mixtral-groq-server")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 PRIMARY_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 FALLBACK_MODEL = "mistral-saba-24b"
-GROQ_BASE = "https://api.groq.com/v1"
+GROQ_BASE = "https://api.groq.com/openai/v1"
 GROQ_CHAT_ENDPOINT = f"{GROQ_BASE}/chat/completions"
 
 async def _call_groq(messages: List[Dict], model: str):
