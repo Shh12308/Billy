@@ -1,8 +1,3 @@
-############################################################
-#                BILLY AI SERVER - FULL VERSION
-#                     app.py (335+ lines)
-############################################################
-
 from fastapi import FastAPI, Request, UploadFile, File
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -26,7 +21,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-GROQ_API_KEY = "YOUR_GROQ_API_KEY"
+GROQ_API_KEY = "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"
 CHAT_MODEL = "llama-3.1-8b-instant"
 IMAGE_MODEL = "flux"
 TTS_MODEL = "gpt-4o-mini-tts"
