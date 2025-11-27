@@ -17,7 +17,8 @@ logger = logging.getLogger("mixtral-groq-server")
 
 # ---------------- Groq Provider ----------------
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")  # Recommended active model
+PRIMARY_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+FALLBACK_MODEL = "mistral-saba-24b"
 GROQ_BASE = "https://api.groq.com/v1"
 GROQ_CHAT_ENDPOINT = f"{GROQ_BASE}/chat/completions"
 
@@ -31,14 +32,14 @@ async def _call_groq(messages: List[Dict], model: str):
         r.raise_for_status()
         return r.json()
 
-async def groq_chat_completion(messages: List[Dict], model: str = GROQ_MODEL):
+async def groq_chat_completion(messages: List[Dict], model: str = PRIMARY_MODEL):
     try:
         return await _call_groq(messages, model)
     except httpx.HTTPStatusError as e:
-        logger.error(f"Groq HTTP error: {e}")
-        if e.response.status_code == 400 and model != "mistral-saba-24b":
-            logger.info("Retrying Groq with 'mistral-saba-24b'")
-            return await _call_groq(messages, "mistral-saba-24b")
+        logger.error(f"Groq HTTP error ({model}): {e}")
+        if e.response.status_code in (400, 404) and model != FALLBACK_MODEL:
+            logger.info(f"Retrying Groq with fallback model: {FALLBACK_MODEL}")
+            return await _call_groq(messages, FALLBACK_MODEL)
         raise
 
 async def provider_chat(messages: List[Dict]):
@@ -73,6 +74,7 @@ async def openrouter_moderate(text: str):
 async def moderate_text(text: str):
     if not text:
         return True, None
+    # quick rule-based check
     banned = ["bomb", "kill", "terror", "rape", "shoot"]
     if any(w in text.lower() for w in banned):
         return False, "Blocked by rule-based safety"
@@ -170,7 +172,7 @@ class GenerateRequest(BaseModel):
 
 @app.get("/")
 async def root():
-    return {"status": "ok", "provider": "groq", "model": GROQ_MODEL}
+    return {"status": "ok", "provider": "groq", "model": PRIMARY_MODEL}
 
 @app.post("/generate")
 async def generate(req: GenerateRequest, request: Request, x_api_key: Optional[str] = Header(None)):
