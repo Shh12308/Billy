@@ -17,33 +17,85 @@ logger = logging.getLogger("mixtral-groq-server")
 
 # ---------------- Groq Provider ----------------
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")  # Updated active model
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
 GROQ_BASE = "https://api.groq.com/openai/v1"
 GROQ_CHAT_ENDPOINT = f"{GROQ_BASE}/chat/completions"
 
+
+# ============================================================
+# SAFE VERSION — NEVER sends bad payloads, auto-cleans messages
+# ============================================================
 async def _call_groq(messages: List[Dict], model: str):
     if not GROQ_API_KEY:
         raise RuntimeError("GROQ_API_KEY not set")
-    headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
-    payload = {"model": model, "messages": messages}
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        r = await client.post(GROQ_CHAT_ENDPOINT, headers=headers, json=payload)
-        r.raise_for_status()
-        return r.json()
 
+    # ---------------- VALIDATE MODEL ----------------
+    if not isinstance(model, str) or not model.strip():
+        raise ValueError(f"Invalid model name: {model}")
+
+    # ---------------- VALIDATE MESSAGES ----------------
+    cleaned_messages = []
+    for idx, msg in enumerate(messages):
+        if not isinstance(msg, dict):
+            logger.warning(f"Skipping non-dict message at index {idx}: {msg}")
+            continue
+
+        role = msg.get("role")
+        content = msg.get("content")
+
+        if role not in ("system", "user", "assistant"):
+            logger.warning(f"Invalid role in message {idx}: {role}. Skipping.")
+            continue
+
+        if not isinstance(content, str) or not content.strip():
+            logger.warning(f"Empty/invalid content in message {idx}. Skipping.")
+            continue
+
+        cleaned_messages.append({"role": role, "content": content})
+
+    if not cleaned_messages:
+        cleaned_messages = [{"role": "user", "content": "(empty)"}]
+
+    payload = {
+        "model": model,
+        "messages": cleaned_messages
+    }
+
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        try:
+            r = await client.post(GROQ_CHAT_ENDPOINT, headers=headers, json=payload)
+            r.raise_for_status()
+            return r.json()
+
+        except httpx.HTTPStatusError as e:
+            logger.error("Groq rejected payload with 400:")
+            logger.error(payload)
+            logger.error(f"Groq response: {e.response.text}")
+            raise
+
+
+# ---------------- Wrapper for fallback ----------------
 async def groq_chat_completion(messages: List[Dict], model: str = GROQ_MODEL):
     try:
         return await _call_groq(messages, model)
+
     except httpx.HTTPStatusError as e:
         logger.error(f"Groq HTTP error: {e}")
-        # fallback if deprecated model
-        resp_text = e.response.text
-        if "model" in resp_text and "decommissioned" in resp_text:
+
+        resp_text = e.response.text or ""
+        if ("model" in resp_text and "decommissioned" in resp_text):
             fallback_model = "llama-3.1-8b-instant"
             if model != fallback_model:
                 logger.info(f"Retrying Groq with fallback model '{fallback_model}'")
                 return await _call_groq(messages, fallback_model)
+
         raise
+
 
 async def provider_chat(messages: List[Dict]):
     try:
@@ -56,6 +108,7 @@ async def provider_chat(messages: List[Dict]):
     except Exception as e:
         logger.exception("Groq API error")
         return f"(Groq error: {str(e)})"
+
 
 # ---------------- OpenRouter moderation ----------------
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
@@ -77,7 +130,7 @@ async def openrouter_moderate(text: str):
 async def moderate_text(text: str):
     if not text:
         return True, None
-    # Quick rule-based check
+
     banned = ["bomb", "kill", "terror", "rape", "shoot"]
     if any(w in text.lower() for w in banned):
         return False, "Blocked by rule-based safety"
@@ -92,7 +145,9 @@ async def moderate_text(text: str):
         except Exception:
             logger.exception("OpenRouter moderation error — permissive fallback")
             return True, None
+
     return True, None
+
 
 # ---------------- Supabase helpers ----------------
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -143,6 +198,7 @@ async def get_total_messages():
         parts = cr.split("/")
         return int(parts[-1]) if parts and parts[-1].isdigit() else 0
 
+
 # ---------------- Rate-limiter ----------------
 RATE_LIMIT_WINDOW = int(os.getenv("RATE_LIMIT_WINDOW", "60"))
 RATE_LIMIT_MAX = int(os.getenv("RATE_LIMIT_MAX", "30"))
@@ -164,6 +220,7 @@ def rate_limited(client_id: str):
     entries.append(now)
     _rate_limit_store[client_id] = entries
 
+
 # ---------------- FastAPI app ----------------
 app = FastAPI(title="Mixtral (Groq) Server + OpenRouter moderation")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -177,6 +234,8 @@ class GenerateRequest(BaseModel):
 async def root():
     return {"status": "ok", "provider": "groq", "model": GROQ_MODEL}
 
+
+# ---------------- /generate ----------------
 @app.post("/generate")
 async def generate(req: GenerateRequest, request: Request, x_api_key: Optional[str] = Header(None)):
     client_id = get_client_id(request, x_api_key)
@@ -194,8 +253,11 @@ async def generate(req: GenerateRequest, request: Request, x_api_key: Optional[s
         await save_message(client_id, "assistant", out)
     except Exception:
         logger.exception("Failed to save history (non-fatal).")
+
     return {"text": out}
 
+
+# ---------------- /chat ----------------
 @app.post("/chat")
 async def chat(user_id: str = Form("guest"), prompt: str = Form(...), request: Request = None, x_api_key: Optional[str] = Header(None)):
     client_id = get_client_id(request, x_api_key)
@@ -206,8 +268,17 @@ async def chat(user_id: str = Form("guest"), prompt: str = Form(...), request: R
         raise HTTPException(400, f"Moderation blocked: {reason}")
 
     history = await get_history(user_id, limit=12)
-    messages = [{"role": h["role"], "content": h["content"]} for h in history]
-    messages.append({"role":"user","content": prompt})
+
+    # Clean history so Groq gets only valid messages
+    messages = [
+        {"role": h["role"], "content": h["content"]}
+        for h in history
+        if isinstance(h, dict)
+        and h.get("role") in ("system", "user", "assistant")
+        and isinstance(h.get("content"), str)
+    ]
+
+    messages.append({"role": "user", "content": prompt})
     out = await provider_chat(messages)
 
     try:
@@ -215,12 +286,17 @@ async def chat(user_id: str = Form("guest"), prompt: str = Form(...), request: R
         await save_message(user_id, "assistant", out)
     except Exception:
         logger.exception("Failed to save history (non-fatal).")
+
     return {"response": out}
 
+
+# ---------------- /history ----------------
 @app.get("/history/{user_id}")
 async def history_endpoint(user_id: str, limit: int = 64):
     return {"history": await get_history(user_id, limit)}
 
+
+# ---------------- /metrics ----------------
 @app.get("/metrics")
 async def metrics(x_admin_key: Optional[str] = Header(None)):
     if x_admin_key != os.getenv("ADMIN_KEY", "admin123"):
@@ -228,6 +304,8 @@ async def metrics(x_admin_key: Optional[str] = Header(None)):
     total = await get_total_messages()
     return {"total_messages": total, "rate_limit_store_size": len(_rate_limit_store)}
 
+
+# ---------------- /stream ----------------
 @app.post("/stream")
 async def stream_chat(prompt: str = Form(...)):
     messages = [{"role":"user","content": prompt}]
