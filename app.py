@@ -17,19 +17,30 @@ logger = logging.getLogger("mixtral-groq-server")
 
 # ---------------- Groq Provider ----------------
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")  # Valid Groq model
-GROQ_BASE = "https://api.groq.com/openai/v1"
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")  # Recommended active model
+GROQ_BASE = "https://api.groq.com/v1"
 GROQ_CHAT_ENDPOINT = f"{GROQ_BASE}/chat/completions"
 
-async def groq_chat_completion(messages: List[Dict], model: str = GROQ_MODEL, temperature: float = 0.2, max_tokens: int = 512):
+async def _call_groq(messages: List[Dict], model: str):
     if not GROQ_API_KEY:
         raise RuntimeError("GROQ_API_KEY not set")
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
-    payload = {"model": model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
+    payload = {"model": model, "messages": messages}
     async with httpx.AsyncClient(timeout=60.0) as client:
         r = await client.post(GROQ_CHAT_ENDPOINT, headers=headers, json=payload)
         r.raise_for_status()
         return r.json()
+
+async def groq_chat_completion(messages: List[Dict], model: str = GROQ_MODEL):
+    try:
+        return await _call_groq(messages, model)
+    except httpx.HTTPStatusError as e:
+        logger.error(f"Groq HTTP error: {e}")
+        # Optional retry with default model if first fails
+        if e.response.status_code == 400 and model != "mistral-saba-24b":
+            logger.info("Retrying Groq with 'mistral-saba-24b'")
+            return await _call_groq(messages, "mistral-saba-24b")
+        raise
 
 async def provider_chat(messages: List[Dict]):
     try:
@@ -51,7 +62,7 @@ async def openrouter_moderate(text: str):
         return {"error": "no_key"}
     url = "https://openrouter.ai/api/v1/moderations"
     headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
-    payload = {"model": "openai/moderation-latest", "input": text}
+    payload = {"model": "openai-moderation-latest", "input": text}
     async with httpx.AsyncClient(timeout=20.0) as client:
         r = await client.post(url, headers=headers, json=payload)
         try:
@@ -63,7 +74,6 @@ async def openrouter_moderate(text: str):
 async def moderate_text(text: str):
     if not text:
         return True, None
-    # Quick rule-based check
     banned = ["bomb", "kill", "terror", "rape", "shoot"]
     if any(w in text.lower() for w in banned):
         return False, "Blocked by rule-based safety"
