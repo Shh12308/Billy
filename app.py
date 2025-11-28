@@ -218,27 +218,26 @@ async def image_gen(request: Request):
     if not prompt:
         raise HTTPException(400, "prompt required")
 
-    # ---------- 1) Stability.ai ----------
+    # ---------- 1) Stability.ai v2 ----------
     if STABILITY_API_KEY:
         try:
             url = "https://api.stability.ai/v2beta/stable-image/generate/core"
             headers = {
                 "Authorization": f"Bearer {STABILITY_API_KEY}",
+                "Content-Type": "application/json",
                 "Accept": "application/json",
             }
-
-            # Stability requires multipart/form-data
-            form = {
-                "text_prompts[0][text]": (None, prompt),
-                "cfg_scale": (None, "7"),
-                "height": (None, "512"),
-                "width": (None, "512"),
-                "samples": (None, "1"),
-                "engine": (None, "stable-diffusion-v1-5"),
+            payload = {
+                "text_prompts": [{"text": prompt}],
+                "cfg_scale": 7,
+                "height": 512,
+                "width": 512,
+                "samples": 1,
+                "engine": "stable-diffusion-v1-5"
             }
 
             async with httpx.AsyncClient(timeout=120.0) as client:
-                r = await client.post(url, headers=headers, files=form)
+                r = await client.post(url, headers=headers, json=payload)
                 if r.status_code == 200:
                     jr = r.json()
                     artifacts = jr.get("artifacts", [])
@@ -286,7 +285,6 @@ async def image_gen(request: Request):
                     if jr.get("image"):
                         return {"image": jr["image"]}
                     if jr.get("url"):
-                        # fetch image and base64 encode
                         resp = await client.get(jr["url"])
                         if resp.status_code == 200:
                             b64 = base64.b64encode(resp.content).decode()
@@ -296,7 +294,6 @@ async def image_gen(request: Request):
         except Exception as e:
             logger.exception("Free image provider error: %s", str(e))
 
-    # ---------- Nothing worked ----------
     return JSONResponse(
         {"error": "no_image_provider_available_or_all_failed"},
         status_code=400
