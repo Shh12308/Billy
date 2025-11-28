@@ -221,7 +221,7 @@ async def image_gen(request: Request):
     # 1) Try Stability.ai if key provided
     if STABILITY_API_KEY:
         try:
-            url = "POST https://api.stability.ai/v2beta/stable-image/generate/core"
+            url = "https://api.stability.ai/v2beta/stable-image/generate/core"
             headers = {"Authorization": f"Bearer {STABILITY_API_KEY}", "Content-Type": "application/json"}
             payload = {
                 "text_prompts": [{"text": prompt}],
