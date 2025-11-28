@@ -37,6 +37,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+STABILITY_API_KEY = "sk-RkSqNSbedDS5YcM54qK6sTaKDldQprDIvc6HbiMhdlt0Cx9e"
+
 # Models / endpoints
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")         # Use for chat/tts/stt if available
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "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")     # Use for image generation (gpt-image-1)
