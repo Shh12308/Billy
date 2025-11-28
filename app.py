@@ -1,14 +1,3 @@
-# app.py — Billy AI server (full-featured, extensible)
-# - Streaming chat (Groq streaming JSON -> SSE)
-# - Image generation via Stability.ai (preferred) -> OpenAI images fallback -> free provider
-# - TTS / STT (Groq endpoints if available)
-# - NLU endpoint (heuristic + LLM fallback)
-# - Lightweight Knowledge Graph (SQLite) & retrieval
-# - Personalization memory APIs (SQLite)
-# - Multilingual / translate scaffold
-# - Debate / empathy toggles
-# - Creator persona integrated
-
 import os
 import json
 import sqlite3
@@ -232,7 +221,7 @@ async def image_gen(request: Request):
     # 1) Try Stability.ai if key provided
     if STABILITY_API_KEY:
         try:
-            url = "https://api.stability.ai/v1/generation/stable-diffusion-v1-5/text-to-image"
+            url = "POST https://api.stability.ai/v2beta/stable-image/generate/core"
             headers = {"Authorization": f"Bearer {STABILITY_API_KEY}", "Content-Type": "application/json"}
             payload = {
                 "text_prompts": [{"text": prompt}],
