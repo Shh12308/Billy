@@ -223,22 +223,22 @@ async def image_gen(request: Request):
         try:
             url = "https://api.stability.ai/v2beta/stable-image/generate/core"
 
-            headers = {
-                "Authorization": f"Bearer {STABILITY_API_KEY}",
-                "Accept": "application/json",
-            }
-
             form = {
-                "prompt": (None, prompt),
-                "output_format": (None, "png"),
-                "mode": (None, "text-to-image"),
-                "cfg_scale": (None, "7"),
-                "width": (None, "512"),
-                "height": (None, "512"),
-            }
+    "text_prompts[0][text]": (None, prompt),
+    "cfg_scale": (None, "7"),
+    "height": (None, "512"),
+    "width": (None, "512"),
+    "samples": (None, "1"),
+    "engine": (None, "stable-diffusion-v1-5")  # specify engine
+}
 
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                r = await client.post(url, headers=headers, files=form)
+headers = {
+    "Authorization": f"Bearer {STABILITY_API_KEY}",
+    "Accept": "application/json"
+}
+
+async with httpx.AsyncClient(timeout=120.0) as client:
+    r = await client.post(url, headers=headers, files=form)
 
             if r.status_code == 200:
                 jr = r.json()
