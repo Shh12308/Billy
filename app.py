@@ -39,7 +39,7 @@ app.add_middleware(
 
 # Models / endpoints
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")         # Use for chat/tts/stt if available
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")     # Use for image generation (gpt-image-1)
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "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")     # Use for image generation (gpt-image-1)
 KG_DB_PATH = os.getenv("KG_DB_PATH", "./kg.db")
 
 CHAT_MODEL = os.getenv("CHAT_MODEL", "llama-3.1-8b-instant")
@@ -177,59 +177,72 @@ async def chat_endpoint(req: Request):
 # ---------- IMAGE GENERATION ----------
 @app.post("/image")
 async def image_endpoint(req: Request):
-    """
-    Image generation:
-    - Preferred: use OPENAI_API_KEY -> OpenAI Images (gpt-image-1)
-    - Optional free provider: set USE_FREE_IMAGE_PROVIDER=true and IMAGE_MODEL_FREE_URL to call
-    """
     data = await req.json()
     prompt = data.get("prompt", "")
     if not prompt:
         raise HTTPException(400, "prompt required")
 
+    # ----------------------------
+    # 1. Free provider (optional)
+    # ----------------------------
     if USE_FREE_IMAGE_PROVIDER and IMAGE_MODEL_FREE_URL:
-        # Call your free provider (user must implement or set the endpoint)
         try:
             async with httpx.AsyncClient() as client:
-                r = await client.post(IMAGE_MODEL_FREE_URL, json={"prompt": prompt}, timeout=60.0)
+                r = await client.post(
+                    IMAGE_MODEL_FREE_URL,
+                    json={"prompt": prompt},
+                    timeout=60.0
+                )
                 r.raise_for_status()
                 jr = r.json()
-                # Expect base64 in jr['image_base64'] or adjust per provider
+
+                # normalize
                 if "image_base64" in jr:
                     return {"image": jr["image_base64"]}
                 if "b64" in jr:
                     return {"image": jr["b64"]}
-                # else return raw provider response
+
                 return jr
+
         except Exception as e:
             logger.exception("Free image provider error")
             raise HTTPException(500, f"free_image_provider_error: {e}")
 
-    # Prefer OpenAI images if key present
+    # ----------------------------
+    # 2. OpenAI IMAGE MODEL
+    # ----------------------------
     if OPENAI_API_KEY:
         try:
-            # Use OpenAI Images (HTTP) — no openai package dependency required
             url = "https://api.openai.com/v1/images/generations"
-            headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
+            headers = {
+                "Authorization": f"Bearer {OPENAI_API_KEY}",
+                "Content-Type": "application/json"
+            }
             body = {
                 "model": IMAGE_MODEL_OPENAI,
                 "prompt": prompt,
                 "size": "1024x1024"
             }
+
             async with httpx.AsyncClient() as client:
-                r = await client.post(url, headers=headers, json=body, timeout=60.0)
+                r = await client.post(url, headers=headers, json=body)
                 r.raise_for_status()
+
                 jr = r.json()
-                # OpenAI returns data[0].b64_json
                 b64 = jr["data"][0]["b64_json"]
                 return {"image": b64}
+
         except Exception as e:
             logger.exception("OpenAI image error")
-            raise HTTPException(500, str(e))
+            raise HTTPException(500, f"openai_image_error: {e}")
 
-    # If we reach here, no image provider configured
-    raise HTTPException(400, "No image provider configured. Set OPENAI_API_KEY or USE_FREE_IMAGE_PROVIDER + IMAGE_MODEL_FREE_URL")
-
+    # ----------------------------
+    # 3. Nothing configured
+    # ----------------------------
+    raise HTTPException(
+        400,
+        "No image provider configured. Add OPENAI_API_KEY or set free provider."
+    )
 # ---------- TTS (text-to-speech) ----------
 @app.post("/tts")
 async def tts_endpoint(req: Request):
