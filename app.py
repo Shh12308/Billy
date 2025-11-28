@@ -7,27 +7,32 @@ import uvicorn
 
 app = FastAPI()
 
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+############################################################
+#                CONFIG
+############################################################
+
+GROQ_API_KEY = "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"
+
 CHAT_MODEL = "llama-3.1-8b-instant"
-IMAGE_MODEL = "gpt-image-1"
+IMAGE_MODEL = "flux"
 TTS_MODEL = "gpt-4o-mini-tts"
 STT_MODEL = "whisper-large-v3"
 
-
 ############################################################
-# STREAMING CHAT (NO API KEY)
+#          FIXED — GROQ STREAMING FUNCTION
 ############################################################
 
 async def groq_stream(prompt: str):
-
     url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {GROQ_API_KEY}"}
 
     payload = {
         "model": CHAT_MODEL,
@@ -38,54 +43,70 @@ async def groq_stream(prompt: str):
     }
 
     async with httpx.AsyncClient(timeout=None) as client:
-        async with client.stream("POST", url, json=payload) as response:
+        async with client.stream("POST", url, headers=headers, json=payload) as r:
 
-            if response.status_code != 200:
-                yield f"data: ERROR {response.status_code}\n\n"
+            # If Groq responds with error
+            if r.status_code != 200:
+                yield f"data: ERROR {r.status_code}\n\n"
                 return
 
-            async for line in response.aiter_lines():
-                if not line:
+            async for raw_line in r.aiter_lines():
+                if not raw_line:
                     continue
 
-                if line.startswith("data: "):
-                    data = line.replace("data: ", "")
-                    if data == "[DONE]":
+                # Groq sends: "data: {...}"
+                if raw_line.startswith("data: "):
+                    data = raw_line[len("data: "):]
+
+                    if data.strip() == "[DONE]":
                         yield "data: [DONE]\n\n"
                         return
+
+                    # Send JSON chunk to FE
                     yield f"data: {data}\n\n"
 
+                # Ignore event:, empty lines, etc.
+                else:
+                    continue
+
+############################################################
+#            STREAM ROUTE — WORKING
+############################################################
 
 @app.get("/stream")
 async def stream_chat(prompt: str):
-    return StreamingResponse(groq_stream(prompt), media_type="text/event-stream")
+    return StreamingResponse(
+        groq_stream(prompt),
+        media_type="text/event-stream"
+    )
 
 
 ############################################################
-# BASIC CHAT
+#                   BASIC CHAT
 ############################################################
 
 @app.post("/chat")
-async def chat(request: Request):
+async def basic_chat(request: Request):
     body = await request.json()
     prompt = body.get("prompt", "")
 
-    url = "https://api/groq.com/openai/v1/chat/completions"
-
     async with httpx.AsyncClient() as client:
         r = await client.post(
-            url,
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
             json={
                 "model": CHAT_MODEL,
                 "messages": [{"role": "user", "content": prompt}]
             }
         )
-
-    return r.json()
+    try:
+        return r.json()
+    except:
+        return {"error": "Chat failed"}
 
 
 ############################################################
-# IMAGE GENERATION
+#                   IMAGE GENERATION
 ############################################################
 
 @app.post("/image")
@@ -93,11 +114,10 @@ async def image_gen(request: Request):
     body = await request.json()
     prompt = body.get("prompt", "")
 
-    url = "https://api.groq.com/openai/v1/images/generations"
-
     async with httpx.AsyncClient() as client:
         r = await client.post(
-            url,
+            "https://api.groq.com/openai/v1/images/generations",
+            headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
             json={
                 "model": IMAGE_MODEL,
                 "prompt": prompt
@@ -105,15 +125,14 @@ async def image_gen(request: Request):
         )
 
     try:
-        data = r.json()
-        img = data["data"][0]["b64_json"]
+        img = r.json()["data"][0]["b64_json"]
         return {"image": img}
     except:
         return JSONResponse({"error": "Image generation failed"}, status_code=400)
 
 
 ############################################################
-# TTS
+#                     TTS
 ############################################################
 
 @app.post("/tts")
@@ -121,11 +140,10 @@ async def tts(request: Request):
     body = await request.json()
     text = body.get("text", "")
 
-    url = "https://api.groq.com/openai/v1/audio/speech"
-
     async with httpx.AsyncClient() as client:
         r = await client.post(
-            url,
+            "https://api.groq.com/openai/v1/audio/speech",
+            headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
             json={
                 "model": TTS_MODEL,
                 "voice": "alloy",
@@ -133,38 +151,51 @@ async def tts(request: Request):
             }
         )
 
-    data = r.json()
-    return {"audio": data["audio"]}
+    try:
+        audio = r.json()["audio"]
+        return {"audio": audio}
+    except:
+        return JSONResponse({"error": "TTS failed"}, status_code=400)
 
 
 ############################################################
-# STT
+#                      STT
 ############################################################
 
 @app.post("/stt")
 async def stt(file: UploadFile = File(...)):
     audio_bytes = await file.read()
-    audio_b64 = base64.b64encode(audio_bytes).decode()
-
-    url = "https://api.groq.com/openai/v1/audio/transcriptions"
+    b64_data = base64.b64encode(audio_bytes).decode()
 
     async with httpx.AsyncClient() as client:
         r = await client.post(
-            url,
+            "https://api.groq.com/openai/v1/audio/transcriptions",
+            headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
             json={
                 "model": STT_MODEL,
-                "file": audio_b64,
+                "file": b64_data,
                 "format": "base64"
             }
         )
 
-    return r.json()
+    try:
+        return r.json()
+    except:
+        return JSONResponse({"error": "STT failed"}, status_code=400)
 
+
+############################################################
+#                     ROOT
+############################################################
 
 @app.get("/")
-async def ok():
-    return {"status": "running"}
+async def root():
+    return {"status": "Billy AI backend running OK"}
 
+
+############################################################
+#             LOCAL RUN
+############################################################
 
 if __name__ == "__main__":
     uvicorn.run("app:app", host="0.0.0.0", port=8080)
