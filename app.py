@@ -53,9 +53,26 @@ ENABLE_DEBATE = os.getenv("ENABLE_DEBATE", "false").lower() in ("1", "true", "ye
 USE_FREE_IMAGE_PROVIDER = os.getenv("USE_FREE_IMAGE_PROVIDER", "false").lower() in ("1", "true", "yes")
 
 # Small helper system prompts
-SYSTEM_PROMPT_BASE = "You are Billy AI: helpful, concise, and friendly."
+SYSTEM_PROMPT_BASE = """You are Billy AI: helpful, concise, friendly.
+If a user asks about your creator, respond with the official creator profile provided in CREATOR_INFO.
+Do NOT claim you made yourself."""
 SYSTEM_PROMPT_EMPATHY = "You are empathetic, patient, and supportive."
 SYSTEM_PROMPT_DEBATE = "You are analytic, structured, evidence-based. Argue both sides fairly."
+# ------------------ CREATOR META (used when users ask) ------------------
+
+CREATOR_INFO = """
+Billy AI was created by **GoldBoy**, a 17-year-old developer from England.
+
+He is currently working on futuristic projects such as:
+• MintZa  
+• LuxStream  
+• SwapX  
+• CryptoBean  
+
+Socials:
+• Instagram: @GoldBoyy  
+• Twitter: @GoldBoy
+"""
 
 # ---------- UTILS ----------
 def get_system_prompt() -> str:
@@ -65,6 +82,11 @@ def get_system_prompt() -> str:
     if ENABLE_DEBATE:
         parts.append(SYSTEM_PROMPT_DEBATE)
     return " ".join(parts)
+
+def detect_creator_question(prompt: str):
+    keywords = ["who made you", "who created you", "your creator", "who built you", "owner"]
+    p = prompt.lower()
+    return any(k in p for k in keywords)
 
 def ensure_kg_db():
     conn = sqlite3.connect(KG_DB_PATH)
@@ -107,6 +129,11 @@ async def groq_stream(prompt: str):
     """
     if not GROQ_API_KEY:
         yield f"data: {json.dumps({'error': 'no_groq_key'})}\n\n"
+        return
+
+    if detect_creator_question(prompt):
+        yield f"data: {CREATOR_INFO}\n\n"
+        yield "data: [DONE]\n\n"
         return
 
     url = "https://api.groq.com/openai/v1/chat/completions"
@@ -175,74 +202,50 @@ async def chat_endpoint(req: Request):
         return r.json()
 
 # ---------- IMAGE GENERATION ----------
+
 @app.post("/image")
-async def image_endpoint(req: Request):
-    data = await req.json()
-    prompt = data.get("prompt", "")
+async def image_gen(request: Request):
+    body = await request.json()
+    prompt = body.get("prompt", "")
+
     if not prompt:
-        raise HTTPException(400, "prompt required")
+        return JSONResponse({"error": "No prompt provided"}, status_code=400)
 
-    # ----------------------------
-    # 1. Free provider (optional)
-    # ----------------------------
-    if USE_FREE_IMAGE_PROVIDER and IMAGE_MODEL_FREE_URL:
-        try:
-            async with httpx.AsyncClient() as client:
-                r = await client.post(
-                    IMAGE_MODEL_FREE_URL,
-                    json={"prompt": prompt},
-                    timeout=60.0
-                )
-                r.raise_for_status()
-                jr = r.json()
+    url = "https://api.stability.ai/v2beta/stable-image/generate/core"
 
-                # normalize
-                if "image_base64" in jr:
-                    return {"image": jr["image_base64"]}
-                if "b64" in jr:
-                    return {"image": jr["b64"]}
+    headers = {
+        "Authorization": f"Bearer {STABILITY_API_KEY}",
+        "Accept": "application/json"
+    }
 
-                return jr
+    data = {
+        "prompt": prompt,
+        "output_format": "png"
+    }
 
-        except Exception as e:
-            logger.exception("Free image provider error")
-            raise HTTPException(500, f"free_image_provider_error: {e}")
+    # Stability requires multipart/form-data even if you send no file
+    files = {
+        "none": (None, None)
+    }
 
-    # ----------------------------
-    # 2. OpenAI IMAGE MODEL
-    # ----------------------------
-    if OPENAI_API_KEY:
-        try:
-            url = "https://api.openai.com/v1/images/generations"
-            headers = {
-                "Authorization": f"Bearer {OPENAI_API_KEY}",
-                "Content-Type": "application/json"
-            }
-            body = {
-                "model": IMAGE_MODEL_OPENAI,
-                "prompt": prompt,
-                "size": "1024x1024"
-            }
+    async with httpx.AsyncClient(timeout=None) as client:
+        resp = await client.post(
+            url,
+            headers=headers,
+            data=data,
+            files=files
+        )
 
-            async with httpx.AsyncClient() as client:
-                r = await client.post(url, headers=headers, json=body)
-                r.raise_for_status()
+    if resp.status_code != 200:
+        return JSONResponse({"error": "Stability generation failed", "details": resp.text}, status_code=400)
 
-                jr = r.json()
-                b64 = jr["data"][0]["b64_json"]
-                return {"image": b64}
-
-        except Exception as e:
-            logger.exception("OpenAI image error")
-            raise HTTPException(500, f"openai_image_error: {e}")
-
-    # ----------------------------
-    # 3. Nothing configured
-    # ----------------------------
-    raise HTTPException(
-        400,
-        "No image provider configured. Add OPENAI_API_KEY or set free provider."
-    )
+    try:
+        json_data = resp.json()
+        image_b64 = json_data["image"]  # Stability returns a base64 string
+        return {"image": image_b64}
+    except Exception as e:
+        return JSONResponse({"error": "Parse failed", "details": str(e)}, status_code=400)
+        
 # ---------- TTS (text-to-speech) ----------
 @app.post("/tts")
 async def tts_endpoint(req: Request):
