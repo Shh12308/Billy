@@ -1,3 +1,4 @@
+# app.py — cleaned, robust, images fallback, vision/code scaffolds
 import os
 import json
 import sqlite3
@@ -26,10 +27,11 @@ app.add_middleware(
 )
 
 # ----- Load keys from environment -----
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()          # Groq (chat/tts/stt)
-STABILITY_API_KEY = os.getenv("STABILITY_API_KEY", "").strip()  # Stability.ai (images)
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()        # OpenAI images fallback (gpt-image-1)
-IMAGE_MODEL_FREE_URL = os.getenv("IMAGE_MODEL_FREE_URL", "").strip()  # optional self-hosted/free provider
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
+STABILITY_API_KEY = os.getenv("STABILITY_API_KEY", "").strip()
+STABILITY_URL = os.getenv("STABILITY_URL", "").strip()  # optional custom stability endpoint
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+IMAGE_MODEL_FREE_URL = os.getenv("IMAGE_MODEL_FREE_URL", "").strip()
 USE_FREE_IMAGE_PROVIDER = os.getenv("USE_FREE_IMAGE_PROVIDER", "false").lower() in ("1", "true", "yes")
 
 KG_DB_PATH = os.getenv("KG_DB_PATH", "./kg.db")
@@ -64,7 +66,6 @@ def get_system_prompt() -> str:
         parts.append(SYSTEM_PROMPT_EMPATHY)
     if ENABLE_DEBATE:
         parts.append(SYSTEM_PROMPT_DEBATE)
-    # include creator brief for consistency
     parts.append("Creator profile: " + CREATOR_INFO["bio"])
     return " ".join(parts)
 
@@ -123,17 +124,12 @@ def query_kg(query: str, limit: int = 5):
 
 # ---------- GROQ STREAMING (chat) ----------
 async def groq_stream(prompt: str):
-    """
-    Stream Groq chat completions as SSE. Each yielded line is "data: <json>\n\n".
-    If GROQ_API_KEY is missing, return an error chunk.
-    """
     if not GROQ_API_KEY:
         yield f"data: {json.dumps({'error': 'no_groq_key'})}\n\n"
         yield "data: [DONE]\n\n"
         return
 
     if detect_creator_question(prompt):
-        # small convenience: directly return CREATOR_INFO as a simple message chunk
         payload = {"choices":[{"delta":{"content":CREATOR_INFO["bio"]}}]}
         yield f"data: {json.dumps(payload)}\n\n"
         yield "data: [DONE]\n\n"
@@ -163,22 +159,17 @@ async def groq_stream(prompt: str):
                 async for raw_line in resp.aiter_lines():
                     if not raw_line:
                         continue
-                    # common pattern: "data: <json>"
                     if raw_line.startswith("data: "):
                         data = raw_line[len("data: "):]
                         if data.strip() == "[DONE]":
                             yield "data: [DONE]\n\n"
                             return
-                        # forward JSON chunk as SSE data
                         yield f"data: {data}\n\n"
                     else:
-                        # sometimes provider sends plain lines; try to wrap them
                         try:
-                            # attempt to parse then forward
-                            _ = json.loads(raw_line)
+                            json.loads(raw_line)
                             yield f"data: {raw_line}\n\n"
                         except Exception:
-                            # ignore unparseable lines
                             continue
         except Exception as e:
             logger.exception("Error during groq_stream")
@@ -188,9 +179,6 @@ async def groq_stream(prompt: str):
 
 @app.get("/stream")
 async def stream_chat(prompt: str):
-    """
-    SSE endpoint. Frontend connects with EventSource(`${API_BASE}/stream?prompt=...`)
-    """
     return StreamingResponse(groq_stream(prompt), media_type="text/event-stream")
 
 # ---------- NON-STREAM CHAT (fallback) ----------
@@ -218,64 +206,73 @@ async def image_gen(request: Request):
     if not prompt:
         raise HTTPException(400, "prompt required")
 
-    # ---------- 1) Stability.ai v2 ----------
+    # Try Stability.ai (v2 style) if configured
     if STABILITY_API_KEY:
+        stability_endpoint = STABILITY_URL or "https://api.stability.ai/v2beta/stable-image/generate/core"
+        headers = {"Authorization": f"Bearer {STABILITY_API_KEY}"}
+        # Some Stability endpoints expect JSON, some multipart. Try JSON first.
         try:
-            url = "https://api.stability.ai/v2beta/stable-image/generate/core"
-            headers = {
-                "Authorization": f"Bearer {STABILITY_API_KEY}",
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-            }
             payload = {
                 "text_prompts": [{"text": prompt}],
                 "cfg_scale": 7,
                 "height": 512,
                 "width": 512,
-                "samples": 1,
-                "engine": "stable-diffusion-v1-5"
+                "samples": 1
             }
-
             async with httpx.AsyncClient(timeout=120.0) as client:
-                r = await client.post(url, headers=headers, json=payload)
+                r = await client.post(stability_endpoint, headers={**headers, "Content-Type":"application/json", "Accept":"application/json"}, json=payload)
                 if r.status_code == 200:
                     jr = r.json()
-                    artifacts = jr.get("artifacts", [])
-                    if artifacts:
-                        b64 = artifacts[0].get("base64")
+                    artifacts = jr.get("artifacts") or []
+                    if artifacts and isinstance(artifacts, list):
+                        b64 = artifacts[0].get("base64") or artifacts[0].get("b64") or artifacts[0].get("b64_json")
                         if b64:
+                            logger.info("Image generated via Stability (json)")
                             return {"image": b64}
                 else:
-                    logger.warning("Stability returned %s: %s", r.status_code, r.text[:300])
+                    logger.warning("Stability (json) returned %s: %s", r.status_code, r.text[:400])
         except Exception as e:
-            logger.exception("Stability image error — falling back: %s", str(e))
+            logger.exception("Stability JSON attempt failed")
 
-    # ---------- 2) OpenAI Images ----------
+        # If JSON attempt failed and endpoint expects multipart/form-data, try files approach
+        try:
+            # prepare multipart form (prompt as simple field)
+            form = {"prompt": (None, prompt)}
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                r = await client.post(stability_endpoint, headers=headers, files=form)
+                if r.status_code == 200:
+                    jr = r.json()
+                    artifacts = jr.get("artifacts") or []
+                    if artifacts and isinstance(artifacts, list):
+                        b64 = artifacts[0].get("base64") or artifacts[0].get("b64") or artifacts[0].get("b64_json")
+                        if b64:
+                            logger.info("Image generated via Stability (multipart)")
+                            return {"image": b64}
+                else:
+                    logger.warning("Stability (multipart) returned %s: %s", r.status_code, r.text[:400])
+        except Exception as e:
+            logger.exception("Stability multipart attempt failed")
+
+    # Try OpenAI images (gpt-image-1) as fallback
     if OPENAI_API_KEY:
         try:
             url = "https://api.openai.com/v1/images/generations"
-            headers = {
-                "Authorization": f"Bearer {OPENAI_API_KEY}",
-                "Content-Type": "application/json"
-            }
-            payload = {
-                "model": "gpt-image-1",
-                "prompt": prompt,
-                "size": "512x512"
-            }
+            headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
+            payload = {"model": "gpt-image-1", "prompt": prompt, "size": "512x512"}
             async with httpx.AsyncClient(timeout=60.0) as client:
                 r = await client.post(url, headers=headers, json=payload)
                 if r.status_code == 200:
                     jr = r.json()
                     data = jr.get("data", [])
                     if data and data[0].get("b64_json"):
+                        logger.info("Image generated via OpenAI images")
                         return {"image": data[0]["b64_json"]}
                 else:
-                    logger.warning("OpenAI image generation returned %s: %s", r.status_code, r.text[:300])
-        except Exception as e:
-            logger.exception("OpenAI image error — falling back: %s", str(e))
+                    logger.warning("OpenAI image generation returned %s: %s", r.status_code, r.text[:400])
+        except Exception:
+            logger.exception("OpenAI image attempt failed")
 
-    # ---------- 3) Free image provider ----------
+    # Try free provider if configured
     if USE_FREE_IMAGE_PROVIDER and IMAGE_MODEL_FREE_URL:
         try:
             async with httpx.AsyncClient(timeout=90.0) as client:
@@ -283,76 +280,97 @@ async def image_gen(request: Request):
                 if r.status_code == 200:
                     jr = r.json()
                     if jr.get("image"):
+                        logger.info("Image generated via free provider (base64)")
                         return {"image": jr["image"]}
                     if jr.get("url"):
+                        # fetch and base64
                         resp = await client.get(jr["url"])
                         if resp.status_code == 200:
                             b64 = base64.b64encode(resp.content).decode()
                             return {"image": b64}
                 else:
-                    logger.warning("Free image provider returned %s", r.status_code)
-        except Exception as e:
-            logger.exception("Free image provider error: %s", str(e))
-
-    return JSONResponse(
-        {"error": "no_image_provider_available_or_all_failed"},
-        status_code=400
-    )
-# ---------- TTS (text-to-speech) ----------
-@app.post("/tts")
-async def tts_endpoint(req: Request):
-    data = await req.json()
-    text = data.get("text", "")
-    if not text:
-        raise HTTPException(400, "text required")
-
-    # Prefer Groq if configured
-    if GROQ_API_KEY:
-        try:
-            url = "https://api.groq.com/openai/v1/audio/speech"
-            headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
-            body = {"model": TTS_MODEL, "voice": "alloy", "input": text}
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                r = await client.post(url, headers=headers, json=body)
-                r.raise_for_status()
-                jr = r.json()
-                # expected jr['audio'] base64
-                audio_b64 = jr.get("audio") or jr.get("data", {}).get("audio")
-                if audio_b64:
-                    return {"audio": audio_b64}
+                    logger.warning("Free image provider returned %s: %s", r.status_code, r.text[:400])
         except Exception:
-            logger.exception("Groq TTS error (fallthrough)")
+            logger.exception("Free image provider attempt failed")
 
-    # Fallback: not implemented — return clear error
-    raise HTTPException(400, "No TTS provider configured or providers failed")
+    return JSONResponse({"error": "no_image_provider_available_or_all_failed"}, status_code=400)
 
-# ---------- STT (speech-to-text) ----------
-@app.post("/stt")
-async def stt_endpoint(file: UploadFile = File(...)):
-    """
-    Upload file using multipart/form-data.
-    We convert to base64 and send JSON to provider if provider expects base64 payloads.
-    """
-    audio_bytes = await file.read()
-    if not audio_bytes:
+# ---------- CODE generation endpoint (scaffold) ----------
+@app.post("/code")
+async def code_gen(req: Request):
+    body = await req.json()
+    prompt = body.get("prompt", "")
+    language = body.get("language", "python")
+    if not prompt:
+        raise HTTPException(400, "prompt required")
+
+    if not GROQ_API_KEY:
+        raise HTTPException(400, "No LLM provider configured (GROQ_API_KEY)")
+
+    code_prompt = f"Write a complete, well-documented {language} program for the following request:\n\n{prompt}"
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type":"application/json"}
+    payload = {"model": CHAT_MODEL, "messages":[{"role":"user","content":code_prompt}], "temperature":0.1}
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        r = await client.post(url, headers=headers, json=payload)
+        r.raise_for_status()
+        return r.json()
+
+# ---------- IMAGE VISION / ANALYSIS scaffold ----------
+@app.post("/vision/analyze")
+async def vision_analyze(file: UploadFile = File(...), prompt: Optional[str] = None):
+    image_bytes = await file.read()
+    if not image_bytes:
         raise HTTPException(400, "empty file")
 
-    # Prefer Groq if configured
-    if GROQ_API_KEY:
+    if not GROQ_API_KEY:
+        raise HTTPException(400, "No vision provider configured (GROQ_API_KEY)")
+
+    # This is a scaffold — many vision providers accept either base64 or multipart.
+    # We'll call Groq chat endpoint with embedded image (some providers support multipart 'image' content or data urls).
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type":"application/json"}
+
+    content_text = prompt or "Please analyze this image and provide a description, objects, colors, and suggested tags."
+
+    body = {
+        "model": CHAT_MODEL,
+        "messages": [
+            {"role":"system","content":get_system_prompt()},
+            {"role":"user","content": content_text + "\n\nImage (base64):\n" + base64.b64encode(image_bytes).decode()}
+        ]
+    }
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        r = await client.post(url, headers=headers, json=body)
+        r.raise_for_status()
+        return r.json()
+
+# ---------- BACKGROUND REMOVAL scaffold ----------
+@app.post("/image/remove-bg")
+async def remove_bg(file: UploadFile = File(...)):
+    image_bytes = await file.read()
+    if not image_bytes:
+        raise HTTPException(400, "empty file")
+
+    # If you have a provider that does remove-bg, call it here (example: STABILITY or IMAGE_MODEL_FREE_URL)
+    # Scaffold: if free provider accepts base64 and returns base64, use it
+    if USE_FREE_IMAGE_PROVIDER and IMAGE_MODEL_FREE_URL:
         try:
-            url = "https://api.groq.com/openai/v1/audio/transcriptions"
-            headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
-            payload = {"model": STT_MODEL, "file": base64.b64encode(audio_bytes).decode(), "format": "base64"}
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                r = await client.post(url, headers=headers, json=payload)
-                r.raise_for_status()
-                return r.json()
+            async with httpx.AsyncClient(timeout=90.0) as client:
+                r = await client.post(IMAGE_MODEL_FREE_URL + "/remove-bg", json={"image_base64": base64.b64encode(image_bytes).decode()})
+                if r.status_code == 200:
+                    jr = r.json()
+                    if jr.get("image"):
+                        return {"image": jr["image"]}
         except Exception:
-            logger.exception("Groq STT error")
+            logger.exception("Free provider remove-bg failed")
 
-    raise HTTPException(400, "No STT provider configured or provider failed")
+    # If Stability has remove-bg endpoint put it here (not all do). Otherwise return 501
+    raise HTTPException(501, "Background removal provider not configured. Add IMAGE_MODEL_FREE_URL with /remove-bg or configure a provider.")
 
-# ---------- NLU / Intent classification ----------
+# ---------- Other endpoints (NLU, kg, memory, translate, summarize) ----------
 @app.post("/nlp/classify")
 async def nlp_classify(req: Request):
     body = await req.json()
@@ -361,7 +379,6 @@ async def nlp_classify(req: Request):
     if not text:
         raise HTTPException(400, "text required")
 
-    # simple heuristic
     lower = text.lower()
     if any(w in lower for w in ("draw", "image", "picture", "photo", "generate", "make an image", "create image")):
         intent = "image"
@@ -369,12 +386,14 @@ async def nlp_classify(req: Request):
         intent = "tts"
     elif any(w in lower for w in ("summarize", "shorten", "tl;dr")):
         intent = "summarize"
+    elif any(w in lower for w in ("code", "python", "javascript", "program", "script")):
+        intent = "code"
     else:
         intent = "chat"
 
     if use_llm and GROQ_API_KEY:
         try:
-            prompt = f"Classify the user's intent into one of: image, tts, summarize, chat. Respond only JSON: {{\"intent\": <intent>, \"confidence\": 0.0}}. Text: '''{text}'''"
+            prompt = f"Classify the user's intent into one of: image, tts, summarize, code, chat. Respond only JSON: {{\"intent\": <intent>, \"confidence\": 0.0}}. Text: '''{text}'''"
             url = "https://api.groq.com/openai/v1/chat/completions"
             headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
             payload = {"model": CHAT_MODEL, "messages":[{"role":"user","content":prompt}], "temperature":0}
@@ -393,7 +412,6 @@ async def nlp_classify(req: Request):
 
     return {"intent": intent, "confidence": 0.6, "source":"heuristic"}
 
-# ---------- Knowledge graph endpoints ----------
 @app.post("/kg/add")
 async def kg_add(req: Request):
     body = await req.json()
@@ -409,7 +427,6 @@ async def kg_query(q: str, limit: int = 5):
     rows = query_kg(q, limit)
     return {"results": rows}
 
-# ---------- Memory endpoints ----------
 @app.post("/memory/save")
 async def save_memory(req: Request):
     body = await req.json()
@@ -434,7 +451,6 @@ async def get_memory(user_id: str, key: str):
     conn.close()
     return {"value": json.loads(row[0]) if row else None}
 
-# ---------- Translate scaffold ----------
 @app.post("/translate")
 async def translate(req: Request):
     body = await req.json()
@@ -456,10 +472,8 @@ async def translate(req: Request):
                 return {"text": translated}
         except Exception:
             logger.exception("Translate via Groq failed")
-    # fallback: return original
     return {"text": text}
 
-# ---------- Summarize ----------
 @app.post("/summarize")
 async def summarize(req: Request):
     body = await req.json()
@@ -481,7 +495,6 @@ async def summarize(req: Request):
             logger.exception("Summarize via Groq failed")
     raise HTTPException(400, "No LLM provider configured")
 
-# ---------- Simple health check ----------
 @app.get("/")
 async def root():
     return {
