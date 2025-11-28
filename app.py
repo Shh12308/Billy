@@ -210,43 +210,32 @@ async def image_gen(request: Request):
     body = await request.json()
     prompt = body.get("prompt", "")
 
-    if not prompt:
-        return JSONResponse({"error": "No prompt provided"}, status_code=400)
-
-    url = "https://api.stability.ai/v2beta/stable-image/generate/core"
+    url = "https://api.stability.ai/v1/generation/stable-diffusion-v1-5/text-to-image"
 
     headers = {
         "Authorization": f"Bearer {STABILITY_API_KEY}",
-        "Accept": "application/json"
+        "Content-Type": "application/json"
     }
 
-    data = {
-        "prompt": prompt,
-        "output_format": "png"
-    }
-
-    # Stability requires multipart/form-data even if you send no file
-    files = {
-        "none": (None, None)
+    payload = {
+        "text_prompts": [{"text": prompt}],
+        "cfg_scale": 7,
+        "height": 512,
+        "width": 512,
+        "samples": 1
     }
 
     async with httpx.AsyncClient(timeout=None) as client:
-        resp = await client.post(
-            url,
-            headers=headers,
-            data=data,
-            files=files
-        )
+        r = await client.post(url, headers=headers, json=payload)
 
-    if resp.status_code != 200:
-        return JSONResponse({"error": "Stability generation failed", "details": resp.text}, status_code=400)
+    if r.status_code != 200:
+        return JSONResponse({"error": f"Image generation failed ({r.status_code})"}, status_code=400)
 
     try:
-        json_data = resp.json()
-        image_b64 = json_data["image"]  # Stability returns a base64 string
-        return {"image": image_b64}
+        img_b64 = r.json()["artifacts"][0]["base64"]
+        return {"image": img_b64}
     except Exception as e:
-        return JSONResponse({"error": "Parse failed", "details": str(e)}, status_code=400)
+        return JSONResponse({"error": f"Image parsing failed: {str(e)}"}, status_code=400)
         
 # ---------- TTS (text-to-speech) ----------
 @app.post("/tts")
