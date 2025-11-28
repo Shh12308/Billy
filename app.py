@@ -218,39 +218,40 @@ async def image_gen(request: Request):
     if not prompt:
         raise HTTPException(400, "prompt required")
 
-    # 1) Try Stability.ai if key provided
-    if STABILITY_API_KEY:
-        try:
-            url = "https://api.stability.ai/v2beta/stable-image/generate/core"
-            headers = {"Authorization": f"Bearer {STABILITY_API_KEY}", "Content-Type": "application/json"}
-            payload = {
-                "text_prompts": [{"text": prompt}],
-                "cfg_scale": 7,
-                "height": 512,
-                "width": 512,
-                "samples": 1
-            }
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                r = await client.post(url, headers=headers, json=payload)
-                if r.status_code != 200:
-                    logger.warning("Stability returned %s: %s", r.status_code, r.text[:300])
-                else:
-                    jr = r.json()
-                    # Stability sometimes returns artifacts[].b64 or artifacts[].base64 depending on variant
-                    art = jr.get("artifacts") or jr.get("artifacts", [])
-                    if art and isinstance(art, list):
-                        b64 = art[0].get("base64") or art[0].get("b64") or art[0].get("b64_json") or art[0].get("b64_png")
-                        if not b64:
-                            # try other common keys
-                            for k in ("b64_json","b64","base64","b64_png"):
-                                if art[0].get(k):
-                                    b64 = art[0].get(k)
-                                    break
-                        if b64:
-                            return {"image": b64}
-            # if we get here, stability either didn't return image or failed -> fallthrough
-        except Exception as e:
-            logger.exception("Stability image error — falling back: %s", str(e))
+# 1) Try Stability.ai if key provided
+if STABILITY_API_KEY:
+    try:
+        url = "https://api.stability.ai/v2beta/stable-image/generate/core"
+
+        headers = {
+            "Authorization": f"Bearer {STABILITY_API_KEY}",
+            "Accept": "application/json",
+        }
+
+        form = {
+            "prompt": (None, prompt),
+            "output_format": (None, "png"),
+            "mode": (None, "text-to-image"),
+            "cfg_scale": (None, "7"),
+            "width": (None, "512"),
+            "height": (None, "512"),
+        }
+
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            r = await client.post(url, headers=headers, files=form)
+
+            if r.status_code == 200:
+                jr = r.json()
+                artifacts = jr.get("artifacts", [])
+                if artifacts:
+                    b64 = artifacts[0].get("base64")
+                    if b64:
+                        return {"image": b64}
+            else:
+                logger.warning("Stability returned %s: %s", r.status_code, r.text[:300])
+
+    except Exception as e:
+        logger.exception("Stability image error — falling back: %s", str(e))
 
     # 2) Try OpenAI images (gpt-image-1) if OPENAI_API_KEY present
     if OPENAI_API_KEY:
