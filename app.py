@@ -218,91 +218,89 @@ async def image_gen(request: Request):
     if not prompt:
         raise HTTPException(400, "prompt required")
 
-    # 1) Try Stability.ai if key provided
+    # ---------- 1) Stability.ai ----------
     if STABILITY_API_KEY:
         try:
             url = "https://api.stability.ai/v2beta/stable-image/generate/core"
+            headers = {
+                "Authorization": f"Bearer {STABILITY_API_KEY}",
+                "Accept": "application/json",
+            }
 
+            # Stability requires multipart/form-data
             form = {
-    "text_prompts[0][text]": (None, prompt),
-    "cfg_scale": (None, "7"),
-    "height": (None, "512"),
-    "width": (None, "512"),
-    "samples": (None, "1"),
-    "engine": (None, "stable-diffusion-v1-5")  # specify engine
-}
+                "text_prompts[0][text]": (None, prompt),
+                "cfg_scale": (None, "7"),
+                "height": (None, "512"),
+                "width": (None, "512"),
+                "samples": (None, "1"),
+                "engine": (None, "stable-diffusion-v1-5"),
+            }
 
-headers = {
-    "Authorization": f"Bearer {STABILITY_API_KEY}",
-    "Accept": "application/json"
-}
-
-async with httpx.AsyncClient(timeout=120.0) as client:
-    r = await client.post(url, headers=headers, files=form)
-
-            if r.status_code == 200:
-                jr = r.json()
-                artifacts = jr.get("artifacts", [])
-                if artifacts:
-                    b64 = artifacts[0].get("base64")
-                    if b64:
-                        return {"image": b64}
-            else:
-                logger.warning("Stability returned %s: %s", r.status_code, r.text[:300])
-
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                r = await client.post(url, headers=headers, files=form)
+                if r.status_code == 200:
+                    jr = r.json()
+                    artifacts = jr.get("artifacts", [])
+                    if artifacts:
+                        b64 = artifacts[0].get("base64")
+                        if b64:
+                            return {"image": b64}
+                else:
+                    logger.warning("Stability returned %s: %s", r.status_code, r.text[:300])
         except Exception as e:
             logger.exception("Stability image error — falling back: %s", str(e))
 
-    # 2) Try OpenAI images (gpt-image-1) if OPENAI_API_KEY present
+    # ---------- 2) OpenAI Images ----------
     if OPENAI_API_KEY:
         try:
             url = "https://api.openai.com/v1/images/generations"
             headers = {
                 "Authorization": f"Bearer {OPENAI_API_KEY}",
-                "Content-Type": "application/json",
+                "Content-Type": "application/json"
             }
-            payload = {"model": "gpt-image-1", "prompt": prompt, "size": "512x512"}
-
+            payload = {
+                "model": "gpt-image-1",
+                "prompt": prompt,
+                "size": "512x512"
+            }
             async with httpx.AsyncClient(timeout=60.0) as client:
                 r = await client.post(url, headers=headers, json=payload)
-
-            if r.status_code == 200:
-                jr = r.json()
-                data = jr.get("data", [])
-                if data and data[0].get("b64_json"):
-                    return {"image": data[0]["b64_json"]}
-            else:
-                logger.warning("OpenAI image generation returned %s: %s", r.status_code, r.text[:300])
-
+                if r.status_code == 200:
+                    jr = r.json()
+                    data = jr.get("data", [])
+                    if data and data[0].get("b64_json"):
+                        return {"image": data[0]["b64_json"]}
+                else:
+                    logger.warning("OpenAI image generation returned %s: %s", r.status_code, r.text[:300])
         except Exception as e:
             logger.exception("OpenAI image error — falling back: %s", str(e))
 
-    # 3) Try free provider if configured
+    # ---------- 3) Free image provider ----------
     if USE_FREE_IMAGE_PROVIDER and IMAGE_MODEL_FREE_URL:
         try:
             async with httpx.AsyncClient(timeout=90.0) as client:
                 r = await client.post(IMAGE_MODEL_FREE_URL, json={"prompt": prompt})
-
-            if r.status_code == 200:
-                jr = r.json()
-                if jr.get("image"):
-                    return {"image": jr["image"]}
-
-                if jr.get("url"):
-                    resp = await client.get(jr["url"])
-                    if resp.status_code == 200:
-                        b64 = base64.b64encode(resp.content).decode()
-                        return {"image": b64}
-
-            else:
-                logger.warning("Free image provider returned %s", r.status_code)
-
+                if r.status_code == 200:
+                    jr = r.json()
+                    if jr.get("image"):
+                        return {"image": jr["image"]}
+                    if jr.get("url"):
+                        # fetch image and base64 encode
+                        resp = await client.get(jr["url"])
+                        if resp.status_code == 200:
+                            b64 = base64.b64encode(resp.content).decode()
+                            return {"image": b64}
+                else:
+                    logger.warning("Free image provider returned %s", r.status_code)
         except Exception as e:
             logger.exception("Free image provider error: %s", str(e))
 
-    # nothing worked
-    return JSONResponse({"error": "no_image_provider_available_or_all_failed"}, status_code=400)
-
+    # ---------- Nothing worked ----------
+    return JSONResponse(
+        {"error": "no_image_provider_available_or_all_failed"},
+        status_code=400
+    )
 # ---------- TTS (text-to-speech) ----------
 @app.post("/tts")
 async def tts_endpoint(req: Request):
