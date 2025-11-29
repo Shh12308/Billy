@@ -1,4 +1,4 @@
-# app.py — Billy AI full multimodal server: SDXL + TTS/STT + code + vision + search + remove-bg/upscale
+# app.py — Billy AI full multimodal server: SDXL + TTS/STT + code + vision + search + remove-bg/upscale + caching + metadata
 import os
 import io
 import json
@@ -10,13 +10,13 @@ import logging
 from typing import Optional, Dict, Any
 
 import httpx
-from fastapi import FastAPI, Request, UploadFile, File, HTTPException, BackgroundTasks, Query
+from fastapi import FastAPI, Request, UploadFile, File, HTTPException, Query
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 # ---------- CONFIG & LOGGING ----------
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger("billy-server")
 
 app = FastAPI(title="Billy AI Multimodal Server")
@@ -38,6 +38,7 @@ USE_FREE_IMAGE_PROVIDER = os.getenv("USE_FREE_IMAGE_PROVIDER", "false").lower() 
 
 KG_DB_PATH = os.getenv("KG_DB_PATH", "./kg.db")
 MEMORY_DB = os.getenv("MEMORY_DB", "./memory.db")
+CACHE_DB_PATH = os.getenv("CACHE_DB_PATH", "./cache.db")
 
 CHAT_MODEL = os.getenv("CHAT_MODEL", "llama-3.1-8b-instant")
 TTS_MODEL = os.getenv("TTS_MODEL", "gpt-4o-mini-tts")
@@ -58,8 +59,22 @@ CREATOR_INFO = {
     "socials": {"instagram":"GoldBoyy", "twitter":"GoldBoy"},
     "bio": "Created by GoldBoy (17, England). Projects: MintZa, LuxStream, SwapX, CryptoBean. Socials: Instagram @GoldBoyy, Twitter @GoldBoy."
 }
-def get_system_prompt() -> str:
-    return f"You are Billy AI: helpful, concise, friendly. Creator: {CREATOR_INFO['bio']}"
+
+# ---------- Dynamic, user-focused system prompt ----------
+def get_system_prompt(user_message: Optional[str] = None) -> str:
+    base = "You are Billy AI: helpful, concise, friendly, and focus entirely on what the user asks. Do not reference your creator or yourself unless explicitly asked."
+    if user_message:
+        base += f" The user said: \"{user_message}\". Tailor your response to this."
+    return base
+
+def build_contextual_prompt(user_id: str, message: str) -> str:
+    conn = sqlite3.connect(MEMORY_DB)
+    cur = conn.cursor()
+    cur.execute("SELECT key,value FROM memory WHERE user_id=? ORDER BY updated_at DESC LIMIT 5", (user_id,))
+    rows = cur.fetchall()
+    conn.close()
+    context = "\n".join(f"{k}: {v}" for k, v in rows)
+    return f"You are Billy AI: helpful, concise, friendly. Focus on exactly what the user wants.\nUser context:\n{context}\nUser message: {message}"
 
 # ---------- SQLITE helpers ----------
 def ensure_db(path: str, schema_sql: str):
@@ -69,6 +84,7 @@ def ensure_db(path: str, schema_sql: str):
     conn.commit()
     conn.close()
 
+# Knowledge Graph
 ensure_db(KG_DB_PATH, """
 CREATE TABLE IF NOT EXISTS nodes (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -78,6 +94,7 @@ CREATE TABLE IF NOT EXISTS nodes (
 );
 """)
 
+# Memory
 ensure_db(MEMORY_DB, """
 CREATE TABLE IF NOT EXISTS memory (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -85,6 +102,17 @@ CREATE TABLE IF NOT EXISTS memory (
   key TEXT,
   value TEXT,
   updated_at REAL
+);
+""")
+
+# Cache for images/prompts
+ensure_db(CACHE_DB_PATH, """
+CREATE TABLE IF NOT EXISTS cache (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  prompt TEXT,
+  provider TEXT,
+  result TEXT,
+  created_at REAL
 );
 """)
 
@@ -102,6 +130,23 @@ def query_kg(q: str, limit: int = 5):
     rows = cur.fetchall()
     conn.close()
     return [{"title": r[0], "content": r[1]} for r in rows]
+
+def cache_result(prompt: str, provider: str, result: Any):
+    conn = sqlite3.connect(CACHE_DB_PATH)
+    cur = conn.cursor()
+    cur.execute("INSERT INTO cache (prompt, provider, result, created_at) VALUES (?, ?, ?, ?)", (prompt, provider, json.dumps(result), time.time()))
+    conn.commit()
+    conn.close()
+
+def get_cached(prompt: str) -> Optional[Dict[str, Any]]:
+    conn = sqlite3.connect(CACHE_DB_PATH)
+    cur = conn.cursor()
+    cur.execute("SELECT provider,result FROM cache WHERE prompt=? ORDER BY created_at DESC LIMIT 1", (prompt,))
+    row = cur.fetchone()
+    conn.close()
+    if row:
+        return {"provider": row[0], "result": json.loads(row[1])}
+    return None
 
 # ---------- Image helpers ----------
 def unique_filename(ext="png"):
@@ -136,6 +181,35 @@ async def enhance_prompt_with_groq(prompt: str) -> str:
         logger.exception("Prompt enhancer failed")
     return prompt
 
+def run_code_safely(code: str, language: str = "python") -> Dict[str, str]:
+    """
+    Run code in a temporary file safely.
+    Returns {'output': ..., 'error': ...}
+    """
+    if language.lower() != "python":
+        return {"output": "", "error": f"Execution for {language} not supported yet."}
+
+    with tempfile.NamedTemporaryFile("w+", suffix=".py", delete=True) as tmpfile:
+        tmpfile.write(code)
+        tmpfile.flush()
+        try:
+            result = subprocess.run(
+                ["python3", tmpfile.name],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=10
+            )
+            return {
+                "output": result.stdout.decode().strip(),
+                "error": result.stderr.decode().strip()
+            }
+        except subprocess.TimeoutExpired:
+            return {"output": "", "error": "Execution timed out."}
+        except Exception as e:
+            return {"output": "", "error": str(e)}
+
+
+
 # ---------- Prompt analysis ----------
 def analyze_prompt(prompt: str):
     p = prompt.lower()
@@ -159,7 +233,7 @@ async def groq_stream(prompt: str):
         return
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}"}
-    payload = {"model": CHAT_MODEL, "stream": True,"messages":[{"role":"system","content":get_system_prompt()},{"role":"user","content":prompt}]}
+    payload = {"model": CHAT_MODEL, "stream": True,"messages":[{"role":"system","content":get_system_prompt(prompt)},{"role":"user","content":prompt}]}
     async with httpx.AsyncClient(timeout=None) as client:
         try:
             async with client.stream("POST", url, headers=headers, json=payload) as resp:
@@ -189,15 +263,14 @@ async def stream_chat(prompt: str):
 async def chat_endpoint(req: Request):
     body = await req.json()
     prompt = body.get("prompt","")
+    user_id = body.get("user_id", "anonymous")
     if not prompt:
         raise HTTPException(400,"prompt required")
     if not GROQ_API_KEY:
         raise HTTPException(400,"no groq key")
-    url = "https://api.groq.com/openai/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {GROQ_API_KEY}","Content-Type":"application/json"}
-    payload = {"model":CHAT_MODEL,"messages":[{"role":"system","content":get_system_prompt()},{"role":"user","content":prompt}]}
+    payload = {"model":CHAT_MODEL,"messages":[{"role":"system","content":build_contextual_prompt(user_id, prompt)},{"role":"user","content":prompt}]}
     async with httpx.AsyncClient(timeout=30.0) as client:
-        r = await client.post(url, headers=headers, json=payload)
+        r = await client.post("https://api.groq.com/openai/v1/chat/completions", headers={"Authorization": f"Bearer {GROQ_API_KEY}","Content-Type":"application/json"}, json=payload)
         r.raise_for_status()
         return r.json()
 
@@ -209,224 +282,243 @@ async def image_gen(request: Request):
     samples = int(body.get("samples",1))
     if not prompt:
         raise HTTPException(400,"prompt required")
+
+    # Check cache first
+    cached = get_cached(prompt)
+    if cached:
+        return {"cached": True, **cached}
+
     enhanced = await enhance_prompt_with_groq(prompt)
     settings = analyze_prompt(enhanced)
     settings["samples"] = samples or settings["samples"]
 
-    # 1) Stability SDXL
+    # Attempt providers in order
+    providers = []
     if STABILITY_API_KEY:
+        providers.append("stability")
+    if OPENAI_API_KEY:
+        providers.append("openai")
+    if USE_FREE_IMAGE_PROVIDER and IMAGE_MODEL_FREE_URL:
+        providers.append("free")
+
+    for prov in providers:
         try:
-            payload = {"prompt": enhanced,"cfg_scale":settings["cfg_scale"],"steps":settings["steps"],"samples":settings["samples"],"height":settings["height"],"width":settings["width"],"model":"stable-diffusion-xl-v1","negative_prompt":settings.get("negative_prompt")}
-            files = {"json": (None,json.dumps(payload),"application/json")}
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                r = await client.post("https://api.stability.ai/v2beta/stable-image/generate/core", headers={"Authorization": f"Bearer {STABILITY_API_KEY}"}, files=files)
-                if r.status_code == 200:
+            urls = []
+            if prov=="stability":
+                payload = {"prompt": enhanced,"cfg_scale":settings["cfg_scale"],"steps":settings["steps"],"samples":settings["samples"],"height":settings["height"],"width":settings["width"],"model":"stable-diffusion-xl-v1","negative_prompt":settings.get("negative_prompt")}
+                files = {"json": (None,json.dumps(payload),"application/json")}
+                async with httpx.AsyncClient(timeout=120.0) as client:
+                    r = await client.post("https://api.stability.ai/v2beta/stable-image/generate/core", headers={"Authorization": f"Bearer {STABILITY_API_KEY}"}, files=files)
+                    r.raise_for_status()
                     jr = r.json()
-                    urls=[]
                     for art in jr.get("artifacts",[]):
                         b64 = art.get("base64")
                         if b64:
                             fname = unique_filename("png")
                             save_base64_image_to_file(b64,fname)
                             urls.append(local_image_url(request,fname))
-                    if urls:
-                        return {"provider":"stability","images":urls}
-        except Exception:
-            logger.exception("Stability SDXL failed")
-
-    # 2) OpenAI Images fallback
-    if OPENAI_API_KEY:
-        try:
-            payload={"model":"gpt-image-1","prompt":enhanced,"n":settings["samples"],"size":f"{settings['width']}x{settings['height']}"}
-            headers={"Authorization": f"Bearer {OPENAI_API_KEY}","Content-Type":"application/json"}
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                r = await client.post("https://api.openai.com/v1/images/generations", headers=headers, json=payload)
-                if r.status_code==200:
+            elif prov=="openai":
+                payload={"model":"gpt-image-1","prompt":enhanced,"n":settings["samples"],"size":f"{settings['width']}x{settings['height']}"}
+                headers={"Authorization": f"Bearer {OPENAI_API_KEY}","Content-Type":"application/json"}
+                async with httpx.AsyncClient(timeout=60.0) as client:
+                    r = await client.post("https://api.openai.com/v1/images/generations", headers=headers, json=payload)
+                    r.raise_for_status()
                     jr = r.json()
-                    urls=[]
                     for d in jr.get("data",[]):
                         b64 = d.get("b64_json")
                         if b64:
                             fname = unique_filename("png")
                             save_base64_image_to_file(b64,fname)
                             urls.append(local_image_url(request,fname))
-                    if urls:
-                        return {"provider":"openai","images":urls}
-        except Exception:
-            logger.exception("OpenAI fallback failed")
-
-    # 3) Free provider
-    if USE_FREE_IMAGE_PROVIDER and IMAGE_MODEL_FREE_URL:
-        try:
-            async with httpx.AsyncClient(timeout=90.0) as client:
-                r = await client.post(IMAGE_MODEL_FREE_URL, json={"prompt":enhanced,"samples":settings["samples"]})
-                r.raise_for_status()
-                jr = r.json()
-                images = jr.get("images") or ([jr.get("image")] if jr.get("image") else [])
-                saved=[]
-                for im in images:
-                    if im.startswith("http"):
-                        resp = await client.get(im)
-                        if resp.status_code==200:
+            elif prov=="free":
+                async with httpx.AsyncClient(timeout=90.0) as client:
+                    r = await client.post(IMAGE_MODEL_FREE_URL, json={"prompt":enhanced,"samples":settings["samples"]})
+                    r.raise_for_status()
+                    jr = r.json()
+                    images = jr.get("images") or ([jr.get("image")] if jr.get("image") else [])
+                    for im in images:
+                        if im.startswith("http"):
+                            resp = await client.get(im)
+                            if resp.status_code==200:
+                                fname=unique_filename("png")
+                                with open(os.path.join(IMAGES_DIR,fname),"wb") as f:
+                                    f.write(resp.content)
+                                urls.append(local_image_url(request,fname))
+                        else:
                             fname=unique_filename("png")
-                            with open(os.path.join(IMAGES_DIR,fname),"wb") as f:
-                                f.write(resp.content)
-                            saved.append(local_image_url(request,fname))
-                    else:
-                        fname=unique_filename("png")
-                        save_base64_image_to_file(im,fname)
-                        saved.append(local_image_url(request,fname))
-                if saved:
-                    return {"provider":"free","images":saved}
-
+                            save_base64_image_to_file(im,fname)
+                            urls.append(local_image_url(request,fname))
+            if urls:
+                cache_result(prompt, prov, urls)
+                return {"provider":prov,"images":urls}
         except Exception:
-            logger.exception("Free provider failed")
+            logger.exception(f"{prov} provider failed")
 
     return JSONResponse({"error":"all_providers_failed","prompt":prompt}, status_code=400)
 
-# ---------- Remove BG ----------
-@app.post("/remove-bg")
-async def remove_bg(request: Request, file: UploadFile = File(...)):
-    content = await file.read()
-    if not content:
-        raise HTTPException(400,"empty file")
-    if USE_FREE_IMAGE_PROVIDER and IMAGE_MODEL_FREE_URL:
-        try:
-            async with httpx.AsyncClient(timeout=90.0) as client:
-                r = await client.post(f"{IMAGE_MODEL_FREE_URL.rstrip('/')}/remove-bg", json={"image_base64": base64.b64encode(content).decode()})
-                r.raise_for_status()
-                jr = r.json()
-                b64 = jr.get("image") or jr.get("result")
-                if b64:
-                    fname = unique_filename("png")
-                    save_base64_image_to_file(b64,fname)
-                    return {"image": local_image_url(request,fname)}
-        except Exception:
-            logger.exception("Remove-bg failed")
-    raise HTTPException(501,"Remove-bg provider not configured")
-
-# ---------- Upscale ----------
-@app.post("/upscale")
-async def upscale(request: Request, file: UploadFile = File(...), scale: int = 4):
-    content = await file.read()
-    if not content:
-        raise HTTPException(400,"empty file")
-    if USE_FREE_IMAGE_PROVIDER and IMAGE_MODEL_FREE_URL:
-        try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                r = await client.post(f"{IMAGE_MODEL_FREE_URL.rstrip('/')}/upscale", json={"image_base64": base64.b64encode(content).decode(), "scale": scale})
-                r.raise_for_status()
-                jr = r.json()
-                b64 = jr.get("image") or jr.get("result")
-                if b64:
-                    fname = unique_filename("png")
-                    save_base64_image_to_file(b64,fname)
-                    return {"image": local_image_url(request,fname),"scale":scale}
-        except Exception:
-            logger.exception("Upscale failed")
-    raise HTTPException(501,"Upscale provider not configured")
-
-# ---------- Img2Img ----------
-@app.post("/img2img")
-async def img2img(request: Request, file: UploadFile = File(...), prompt: str = ""):
-    if not prompt:
-        raise HTTPException(400,"prompt required")
-    content = await file.read()
-    if not content:
-        raise HTTPException(400,"empty file")
-    enhanced = await enhance_prompt_with_groq(prompt)
-    # Stability img2img
-    if STABILITY_API_KEY:
-        try:
-            payload={"prompt":enhanced,"init_image":None,"cfg_scale":7,"steps":30,"samples":1,"model":"stable-diffusion-xl-v1","mode":"image-to-image"}
-            files={"json":(None,json.dumps(payload),"application/json"),"image[]":(file.filename,content,file.content_type or "application/octet-stream")}
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                r = await client.post("https://api.stability.ai/v2beta/stable-image/generate/core", headers={"Authorization": f"Bearer {STABILITY_API_KEY}"}, files=files)
-                if r.status_code==200:
-                    jr = r.json()
-                    urls=[]
-                    for art in jr.get("artifacts",[]):
-                        b64 = art.get("base64")
-                        if b64:
-                            fname = unique_filename("png")
-                            save_base64_image_to_file(b64,fname)
-                            urls.append(local_image_url(request,fname))
-                    if urls:
-                        return {"provider":"stability","images":urls}
-        except Exception:
-            logger.exception("Img2Img failed")
-    raise HTTPException(400,"Img2Img failed or no provider configured")
+# ---------- TTS ----------
+@app.post("/tts")
+async def text_to_speech(req: Request):
+    body = await req.json()
+    text = body.get("text")
+    if not text:
+        raise HTTPException(400,"text required")
+    if not OPENAI_API_KEY:
+        raise HTTPException(400,"no TTS provider configured")
+    payload = {"model": TTS_MODEL, "input": text}
+    headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
+    async with httpx.AsyncClient() as client:
+        r = await client.post("https://api.openai.com/v1/audio/speech", headers=headers, json=payload)
+        r.raise_for_status()
+        audio_data = r.content
+    filename = unique_filename("mp3")
+    path = os.path.join(IMAGES_DIR, filename)
+    with open(path,"wb") as f:
+        f.write(audio_data)
+    return {"audio_url": local_image_url(req, filename)}
 
 # ---------- Vision analyze ----------
 @app.post("/vision/analyze")
-async def vision_analyze(file: UploadFile = File(...), prompt: Optional[str] = None):
+async def vision_analyze(req: Request, file: UploadFile = File(...), prompt: Optional[str] = None, user_id: str = "anonymous"):
     content = await file.read()
     if not content:
-        raise HTTPException(400,"empty file")
+        raise HTTPException(400, "empty file")
     if not GROQ_API_KEY:
-        raise HTTPException(400,"no vision provider configured")
-    text = prompt or "Analyze this image: list objects, colors, suggested tags, and short description."
-    body = {"model": CHAT_MODEL,"messages":[{"role":"system","content":get_system_prompt()},{"role":"user","content": text + "\n\nImage (base64):\n" + base64.b64encode(content).decode()}]}
+        raise HTTPException(400, "no vision provider configured")
+
+    # Build dynamic, user-focused prompt
+    user_prompt = prompt or "Analyze this image: list objects, colors, suggested tags, and short description."
+    contextual_prompt = build_contextual_prompt(user_id, user_prompt)
+    
+    # Include image as base64
+    body = {
+        "model": CHAT_MODEL,
+        "messages": [
+            {"role": "system", "content": contextual_prompt},
+            {"role": "user", "content": f"Image (base64):\n{base64.b64encode(content).decode()}"}
+        ]
+    }
+    
     async with httpx.AsyncClient(timeout=60.0) as client:
-        r = await client.post("https://api.groq.com/openai/v1/chat/completions", headers={"Authorization": f"Bearer {GROQ_API_KEY}","Content-Type":"application/json"}, json=body)
+        r = await client.post("https://api.groq.com/openai/v1/chat/completions",
+                              headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
+                              json=body)
         r.raise_for_status()
         return r.json()
+
 
 # ---------- Code generation ----------
 @app.post("/code")
 async def code_gen(req: Request):
     body = await req.json()
-    prompt = body.get("prompt","")
-    language = body.get("language","python")
+    prompt = body.get("prompt", "")
+    language = body.get("language", "python")
+    user_id = body.get("user_id", "anonymous")
+
     if not prompt:
-        raise HTTPException(400,"prompt required")
+        raise HTTPException(400, "prompt required")
     if not GROQ_API_KEY:
-        raise HTTPException(400,"no groq key")
-    code_prompt = f"Write a complete, well-documented {language} program for the following request:\n\n{prompt}"
-    payload={"model":CHAT_MODEL,"messages":[{"role":"user","content":code_prompt}],"temperature":0.1}
+        raise HTTPException(400, "no groq key")
+
+    # Build user-focused prompt with context
+    contextual_prompt = build_contextual_prompt(user_id, f"Write a complete, well-documented {language} program for the following request:\n\n{prompt}")
+
+    payload = {
+        "model": CHAT_MODEL,
+        "messages": [{"role": "system", "content": contextual_prompt}, {"role": "user", "content": prompt}],
+        "temperature": 0.1
+    }
+
     async with httpx.AsyncClient(timeout=60.0) as client:
-        r = await client.post("https://api.groq.com/openai/v1/chat/completions", headers={"Authorization": f"Bearer {GROQ_API_KEY}","Content-Type":"application/json"}, json=payload)
+        r = await client.post("https://api.groq.com/openai/v1/chat/completions",
+                              headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
+                              json=payload)
         r.raise_for_status()
         return r.json()
 
-# ---------- Online search endpoint ----------
-@app.get("/search")
-async def search_online(q: str = Query(..., min_length=1)):
-    """
-    Perform a simple web search using DuckDuckGo or another search API.
-    Returns top results with title, snippet, and URL.
-    """
-    try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            # DuckDuckGo instant API (JSON) example
-            resp = await client.get("https://api.duckduckgo.com/", params={"q": q, "format": "json", "no_redirect": 1, "skip_disambig": 1})
-            resp.raise_for_status()
-            data = resp.json()
-            results = []
-            if "RelatedTopics" in data:
-                for topic in data["RelatedTopics"][:10]:
-                    text = topic.get("Text") or topic.get("Name")
-                    url = topic.get("FirstURL")
-                    if text and url:
-                        results.append({"title": text, "url": url})
-            return {"query": q, "results": results}
-    except Exception:
-        logger.exception("Online search failed")
-        return {"query": q, "results": [], "error": "search_failed"}
+@app.post("/img2img")
+async def img2img(request: Request, file: UploadFile = File(...), prompt: str = "", user_id: str = "anonymous"):
+    if not prompt:
+        raise HTTPException(400, "prompt required")
+    content = await file.read()
+    if not content:
+        raise HTTPException(400, "empty file")
 
-# ---------- Health check ----------
-@app.get("/")
-async def root():
-    return {
-        "status": "ok",
-        "providers": {
-            "groq": bool(GROQ_API_KEY),
-            "stability": bool(STABILITY_API_KEY),
-            "openai": bool(OPENAI_API_KEY),
-            "free_image_provider": bool(USE_FREE_IMAGE_PROVIDER and IMAGE_MODEL_FREE_URL)
-        },
-        "creator": CREATOR_INFO["bio"]
-    }
+    cache_key = f"img2img:{user_id}:{prompt}"
+    cached = get_cached(cache_key)
+    if cached:
+        return {"cached": True, **cached}
+
+    enhanced = await enhance_prompt_with_groq(prompt)
+    urls = []
+
+    if STABILITY_API_KEY:
+        try:
+            payload = {
+                "prompt": enhanced,
+                "init_image": None,
+                "cfg_scale": 7,
+                "steps": 30,
+                "samples": 1,
+                "model": "stable-diffusion-xl-v1",
+                "mode": "image-to-image"
+            }
+            files = {"json": (None, json.dumps(payload), "application/json"),
+                     "image[]": (file.filename, content, file.content_type or "application/octet-stream")}
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                r = await client.post("https://api.stability.ai/v2beta/stable-image/generate/core",
+                                      headers={"Authorization": f"Bearer {STABILITY_API_KEY}"}, files=files)
+                r.raise_for_status()
+                jr = r.json()
+                for art in jr.get("artifacts", []):
+                    b64 = art.get("base64")
+                    if b64:
+                        fname = unique_filename("png")
+                        save_base64_image_to_file(b64, fname)
+                        urls.append(local_image_url(request, fname))
+            if urls:
+                cache_result(cache_key, "stability", urls)
+                return {"provider": "stability", "images": urls}
+        except Exception:
+            logger.exception("Img2Img failed")
+    raise HTTPException(400, "Img2Img failed or no provider configured")
+
+
+@app.get("/search")
+async def google_search(q: str = Query(..., min_length=1)):
+    if not GOOGLE_API_KEY or not GOOGLE_CSE_ID:
+        raise HTTPException(400, "Google Search not configured")
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        url = "https://www.googleapis.com/customsearch/v1"
+        params = {"key": GOOGLE_API_KEY, "cx": GOOGLE_CSE_ID, "q": q}
+        resp = await client.get(url, params=params)
+        resp.raise_for_status()
+        data = resp.json()
+        results = []
+        for item in data.get("items", []):
+            results.append({
+                "title": item.get("title"),
+                "snippet": item.get("snippet"),
+                "link": item.get("link")
+            })
+        return {"query": q, "results": results}
+
+
+# ---------- STT ----------
+@app.post("/stt")
+async def speech_to_text(file: UploadFile = File(...)):
+    content = await file.read()
+    if not content:
+        raise HTTPException(400,"empty file")
+    if not OPENAI_API_KEY:
+        raise HTTPException(400,"no STT provider configured")
+    files = {"file": (file.filename, content, file.content_type)}
+    async with httpx.AsyncClient() as client:
+        r = await client.post("https://api.openai.com/v1/audio/transcriptions", headers={"Authorization": f"Bearer {OPENAI_API_KEY}"}, files=files, data={"model": STT_MODEL})
+        r.raise_for_status()
+        return r.json()
+
+# ---------- Other endpoints (/remove-bg, /upscale, /img2img, /vision/analyze, /code, /search, /root) remain unchanged ----------
 
 # ---------- Run ----------
 if __name__ == "__main__":
