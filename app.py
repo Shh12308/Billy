@@ -8,6 +8,8 @@ import base64
 import time
 import logging
 from typing import Optional, Dict, Any
+import subprocess
+import tempfile
 
 import httpx
 from fastapi import FastAPI, Request, UploadFile, File, HTTPException, Query
