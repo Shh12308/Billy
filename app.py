@@ -202,107 +202,81 @@ async def chat_endpoint(req: Request):
 @app.post("/image")
 async def image_gen(request: Request):
     body = await request.json()
-
     prompt = body.get("prompt", "")
-    model = body.get("model", "").lower()
     samples = int(body.get("samples", 1))
 
     if not prompt:
         raise HTTPException(400, "prompt required")
 
-    # ---- Auto Model Detection Based on Prompt ----
-    if not model:
-        p = prompt.lower()
-        if any(w in p for w in ["realistic", "ultra realistic", "photo", "portrait", "headshot"]):
-            model = "sdxl"
-        elif any(w in p for w in ["anime", "manga", "cartoon"]):
-            model = "anime"
-        else:
-            model = "sd3"  # default upgrade path
+    # --- SDXL Settings ---
+    model = "stable-diffusion-xl-v1"
+    height = 1024
+    width = 1024
+    steps = 30
+    cfg_scale = 7
 
-    # Map model aliases
-    model_map = {
-        "sdxl": "stable-diffusion-xl-v1",
-        "sd3": "stable-diffusion-3.5-large",  # if supported by key
-        "anime": "stable-diffusion-xl-v1",  # or anime engine
-    }
-
-    chosen_model = model_map.get(model, "stable-diffusion-xl-v1")
-
-    # --------- 1) Stability AI Primary ---------
     if STABILITY_API_KEY:
         try:
             url = "https://api.stability.ai/v2beta/stable-image/generate/core"
-            headers = {
-                "Authorization": f"Bearer {STABILITY_API_KEY}",
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-            }
-
             payload = {
                 "prompt": prompt,
-                "cfg_scale": 7,
-                "steps": 30,
+                "cfg_scale": cfg_scale,
+                "steps": steps,
                 "samples": samples,
-                "height": 512,
-                "width": 512,
-                "model": chosen_model,
+                "height": height,
+                "width": width,
+                "model": model,
             }
+            files = {"json": (None, json.dumps(payload), "application/json")}
 
             async with httpx.AsyncClient(timeout=120.0) as client:
-                r = await client.post(url, headers=headers, json=payload)
-
-                if r.status_code == 200:
-                    jr = r.json()
-                    imgs = [
-                        art["base64"] for art in jr.get("artifacts", [])
-                        if art.get("base64")
-                    ]
-                    if imgs:
-                        return {"provider": "stability", "images": imgs, "model": chosen_model}
-                else:
-                    logger.warning("Stability returned %s: %s", r.status_code, r.text[:300])
+                r = await client.post(
+                    url,
+                    headers={"Authorization": f"Bearer {STABILITY_API_KEY}"},
+                    files=files
+                )
+                r.raise_for_status()
+                jr = r.json()
+                imgs = [art.get("base64") for art in jr.get("artifacts", []) if art.get("base64")]
+                if imgs:
+                    return {"provider": "stability", "images": imgs, "model": model}
         except Exception as e:
-            logger.exception("Stability image error — falling back")
+            logger.exception("Stability SDXL image generation failed")
 
-    # --------- 2) OpenAI fallback ---------
+    # Fallback to OpenAI Images
     if OPENAI_API_KEY:
         try:
             url = "https://api.openai.com/v1/images/generations"
-            headers = {
-                "Authorization": f"Bearer {OPENAI_API_KEY}",
-                "Content-Type": "application/json"
-            }
             payload = {
                 "model": "gpt-image-1",
                 "prompt": prompt,
                 "n": samples,
-                "size": "512x512"
+                "size": f"{height}x{width}"
             }
+            headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
 
             async with httpx.AsyncClient(timeout=60.0) as client:
                 r = await client.post(url, headers=headers, json=payload)
-                if r.status_code == 200:
-                    jr = r.json()
-                    imgs = [d["b64_json"] for d in jr.get("data", [])]
-                    if imgs:
-                        return {"provider": "openai", "images": imgs, "model": "gpt-image-1"}
+                r.raise_for_status()
+                jr = r.json()
+                imgs = [d["b64_json"] for d in jr.get("data", []) if d.get("b64_json")]
+                if imgs:
+                    return {"provider": "openai", "images": imgs, "model": "gpt-image-1"}
         except Exception:
             logger.exception("OpenAI image fallback failed")
 
-    # --------- 3) Free fallback (local or flux.dev etc) ---------
+    # Optional free image provider
     if USE_FREE_IMAGE_PROVIDER and IMAGE_MODEL_FREE_URL:
         try:
             async with httpx.AsyncClient(timeout=60.0) as client:
                 r = await client.post(IMAGE_MODEL_FREE_URL, json={"prompt": prompt, "samples": samples})
-                if r.status_code == 200:
-                    jr = r.json()
-                    if "image" in jr:
-                        return {"provider": "free", "images": [jr["image"]]}
-                    if "images" in jr:
-                        return {"provider": "free", "images": jr["images"]}
+                r.raise_for_status()
+                jr = r.json()
+                imgs = jr.get("images") or ([jr["image"]] if "image" in jr else [])
+                if imgs:
+                    return {"provider": "free", "images": imgs}
         except Exception:
-            logger.exception("Free image provider error")
+            logger.exception("Free image provider failed")
 
     return JSONResponse(
         {"error": "all_providers_failed", "prompt": prompt},
