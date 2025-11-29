@@ -122,6 +122,54 @@ def query_kg(query: str, limit: int = 5):
     conn.close()
     return [{"title": r[0], "content": r[1]} for r in rows]
 
+def analyze_prompt(prompt: str):
+    p = prompt.lower().strip()
+    result = {
+        "model": "sdxl",
+        "width": 1024,
+        "height": 1024,
+        "steps": 30,
+        "cfg_scale": 7,
+        "samples": 1,
+        "safe": True
+    }
+
+    # Photo realism
+    if any(w in p for w in [
+        "realistic", "ultra realistic", "photo", "portrait", "headshot", "dslr", "cinematic", "4k", "8k", "hyperreal"
+    ]):
+        result["model"] = "stable-diffusion-xl-v1"
+        result["steps"] = 35
+        result["cfg_scale"] = 9
+
+    # Anime / cartoon / manga
+    elif any(w in p for w in ["anime", "manga", "cartoon", "pixar", "disney", "chibi"]):
+        result["model"] = "anime"  # or anime engine
+
+    # Landscape / architecture → wider format
+    if any(w in p for w in ["landscape", "city", "mountain", "valley", "architecture", "interior"]):
+        result["width"] = 1280
+        result["height"] = 768
+
+    # Wallpaper / poster sizing
+    if "wallpaper" in p or "background" in p:
+        result["width"] = 1920
+        result["height"] = 1080
+
+    # Wide cinematic movie frame
+    if any(w in p for w in ["movie frame", "cinematic scene", "film still"]):
+        result["width"] = 1920
+        result["height"] = 820
+
+    # Multiple images request
+    for w in p.split():
+        if w.isnumeric():
+            n = int(w)
+            if 1 <= n <= 6:
+                result["samples"] = n
+
+    return result
+    
 # ---------- GROQ STREAMING (chat) ----------
 async def groq_stream(prompt: str):
     if not GROQ_API_KEY:
@@ -203,10 +251,17 @@ async def chat_endpoint(req: Request):
 async def image_gen(request: Request):
     body = await request.json()
     prompt = body.get("prompt", "")
-    samples = int(body.get("samples", 1))
-
     if not prompt:
         raise HTTPException(400, "prompt required")
+
+    settings = analyze_prompt(prompt)
+
+    model = settings["model"]
+    height = settings["height"]
+    width = settings["width"]
+    steps = settings["steps"]
+    cfg_scale = settings["cfg_scale"]
+    samples = settings["samples"]
 
     # --- SDXL Settings ---
     model = "stable-diffusion-xl-v1"
