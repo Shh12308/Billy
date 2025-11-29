@@ -202,99 +202,112 @@ async def chat_endpoint(req: Request):
 @app.post("/image")
 async def image_gen(request: Request):
     body = await request.json()
+
     prompt = body.get("prompt", "")
+    model = body.get("model", "").lower()
+    samples = int(body.get("samples", 1))
+
     if not prompt:
         raise HTTPException(400, "prompt required")
 
-    # Try Stability.ai (v2 style) if configured
+    # ---- Auto Model Detection Based on Prompt ----
+    if not model:
+        p = prompt.lower()
+        if any(w in p for w in ["realistic", "ultra realistic", "photo", "portrait", "headshot"]):
+            model = "sdxl"
+        elif any(w in p for w in ["anime", "manga", "cartoon"]):
+            model = "anime"
+        else:
+            model = "sd3"  # default upgrade path
+
+    # Map model aliases
+    model_map = {
+        "sdxl": "stable-diffusion-xl-v1",
+        "sd3": "stable-diffusion-3.5-large",  # if supported by key
+        "anime": "stable-diffusion-xl-v1",  # or anime engine
+    }
+
+    chosen_model = model_map.get(model, "stable-diffusion-xl-v1")
+
+    # --------- 1) Stability AI Primary ---------
     if STABILITY_API_KEY:
-        stability_endpoint = STABILITY_URL or "https://api.stability.ai/v2beta/stable-image/generate/core"
-        headers = {"Authorization": f"Bearer {STABILITY_API_KEY}"}
-        # Some Stability endpoints expect JSON, some multipart. Try JSON first.
         try:
+            url = "https://api.stability.ai/v2beta/stable-image/generate/core"
+            headers = {
+                "Authorization": f"Bearer {STABILITY_API_KEY}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            }
+
             payload = {
-                "text_prompts": [{"text": prompt}],
+                "prompt": prompt,
                 "cfg_scale": 7,
+                "steps": 30,
+                "samples": samples,
                 "height": 512,
                 "width": 512,
-                "samples": 1
+                "model": chosen_model,
             }
+
             async with httpx.AsyncClient(timeout=120.0) as client:
-                r = await client.post(stability_endpoint, headers={**headers, "Content-Type":"application/json", "Accept":"application/json"}, json=payload)
+                r = await client.post(url, headers=headers, json=payload)
+
                 if r.status_code == 200:
                     jr = r.json()
-                    artifacts = jr.get("artifacts") or []
-                    if artifacts and isinstance(artifacts, list):
-                        b64 = artifacts[0].get("base64") or artifacts[0].get("b64") or artifacts[0].get("b64_json")
-                        if b64:
-                            logger.info("Image generated via Stability (json)")
-                            return {"image": b64}
+                    imgs = [
+                        art["base64"] for art in jr.get("artifacts", [])
+                        if art.get("base64")
+                    ]
+                    if imgs:
+                        return {"provider": "stability", "images": imgs, "model": chosen_model}
                 else:
-                    logger.warning("Stability (json) returned %s: %s", r.status_code, r.text[:400])
+                    logger.warning("Stability returned %s: %s", r.status_code, r.text[:300])
         except Exception as e:
-            logger.exception("Stability JSON attempt failed")
+            logger.exception("Stability image error — falling back")
 
-        # If JSON attempt failed and endpoint expects multipart/form-data, try files approach
-        try:
-            # prepare multipart form (prompt as simple field)
-            form = {"prompt": (None, prompt)}
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                r = await client.post(stability_endpoint, headers=headers, files=form)
-                if r.status_code == 200:
-                    jr = r.json()
-                    artifacts = jr.get("artifacts") or []
-                    if artifacts and isinstance(artifacts, list):
-                        b64 = artifacts[0].get("base64") or artifacts[0].get("b64") or artifacts[0].get("b64_json")
-                        if b64:
-                            logger.info("Image generated via Stability (multipart)")
-                            return {"image": b64}
-                else:
-                    logger.warning("Stability (multipart) returned %s: %s", r.status_code, r.text[:400])
-        except Exception as e:
-            logger.exception("Stability multipart attempt failed")
-
-    # Try OpenAI images (gpt-image-1) as fallback
+    # --------- 2) OpenAI fallback ---------
     if OPENAI_API_KEY:
         try:
             url = "https://api.openai.com/v1/images/generations"
-            headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
-            payload = {"model": "gpt-image-1", "prompt": prompt, "size": "512x512"}
+            headers = {
+                "Authorization": f"Bearer {OPENAI_API_KEY}",
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "model": "gpt-image-1",
+                "prompt": prompt,
+                "n": samples,
+                "size": "512x512"
+            }
+
             async with httpx.AsyncClient(timeout=60.0) as client:
                 r = await client.post(url, headers=headers, json=payload)
                 if r.status_code == 200:
                     jr = r.json()
-                    data = jr.get("data", [])
-                    if data and data[0].get("b64_json"):
-                        logger.info("Image generated via OpenAI images")
-                        return {"image": data[0]["b64_json"]}
-                else:
-                    logger.warning("OpenAI image generation returned %s: %s", r.status_code, r.text[:400])
+                    imgs = [d["b64_json"] for d in jr.get("data", [])]
+                    if imgs:
+                        return {"provider": "openai", "images": imgs, "model": "gpt-image-1"}
         except Exception:
-            logger.exception("OpenAI image attempt failed")
+            logger.exception("OpenAI image fallback failed")
 
-    # Try free provider if configured
+    # --------- 3) Free fallback (local or flux.dev etc) ---------
     if USE_FREE_IMAGE_PROVIDER and IMAGE_MODEL_FREE_URL:
         try:
-            async with httpx.AsyncClient(timeout=90.0) as client:
-                r = await client.post(IMAGE_MODEL_FREE_URL, json={"prompt": prompt})
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                r = await client.post(IMAGE_MODEL_FREE_URL, json={"prompt": prompt, "samples": samples})
                 if r.status_code == 200:
                     jr = r.json()
-                    if jr.get("image"):
-                        logger.info("Image generated via free provider (base64)")
-                        return {"image": jr["image"]}
-                    if jr.get("url"):
-                        # fetch and base64
-                        resp = await client.get(jr["url"])
-                        if resp.status_code == 200:
-                            b64 = base64.b64encode(resp.content).decode()
-                            return {"image": b64}
-                else:
-                    logger.warning("Free image provider returned %s: %s", r.status_code, r.text[:400])
+                    if "image" in jr:
+                        return {"provider": "free", "images": [jr["image"]]}
+                    if "images" in jr:
+                        return {"provider": "free", "images": jr["images"]}
         except Exception:
-            logger.exception("Free image provider attempt failed")
+            logger.exception("Free image provider error")
 
-    return JSONResponse({"error": "no_image_provider_available_or_all_failed"}, status_code=400)
-
+    return JSONResponse(
+        {"error": "all_providers_failed", "prompt": prompt},
+        status_code=400
+    )
 # ---------- CODE generation endpoint (scaffold) ----------
 @app.post("/code")
 async def code_gen(req: Request):
