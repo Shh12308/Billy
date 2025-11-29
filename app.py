@@ -277,87 +277,118 @@ async def chat_endpoint(req: Request):
         return r.json()
 
 # ---------- Image generation ----------
+# ---------- Image generation ----------
 @app.post("/image")
 async def image_gen(request: Request):
     body = await request.json()
-    prompt = body.get("prompt","")
-    samples = int(body.get("samples",1))
+    prompt = body.get("prompt", "")
+    samples = int(body.get("samples", 1))
     if not prompt:
-        raise HTTPException(400,"prompt required")
+        raise HTTPException(400, "prompt required")
 
     # Check cache first
     cached = get_cached(prompt)
     if cached:
         return {"cached": True, **cached}
 
+    # Enhance prompt
     enhanced = await enhance_prompt_with_groq(prompt)
     settings = analyze_prompt(enhanced)
     settings["samples"] = samples or settings["samples"]
 
-    # Attempt providers in order
-    providers = []
+    urls = []
+    provider_used = None
+
+    # ---------- 1) Stability SDXL ----------
     if STABILITY_API_KEY:
-        providers.append("stability")
-    if OPENAI_API_KEY:
-        providers.append("openai")
-    if USE_FREE_IMAGE_PROVIDER and IMAGE_MODEL_FREE_URL:
-        providers.append("free")
-
-    for prov in providers:
         try:
-            urls = []
-            if prov=="stability":
-                payload = {"prompt": enhanced,"cfg_scale":settings["cfg_scale"],"steps":settings["steps"],"samples":settings["samples"],"height":settings["height"],"width":settings["width"],"model":"stable-diffusion-xl-v1","negative_prompt":settings.get("negative_prompt")}
-                files = {"json": (None,json.dumps(payload),"application/json")}
-                async with httpx.AsyncClient(timeout=120.0) as client:
-                    r = await client.post("https://api.stability.ai/v2beta/stable-image/generate/core", headers={"Authorization": f"Bearer {STABILITY_API_KEY}"}, files=files)
-                    r.raise_for_status()
-                    jr = r.json()
-                    for art in jr.get("artifacts",[]):
-                        b64 = art.get("base64")
-                        if b64:
-                            fname = unique_filename("png")
-                            save_base64_image_to_file(b64,fname)
-                            urls.append(local_image_url(request,fname))
-            elif prov=="openai":
-                payload={"model":"gpt-image-1","prompt":enhanced,"n":settings["samples"],"size":f"{settings['width']}x{settings['height']}"}
-                headers={"Authorization": f"Bearer {OPENAI_API_KEY}","Content-Type":"application/json"}
-                async with httpx.AsyncClient(timeout=60.0) as client:
-                    r = await client.post("https://api.openai.com/v1/images/generations", headers=headers, json=payload)
-                    r.raise_for_status()
-                    jr = r.json()
-                    for d in jr.get("data",[]):
-                        b64 = d.get("b64_json")
-                        if b64:
-                            fname = unique_filename("png")
-                            save_base64_image_to_file(b64,fname)
-                            urls.append(local_image_url(request,fname))
-            elif prov=="free":
-                async with httpx.AsyncClient(timeout=90.0) as client:
-                    r = await client.post(IMAGE_MODEL_FREE_URL, json={"prompt":enhanced,"samples":settings["samples"]})
-                    r.raise_for_status()
-                    jr = r.json()
-                    images = jr.get("images") or ([jr.get("image")] if jr.get("image") else [])
-                    for im in images:
-                        if im.startswith("http"):
-                            resp = await client.get(im)
-                            if resp.status_code==200:
-                                fname=unique_filename("png")
-                                with open(os.path.join(IMAGES_DIR,fname),"wb") as f:
-                                    f.write(resp.content)
-                                urls.append(local_image_url(request,fname))
-                        else:
-                            fname=unique_filename("png")
-                            save_base64_image_to_file(im,fname)
-                            urls.append(local_image_url(request,fname))
+            payload = {
+                "height": settings["height"],
+                "width": settings["width"],
+                "samples": settings["samples"],
+                "steps": settings["steps"],
+                "cfg_scale": settings["cfg_scale"],
+                "seed": None,
+                "text_prompts": [{"text": enhanced, "weight": 1}],
+                "style_preset": "photographic",
+                "negative_prompts": [settings.get("negative_prompt", "")]
+            }
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                r = await client.post(
+                    "https://api.stability.ai/v2beta/stable-image/generate",
+                    headers={"Authorization": f"Bearer {STABILITY_API_KEY}", "Content-Type": "application/json"},
+                    json=payload
+                )
+                r.raise_for_status()
+                jr = r.json()
+                for art in jr.get("artifacts", []):
+                    b64 = art.get("base64")
+                    if b64:
+                        fname = unique_filename("png")
+                        save_base64_image_to_file(b64, fname)
+                        urls.append(local_image_url(request, fname))
             if urls:
-                cache_result(prompt, prov, urls)
-                return {"provider":prov,"images":urls}
+                provider_used = "stability"
         except Exception:
-            logger.exception(f"{prov} provider failed")
+            logger.exception("Stability provider failed")
 
-    return JSONResponse({"error":"all_providers_failed","prompt":prompt}, status_code=400)
+    # ---------- 2) OpenAI fallback ----------
+    if not urls and OPENAI_API_KEY:
+        try:
+            payload = {
+                "model": "gpt-image-1",
+                "prompt": enhanced,
+                "n": settings["samples"],
+                "size": f"{settings['width']}x{settings['height']}"
+            }
+            headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                r = await client.post("https://api.openai.com/v1/images/generations", headers=headers, json=payload)
+                r.raise_for_status()
+                jr = r.json()
+                for d in jr.get("data", []):
+                    b64 = d.get("b64_json")
+                    if b64:
+                        fname = unique_filename("png")
+                        save_base64_image_to_file(b64, fname)
+                        urls.append(local_image_url(request, fname))
+            if urls:
+                provider_used = "openai"
+        except Exception:
+            logger.exception("OpenAI fallback failed")
 
+    # ---------- 3) Free provider fallback ----------
+    if not urls and USE_FREE_IMAGE_PROVIDER and IMAGE_MODEL_FREE_URL:
+        try:
+            async with httpx.AsyncClient(timeout=90.0) as client:
+                r = await client.post(IMAGE_MODEL_FREE_URL, json={"prompt": enhanced, "samples": settings["samples"]})
+                r.raise_for_status()
+                jr = r.json()
+                images = jr.get("images") or ([jr.get("image")] if jr.get("image") else [])
+                for im in images:
+                    if im.startswith("http"):
+                        resp = await client.get(im)
+                        if resp.status_code == 200:
+                            fname = unique_filename("png")
+                            with open(os.path.join(IMAGES_DIR, fname), "wb") as f:
+                                f.write(resp.content)
+                            urls.append(local_image_url(request, fname))
+                    else:
+                        fname = unique_filename("png")
+                        save_base64_image_to_file(im, fname)
+                        urls.append(local_image_url(request, fname))
+            if urls:
+                provider_used = "free"
+        except Exception:
+            logger.exception("Free provider failed")
+
+    if not urls:
+        return JSONResponse({"error": "all_providers_failed", "prompt": prompt}, status_code=400)
+
+    # Cache result
+    cache_result(prompt, provider_used, urls)
+    return {"provider": provider_used, "images": urls}
+    
 # ---------- TTS ----------
 @app.post("/tts")
 async def text_to_speech(req: Request):
@@ -457,19 +488,25 @@ async def img2img(request: Request, file: UploadFile = File(...), prompt: str = 
     if STABILITY_API_KEY:
         try:
             payload = {
-                "prompt": enhanced,
-                "init_image": None,
-                "cfg_scale": 7,
-                "steps": 30,
+                "height": 1024,
+                "width": 1024,
                 "samples": 1,
-                "model": "stable-diffusion-xl-v1",
-                "mode": "image-to-image"
+                "steps": 30,
+                "cfg_scale": 7,
+                "init_image": None,
+                "text_prompts": [{"text": enhanced, "weight": 1}],
+                "negative_prompts": ["nsfw, nudity, watermark, lowres, text, logo"]
             }
-            files = {"json": (None, json.dumps(payload), "application/json"),
-                     "image[]": (file.filename, content, file.content_type or "application/octet-stream")}
+            files = {
+                "json": (None, json.dumps(payload), "application/json"),
+                "image[]": (file.filename, content, file.content_type or "application/octet-stream")
+            }
             async with httpx.AsyncClient(timeout=120.0) as client:
-                r = await client.post("https://api.stability.ai/v2beta/stable-image/generate/core",
-                                      headers={"Authorization": f"Bearer {STABILITY_API_KEY}"}, files=files)
+                r = await client.post(
+                    "https://api.stability.ai/v2beta/stable-image/generate",
+                    headers={"Authorization": f"Bearer {STABILITY_API_KEY}"},
+                    files=files
+                )
                 r.raise_for_status()
                 jr = r.json()
                 for art in jr.get("artifacts", []):
@@ -484,8 +521,7 @@ async def img2img(request: Request, file: UploadFile = File(...), prompt: str = 
         except Exception:
             logger.exception("Img2Img failed")
     raise HTTPException(400, "Img2Img failed or no provider configured")
-
-
+    
 @app.get("/search")
 async def google_search(q: str = Query(..., min_length=1)):
     if not GOOGLE_API_KEY or not GOOGLE_CSE_ID:
