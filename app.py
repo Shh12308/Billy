@@ -369,14 +369,14 @@ async def image_gen(request: Request):
                     }
 
                     r = await client.post(
-                        "https://api.stability.ai/v1/generation/stable-diffusion-xl-1024x1024/text-to-image",
-                        headers={
-                            "Authorization": f"Bearer {STABILITY_API_KEY}",
-                            "Content-Type": "application/json",
-                            "Accept": "application/json",
-                        },
-                        json=payload
-                    )
+    "https://api.stability.ai/v1/generation/stable-diffusion-xl/text-to-image",
+    headers={...},
+    json={
+        **payload,
+        "width": settings["width"],
+        "height": settings["height"]
+    }
+)
                     r.raise_for_status()
                     jr = r.json()
 
