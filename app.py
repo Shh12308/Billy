@@ -165,6 +165,42 @@ def save_base64_image_to_file(b64: str, filename: str) -> str:
         f.write(img_bytes)
     return path
 
+#------duckduckgo
+
+async def duckduckgo_search(q: str):
+    """
+    Use DuckDuckGo Instant Answer API (no API key required).
+    Returns a simple structured result with abstract, answer and a list of related topics.
+    """
+    url = "https://api.duckduckgo.com/"
+    params = {"q": q, "format": "json", "no_html": 1, "skip_disambig": 1}
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        r = await client.get(url, params=params)
+        r.raise_for_status()
+        data = r.json()
+
+        results = []
+        # RelatedTopics can contain nested topics or single items; handle both.
+        for item in data.get("RelatedTopics", []):
+            if isinstance(item, dict):
+                # Some items are like {"Text": "...", "FirstURL": "..."}
+                if item.get("Text"):
+                    results.append({"title": item.get("Text"), "url": item.get("FirstURL")})
+                # Some are category blocks with "Topics" list
+                elif item.get("Topics"):
+                    for t in item.get("Topics", []):
+                        if t.get("Text"):
+                            results.append({"title": t.get("Text"), "url": t.get("FirstURL")})
+        # Limit results to a reasonable number
+        results = results[:10]
+
+        return {
+            "query": q,
+            "abstract": data.get("AbstractText"),
+            "answer": data.get("Answer"),
+            "results": results
+            
+
 # ---------- Prompt enhancer ----------
 async def enhance_prompt_with_groq(prompt: str) -> str:
     if not GROQ_API_KEY:
@@ -568,24 +604,19 @@ async def img2img(request: Request, file: UploadFile = File(...), prompt: str = 
     raise HTTPException(400, "img2img failed")
     
 @app.get("/search")
-async def google_search(q: str = Query(..., min_length=1)):
-    if not GOOGLE_API_KEY or not GOOGLE_CSE_ID:
-        raise HTTPException(400, "Google Search not configured")
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        url = "https://www.googleapis.com/customsearch/v1"
-        params = {"key": GOOGLE_API_KEY, "cx": GOOGLE_CSE_ID, "q": q}
-        resp = await client.get(url, params=params)
-        resp.raise_for_status()
-        data = resp.json()
-        results = []
-        for item in data.get("items", []):
-            results.append({
-                "title": item.get("title"),
-                "snippet": item.get("snippet"),
-                "link": item.get("link")
-            })
-        return {"query": q, "results": results}
-
+async def duck_search(q: str = Query(..., min_length=1)):
+    """
+    Lightweight search endpoint backed by DuckDuckGo Instant Answer API.
+    Example: /search?q=python+asyncio
+    """
+    try:
+        return await duckduckgo_search(q)
+    except httpx.HTTPStatusError as e:
+        logger.exception("DuckDuckGo returned HTTP error")
+        raise HTTPException(502, "duckduckgo_error")
+    except Exception:
+        logger.exception("DuckDuckGo search failed")
+        raise HTTPException(500, "search_failed")
 
 # ---------- STT ----------
 @app.post("/stt")
