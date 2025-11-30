@@ -298,39 +298,45 @@ async def image_gen(request: Request):
     urls = []
     provider_used = None
 
-    # ---------- 1) Stability SDXL ----------
-    if STABILITY_API_KEY:
-        try:
-            payload = {
-                "height": settings["height"],
-                "width": settings["width"],
-                "samples": settings["samples"],
-                "steps": settings["steps"],
-                "cfg_scale": settings["cfg_scale"],
-                "seed": None,
-                "text_prompts": [{"text": enhanced, "weight": 1}],
-                "style_preset": "photographic",
-                "negative_prompts": [settings.get("negative_prompt", "")]
-            }
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                r = await client.post(
-                    "https://api.stability.ai/v2beta/stable-image/generate",
-                    headers={"Authorization": f"Bearer {STABILITY_API_KEY}", "Content-Type": "application/json"},
-                    json=payload
-                )
-                r.raise_for_status()
-                jr = r.json()
-                for art in jr.get("artifacts", []):
-                    b64 = art.get("base64")
-                    if b64:
-                        fname = unique_filename("png")
-                        save_base64_image_to_file(b64, fname)
-                        urls.append(local_image_url(request, fname))
-            if urls:
-                provider_used = "stability"
-        except Exception:
-            logger.exception("Stability provider failed")
+   # ---------- 1) Stability SDXL ----------
+if STABILITY_API_KEY:
+    try:
+        payload = {
+            "text_prompts": [{"text": enhanced}],
+            "samples": settings["samples"],
+            "steps": settings["steps"],
+            "cfg_scale": settings["cfg_scale"],
+            "height": settings["height"],
+            "width": settings["width"],
+            "style_preset": "photographic"
+        }
 
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            r = await client.post(
+                "https://api.stability.ai/v1/generation/stable-diffusion-xl-1024x1024/text-to-image",
+                headers={
+                    "Authorization": f"Bearer {STABILITY_API_KEY}",
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                },
+                json=payload
+            )
+
+            r.raise_for_status()
+            jr = r.json()
+            for art in jr.get("artifacts", []):
+                b64 = art.get("base64")
+                if b64:
+                    fname = unique_filename("png")
+                    save_base64_image_to_file(b64, fname)
+                    urls.append(local_image_url(request, fname))
+
+        if urls:
+            provider_used = "stability"
+
+    except Exception:
+        logger.exception("Stability provider failed")
+        
     # ---------- 2) OpenAI fallback ----------
     if not urls and OPENAI_API_KEY:
         try:
