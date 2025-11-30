@@ -369,7 +369,7 @@ async def image_gen(request: Request):
                     }
 
                     r = await client.post(
-    "https://api.stability.ai/v1/generation/stable-diffusion-xl/text-to-image",
+    "https://api.stability.ai/v2beta/stable-image/generate/sd3",
     headers={...},
     json={
         **payload,
