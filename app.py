@@ -199,7 +199,7 @@ async def duckduckgo_search(q: str):
             "abstract": data.get("AbstractText"),
             "answer": data.get("Answer"),
             "results": results
-            
+            }
 
 # ---------- Prompt enhancer ----------
 async def enhance_prompt_with_groq(prompt: str) -> str:
