@@ -319,9 +319,6 @@ async def image_gen(request: Request):
     body = await request.json()
     prompt = body.get("prompt", "")
     samples = int(body.get("samples", 1))
-    ratio = body.get("ratio", "1:1")
-    upscale = body.get("upscale", False)
-    remove_bg = body.get("remove_bg", False)
     return_base64 = body.get("base64", False)
 
     if not prompt:
@@ -330,134 +327,103 @@ async def image_gen(request: Request):
     # Check cache first
     cached = get_cached(prompt)
     if cached:
-        return EventSourceResponse(stream({"event": "cached", "data": json.dumps(cached)}))
+        return {"cached": True, "images": cached["result"]}
 
     # Enhance prompt via Groq
     enhanced = await enhance_prompt_with_groq(prompt)
-    settings = analyze_prompt(enhanced)
-    settings["samples"] = samples or settings["samples"]
+    urls = []
 
-    # Streaming generator
-    async def generate():
-        nonlocal enhanced, settings
-        yield json.dumps({"event": "enhanced", "prompt": enhanced})
+    provider_used = None
 
-        urls = []
-        provider_used = None
+    # ---------- Stability AI v2 ----------
+    if STABILITY_API_KEY:
+        try:
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                payload = {
+                    "text_prompts": [{"text": enhanced}],
+                    "cfg_scale": 7,
+                    "samples": samples,
+                    "width": 1024,
+                    "height": 1024,
+                }
+                headers = {
+                    "Authorization": f"Bearer {STABILITY_API_KEY}",
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                }
+                url = "https://api.stability.ai/v2beta/stable-image/generate/sdxl"
+                resp = await client.post(url, headers=headers, json=payload)
+                resp.raise_for_status()
+                jr = resp.json()
 
-        # ---------- MODEL SELECTION BY KEYWORDS ----------
-        low = prompt.lower()
-        if any(w in low for w in ["photo", "portrait", "realistic"]):
-            model = "stability-photo"
-        elif any(w in low for w in ["anime", "manga", "japanese"]):
-            model = "stability-anime"
-        elif any(w in low for w in ["3d", "render", "pixar"]):
-            model = "stability-3d"
-        else:
-            model = "general"
-
-        yield json.dumps({"event": "model_selected", "model": model})
-
-        # ---------- 1) Stability SDXL FIRST ----------
-        if STABILITY_API_KEY:
-            try:
-                async with httpx.AsyncClient(timeout=120.0) as client:
-                    payload = {
-                        "samples": samples,
-                        "text_prompts": [{"text": enhanced}],
-                        "style_preset": "photographic"
-                    }
-
-                    r = await client.post(
-    "https://api.stability.ai/v2beta/stable-image/generate/sd3",
-    headers={...},
-    json={
-        **payload,
-        "width": settings["width"],
-        "height": settings["height"]
-    }
-)
-                    r.raise_for_status()
-                    jr = r.json()
-
-                    for art in jr.get("artifacts", []):
-                        b64 = art.get("base64")
-                        if b64:
-                            if return_base64:
-                                urls.append(b64)
-                            else:
-                                fname = unique_filename("png")
-                                save_base64_image_to_file(b64, fname)
-                                urls.append(local_image_url(request, fname))
-
-                provider_used = "stability"
-                yield json.dumps({"event": "provider", "provider": "stability"})
-            except Exception:
-                yield json.dumps({"event": "stability_failed"})
-
-        # ---------- 2) OPENAI fallback ----------
-        if not urls and OPENAI_API_KEY:
-            try:
-                async with httpx.AsyncClient(timeout=90.0) as client:
-                    payload = {
-                        "model": "gpt-image-1",
-                        "prompt": enhanced,
-                        "n": samples
-                    }
-                    r = await client.post(
-                        "https://api.openai.com/v1/images/generations",
-                        headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
-                        json=payload
-                    )
-                    r.raise_for_status()
-                    jr = r.json()
-
-                    for d in jr.get("data", []):
-                        b64 = d.get("b64_json")
-                        if b64:
-                            if return_base64:
-                                urls.append(b64)
-                            else:
-                                fname = unique_filename("png")
-                                save_base64_image_to_file(b64, fname)
-                                urls.append(local_image_url(request, fname))
-
-                provider_used = "openai"
-                yield json.dumps({"event": "provider", "provider": "openai"})
-            except Exception:
-                yield json.dumps({"event": "openai_failed"})
-
-        # ---------- 3) FREE fallback ----------
-        if not urls and USE_FREE_IMAGE_PROVIDER and IMAGE_MODEL_FREE_URL:
-            try:
-                async with httpx.AsyncClient(timeout=120.0) as client:
-                    r = await client.post(IMAGE_MODEL_FREE_URL, json={"prompt": enhanced})
-                    r.raise_for_status()
-                    jr = r.json()
-                    images = jr.get("images") or [jr.get("image")]
-
-                    for im in images:
+                for img in jr.get("artifacts", []):
+                    b64 = img.get("base64")
+                    if b64:
                         if return_base64:
-                            urls.append(im)
+                            urls.append(b64)
                         else:
                             fname = unique_filename("png")
-                            save_base64_image_to_file(im, fname)
+                            save_base64_image_to_file(b64, fname)
                             urls.append(local_image_url(request, fname))
 
-                provider_used = "free"
-                yield json.dumps({"event": "provider", "provider": "free"})
-            except Exception:
-                yield json.dumps({"event": "free_failed"})
+            provider_used = "stability"
+        except Exception as e:
+            logger.exception("Stability image generation failed")
 
-        if not urls:
-            yield json.dumps({"event": "error", "message": "all providers failed"})
-            return
+    # ---------- OpenAI fallback ----------
+    if not urls and OPENAI_API_KEY:
+        try:
+            async with httpx.AsyncClient(timeout=90.0) as client:
+                payload = {
+                    "model": "gpt-image-1",
+                    "prompt": enhanced,
+                    "n": samples
+                }
+                r = await client.post(
+                    "https://api.openai.com/v1/images/generations",
+                    headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+                    json=payload
+                )
+                r.raise_for_status()
+                jr = r.json()
+                for d in jr.get("data", []):
+                    b64 = d.get("b64_json")
+                    if b64:
+                        if return_base64:
+                            urls.append(b64)
+                        else:
+                            fname = unique_filename("png")
+                            save_base64_image_to_file(b64, fname)
+                            urls.append(local_image_url(request, fname))
 
-        cache_result(prompt, provider_used, urls)
-        yield json.dumps({"event": "complete", "provider": provider_used, "images": urls})
+            provider_used = "openai"
+        except Exception:
+            logger.exception("OpenAI image generation failed")
 
-    return EventSourceResponse(generate())
+    # ---------- Free provider fallback ----------
+    if not urls and USE_FREE_IMAGE_PROVIDER and IMAGE_MODEL_FREE_URL:
+        try:
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                r = await client.post(IMAGE_MODEL_FREE_URL, json={"prompt": enhanced})
+                r.raise_for_status()
+                jr = r.json()
+                images = jr.get("images") or [jr.get("image")]
+                for im in images:
+                    if return_base64:
+                        urls.append(im)
+                    else:
+                        fname = unique_filename("png")
+                        save_base64_image_to_file(im, fname)
+                        urls.append(local_image_url(request, fname))
+            provider_used = "free"
+        except Exception:
+            logger.exception("Free image provider failed")
 
+    if not urls:
+        raise HTTPException(500, "All image providers failed")
+
+    cache_result(prompt, provider_used, urls)
+    return {"provider": provider_used, "images": urls}
     
 # ---------- TTS ----------
 @app.post("/tts")
