@@ -329,35 +329,31 @@ async def image_gen(request: Request):
     if cached:
         return {"cached": True, **cached}
 
-    # Enhance prompt
-    enhanced = await enhance_prompt_with_groq(prompt)
-    settings = analyze_prompt(enhanced)
-    settings["samples"] = samples or settings["samples"]
-
     urls = []
     provider_used = None
 
-    # --- 1) Stability SDXL ---
+    # ---------- 1) Stability SDXL ----------
     if STABILITY_API_KEY:
         try:
             async with httpx.AsyncClient(timeout=120.0) as client:
                 payload = {
-                    "engine_id": "stable-diffusion-xl-1024-v1-0",
-                    "text_prompts": [{"text": enhanced}],
-                    "width": settings["width"],
-                    "height": settings["height"],
-                    "samples": settings["samples"],
-                    "cfg_scale": settings["cfg_scale"]
+                    "model": "stable-diffusion-xl-1024-v1",
+                    "text_prompts": [{"text": prompt}],
+                    "cfg_scale": 7,
+                    "samples": samples,
+                    "width": 1024,
+                    "height": 1024
                 }
                 headers = {
                     "Authorization": f"Bearer {STABILITY_API_KEY}",
                     "Content-Type": "application/json",
-                    "Accept": "application/json"
+                    "Accept": "application/json",
                 }
-                r = await client.post("https://api.stability.ai/v1/generation/text-to-image",
+                r = await client.post("https://api.stability.ai/v2beta/stable-image/generate",
                                       headers=headers, json=payload)
                 r.raise_for_status()
                 jr = r.json()
+
                 for art in jr.get("artifacts", []):
                     b64 = art.get("base64")
                     if b64:
@@ -368,20 +364,15 @@ async def image_gen(request: Request):
                             save_base64_image_to_file(b64, fname)
                             urls.append(local_image_url(request, fname))
 
-            if urls:
-                provider_used = "stability"
+            provider_used = "stability"
         except Exception:
             logger.exception("Stability image generation failed")
 
-    # --- 2) OpenAI fallback ---
+    # ---------- 2) OpenAI fallback ----------
     if not urls and OPENAI_API_KEY:
         try:
             async with httpx.AsyncClient(timeout=90.0) as client:
-                payload = {
-                    "model": "gpt-image-1",
-                    "prompt": enhanced,
-                    "n": samples
-                }
+                payload = {"model": "gpt-image-1", "prompt": prompt, "n": samples}
                 r = await client.post(
                     "https://api.openai.com/v1/images/generations",
                     headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
@@ -399,16 +390,15 @@ async def image_gen(request: Request):
                             save_base64_image_to_file(b64, fname)
                             urls.append(local_image_url(request, fname))
 
-            if urls:
-                provider_used = "openai"
+            provider_used = "openai"
         except Exception:
             logger.exception("OpenAI image generation failed")
 
-    # --- 3) Free fallback ---
+    # ---------- 3) Free fallback ----------
     if not urls and USE_FREE_IMAGE_PROVIDER and IMAGE_MODEL_FREE_URL:
         try:
             async with httpx.AsyncClient(timeout=120.0) as client:
-                r = await client.post(IMAGE_MODEL_FREE_URL, json={"prompt": enhanced})
+                r = await client.post(IMAGE_MODEL_FREE_URL, json={"prompt": prompt})
                 r.raise_for_status()
                 jr = r.json()
                 images = jr.get("images") or [jr.get("image")]
@@ -420,17 +410,14 @@ async def image_gen(request: Request):
                         save_base64_image_to_file(im, fname)
                         urls.append(local_image_url(request, fname))
 
-            if urls:
-                provider_used = "free"
+            provider_used = "free"
         except Exception:
             logger.exception("Free image provider failed")
 
     if not urls:
         raise HTTPException(500, "All image providers failed")
 
-    # Cache result
     cache_result(prompt, provider_used, urls)
-
     return {"provider": provider_used, "images": urls}
     
 # ---------- TTS ----------
