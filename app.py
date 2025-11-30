@@ -277,7 +277,6 @@ async def chat_endpoint(req: Request):
         return r.json()
 
 # ---------- Image generation ----------
-# ---------- Image generation ----------
 @app.post("/image")
 async def image_gen(request: Request):
     body = await request.json()
@@ -473,6 +472,7 @@ async def code_gen(req: Request):
 async def img2img(request: Request, file: UploadFile = File(...), prompt: str = "", user_id: str = "anonymous"):
     if not prompt:
         raise HTTPException(400, "prompt required")
+
     content = await file.read()
     if not content:
         raise HTTPException(400, "empty file")
@@ -485,42 +485,52 @@ async def img2img(request: Request, file: UploadFile = File(...), prompt: str = 
     enhanced = await enhance_prompt_with_groq(prompt)
     urls = []
 
-    if STABILITY_API_KEY:
-        try:
-            payload = {
-                "height": 1024,
-                "width": 1024,
-                "samples": 1,
-                "steps": 30,
-                "cfg_scale": 7,
-                "init_image": None,
-                "text_prompts": [{"text": enhanced, "weight": 1}],
-                "negative_prompts": ["nsfw, nudity, watermark, lowres, text, logo"]
-            }
-            files = {
-                "json": (None, json.dumps(payload), "application/json"),
-                "image[]": (file.filename, content, file.content_type or "application/octet-stream")
-            }
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                r = await client.post(
-                    "https://api.stability.ai/v2beta/stable-image/generate",
-                    headers={"Authorization": f"Bearer {STABILITY_API_KEY}"},
-                    files=files
-                )
-                r.raise_for_status()
-                jr = r.json()
-                for art in jr.get("artifacts", []):
-                    b64 = art.get("base64")
-                    if b64:
-                        fname = unique_filename("png")
-                        save_base64_image_to_file(b64, fname)
-                        urls.append(local_image_url(request, fname))
-            if urls:
-                cache_result(cache_key, "stability", urls)
-                return {"provider": "stability", "images": urls}
-        except Exception:
-            logger.exception("Img2Img failed")
-    raise HTTPException(400, "Img2Img failed or no provider configured")
+    if not STABILITY_API_KEY:
+        raise HTTPException(400, "no Stability API key")
+
+    try:
+        # correct SDXL img2img endpoint
+        url = "https://api.stability.ai/v1/generation/stable-diffusion-xl-1024x1024/image-to-image"
+
+        payload = {
+            "text_prompts": [{"text": enhanced}],
+            "cfg_scale": 7,
+            "samples": 1,
+            "steps": 30,
+            "strength": 0.6  # how much to transform the original (0.3 = mild edits, 0.8 = major changes)
+        }
+
+        # send multipart request
+        files = {
+            "init_image": (file.filename, content, file.content_type or "application/octet-stream"),
+            "options": (None, json.dumps(payload), "application/json"),
+        }
+
+        headers = {
+            "Authorization": f"Bearer {STABILITY_API_KEY}",
+            "Accept": "application/json"
+        }
+
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            resp = await client.post(url, headers=headers, files=files)
+            resp.raise_for_status()
+
+            jr = resp.json()
+            for art in jr.get("artifacts", []):
+                b64 = art.get("base64")
+                if b64:
+                    fname = unique_filename("png")
+                    save_base64_image_to_file(b64, fname)
+                    urls.append(local_image_url(request, fname))
+
+        if urls:
+            cache_result(cache_key, "stability-img2img", urls)
+            return {"provider": "stability-img2img", "images": urls}
+
+    except Exception as e:
+        logger.exception("Img2Img failed")
+
+    raise HTTPException(400, "img2img failed")
     
 @app.get("/search")
 async def google_search(q: str = Query(..., min_length=1)):
