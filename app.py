@@ -327,37 +327,39 @@ async def image_gen(request: Request):
     # Check cache first
     cached = get_cached(prompt)
     if cached:
-        return {"cached": True, "images": cached["result"]}
+        return {"cached": True, **cached}
 
-    # Enhance prompt via Groq
+    # Enhance prompt
     enhanced = await enhance_prompt_with_groq(prompt)
-    urls = []
+    settings = analyze_prompt(enhanced)
+    settings["samples"] = samples or settings["samples"]
 
+    urls = []
     provider_used = None
 
-    # ---------- Stability AI v2 ----------
+    # --- 1) Stability SDXL ---
     if STABILITY_API_KEY:
         try:
             async with httpx.AsyncClient(timeout=120.0) as client:
                 payload = {
+                    "engine_id": "stable-diffusion-xl-1024-v1-0",
                     "text_prompts": [{"text": enhanced}],
-                    "cfg_scale": 7,
-                    "samples": samples,
-                    "width": 1024,
-                    "height": 1024,
+                    "width": settings["width"],
+                    "height": settings["height"],
+                    "samples": settings["samples"],
+                    "cfg_scale": settings["cfg_scale"]
                 }
                 headers = {
                     "Authorization": f"Bearer {STABILITY_API_KEY}",
                     "Content-Type": "application/json",
-                    "Accept": "application/json",
+                    "Accept": "application/json"
                 }
-                url = "https://api.stability.ai/v2beta/stable-image/generate/sdxl"
-                resp = await client.post(url, headers=headers, json=payload)
-                resp.raise_for_status()
-                jr = resp.json()
-
-                for img in jr.get("artifacts", []):
-                    b64 = img.get("base64")
+                r = await client.post("https://api.stability.ai/v1/generation/text-to-image",
+                                      headers=headers, json=payload)
+                r.raise_for_status()
+                jr = r.json()
+                for art in jr.get("artifacts", []):
+                    b64 = art.get("base64")
                     if b64:
                         if return_base64:
                             urls.append(b64)
@@ -366,11 +368,12 @@ async def image_gen(request: Request):
                             save_base64_image_to_file(b64, fname)
                             urls.append(local_image_url(request, fname))
 
-            provider_used = "stability"
-        except Exception as e:
+            if urls:
+                provider_used = "stability"
+        except Exception:
             logger.exception("Stability image generation failed")
 
-    # ---------- OpenAI fallback ----------
+    # --- 2) OpenAI fallback ---
     if not urls and OPENAI_API_KEY:
         try:
             async with httpx.AsyncClient(timeout=90.0) as client:
@@ -396,11 +399,12 @@ async def image_gen(request: Request):
                             save_base64_image_to_file(b64, fname)
                             urls.append(local_image_url(request, fname))
 
-            provider_used = "openai"
+            if urls:
+                provider_used = "openai"
         except Exception:
             logger.exception("OpenAI image generation failed")
 
-    # ---------- Free provider fallback ----------
+    # --- 3) Free fallback ---
     if not urls and USE_FREE_IMAGE_PROVIDER and IMAGE_MODEL_FREE_URL:
         try:
             async with httpx.AsyncClient(timeout=120.0) as client:
@@ -415,14 +419,18 @@ async def image_gen(request: Request):
                         fname = unique_filename("png")
                         save_base64_image_to_file(im, fname)
                         urls.append(local_image_url(request, fname))
-            provider_used = "free"
+
+            if urls:
+                provider_used = "free"
         except Exception:
             logger.exception("Free image provider failed")
 
     if not urls:
         raise HTTPException(500, "All image providers failed")
 
+    # Cache result
     cache_result(prompt, provider_used, urls)
+
     return {"provider": provider_used, "images": urls}
     
 # ---------- TTS ----------
