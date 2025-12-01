@@ -12,7 +12,8 @@ import subprocess
 import tempfile
 
 import httpx
-from fastapi import FastAPI, Request, UploadFile, File, HTTPException, Query
+from fastapi import FastAPI, Request, Header
+from fastapi import UploadFile, File, HTTPException, Query
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
