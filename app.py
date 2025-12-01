@@ -33,7 +33,7 @@ app.add_middleware(
 )
 
 # ---------- ENV KEYS ----------
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "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").strip()
 STABILITY_API_KEY = os.getenv("STABILITY_API_KEY", "sk-RkSqNSbedDS5YcM54qK6sTaKDldQprDIvc6HbiMhdlt0Cx9e").strip()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 IMAGE_MODEL_FREE_URL = os.getenv("IMAGE_MODEL_FREE_URL", "").strip()
