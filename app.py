@@ -615,14 +615,22 @@ async def duck_search(q: str = Query(..., min_length=1)):
 async def speech_to_text(file: UploadFile = File(...)):
     content = await file.read()
     if not content:
-        raise HTTPException(400,"empty file")
-    if not OPENAI_API_KEY:
-        raise HTTPException(400,"no STT provider configured")
-    files = {"file": (file.filename, content, file.content_type)}
-    async with httpx.AsyncClient() as client:
-        r = await client.post("https://api.openai.com/v1/audio/transcriptions", headers={"Authorization": f"Bearer {OPENAI_API_KEY}"}, files=files, data={"model": STT_MODEL})
-        r.raise_for_status()
-        return r.json()
+        raise HTTPException(400, "empty file")
+    if not ELEVENLABS_API_KEY:
+        raise HTTPException(400, "no ElevenLabs API key configured")
+
+    url = "https://api.elevenlabs.io/v1/speech-to-text"
+    headers = {"xi-api-key": ELEVENLABS_API_KEY}
+    files = {"file": (file.filename, content, file.content_type or "audio/mpeg")}
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        r = await client.post(url, headers=headers, files=files)
+        if r.status_code != 200:
+            raise HTTPException(r.status_code, f"ElevenLabs STT error: {r.text}")
+        data = r.json()
+
+    # ElevenLabs returns the transcription in `text` field
+    return {"transcription": data.get("text", "")}
 
 # ---------- Other endpoints (/remove-bg, /upscale, /img2img, /vision/analyze, /code, /search, /root) remain unchanged ----------
 
