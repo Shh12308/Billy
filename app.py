@@ -33,19 +33,35 @@ app.add_middleware(
 )
 
 # ---------- ENV KEYS ----------
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "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").strip()
-STABILITY_API_KEY = os.getenv("STABILITY_API_KEY", "sk-RkSqNSbedDS5YcM54qK6sTaKDldQprDIvc6HbiMhdlt0Cx9e").strip()
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+STABILITY_API_KEY = os.getenv("STABILITY_API_KEY")
+ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+
 IMAGE_MODEL_FREE_URL = os.getenv("IMAGE_MODEL_FREE_URL", "").strip()
 USE_FREE_IMAGE_PROVIDER = os.getenv("USE_FREE_IMAGE_PROVIDER", "false").lower() in ("1", "true", "yes")
 
+# -------------------
+# Database Paths (Local fallback)
+# -------------------
 KG_DB_PATH = os.getenv("KG_DB_PATH", "./kg.db")
 MEMORY_DB = os.getenv("MEMORY_DB", "./memory.db")
 CACHE_DB_PATH = os.getenv("CACHE_DB_PATH", "./cache.db")
 
+# -------------------
+# Models
+# -------------------
 CHAT_MODEL = os.getenv("CHAT_MODEL", "llama-3.1-8b-instant")
-TTS_MODEL = os.getenv("TTS_MODEL", "gpt-4o-mini-tts")
-STT_MODEL = os.getenv("STT_MODEL", "whisper-large-v3")
+
+# TTS/STT are handled via ElevenLabs now
+TTS_MODEL = None
+STT_MODEL = None
+
+# -------------------
+# Supabase Config
+# -------------------
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 # Image hosting dirs
 STATIC_DIR = os.getenv("STATIC_DIR", "static")
@@ -422,25 +438,39 @@ async def image_gen(request: Request):
     return {"provider": provider_used, "images": urls}
     
 # ---------- TTS ----------
+ELEVENLABS_VOICE = "Bella"
+
 @app.post("/tts")
 async def text_to_speech(req: Request):
     body = await req.json()
     text = body.get("text")
     if not text:
-        raise HTTPException(400,"text required")
-    if not OPENAI_API_KEY:
-        raise HTTPException(400,"no TTS provider configured")
-    payload = {"model": TTS_MODEL, "input": text}
-    headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
-    async with httpx.AsyncClient() as client:
-        r = await client.post("https://api.openai.com/v1/audio/speech", headers=headers, json=payload)
-        r.raise_for_status()
+        raise HTTPException(400, "text required")
+    if not ELEVENLABS_API_KEY:
+        raise HTTPException(400, "no ElevenLabs API key configured")
+
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE}"
+    headers = {
+        "xi-api-key": ELEVENLABS_API_KEY,
+        "Content-Type": "application/json"
+    }
+    payload = {"text": text, "voice_settings": {"stability": 0.7, "similarity_boost": 0.75}}
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        r = await client.post(url, headers=headers, json=payload)
+        if r.status_code != 200:
+            raise HTTPException(r.status_code, f"ElevenLabs TTS error: {r.text}")
+
         audio_data = r.content
-    filename = unique_filename("mp3")
+
+    # Save audio locally
+    filename = f"{int(time.time())}-{uuid.uuid4().hex[:10]}.mp3"
     path = os.path.join(IMAGES_DIR, filename)
-    with open(path,"wb") as f:
+    with open(path, "wb") as f:
         f.write(audio_data)
+
     return {"audio_url": local_image_url(req, filename)}
+    
 
 # ---------- Vision analyze ----------
 @app.post("/vision/analyze")
