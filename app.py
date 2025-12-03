@@ -287,7 +287,7 @@ async def groq_stream(prompt: str):
         yield "data: [DONE]\n\n"
         return
     url = "https://api.groq.com/openai/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {GROQ_API_KEY}"}
+    headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
     payload = {"model": CHAT_MODEL, "stream": True,"messages":[{"role":"system","content":get_system_prompt(prompt)},{"role":"user","content":prompt}]}
     async with httpx.AsyncClient(timeout=None) as client:
         try:
