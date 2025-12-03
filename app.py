@@ -309,6 +309,9 @@ async def groq_stream(prompt: str):
             yield f"data: {json.dumps({'error':'stream_exception','msg':str(e)})}\n\n"
             yield "data: [DONE]\n\n"
 
+@app.get("/")
+async def root():
+    return {"message": "Zynara AI Backend is Running ✔"}
     
 @app.get("/stream")
 async def stream_chat(prompt: str):
