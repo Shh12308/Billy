@@ -1,76 +1,36 @@
-# ---- API Framework ----
+# --- Server Framework ---
 fastapi
 uvicorn[standard]
-pydantic
 python-multipart
-
-# ---- HuggingFace ----
-transformers
-huggingface-hub
-accelerate
-sentence-transformers
-
-# ---- Diffusion / SDXL ----
-diffusers
-xformers
-
-# ---- Torch (installed separately via CUDA installer) ----
-# torch
-# torchvision
-# torchaudio
-
-# ---- Vision / OCR / Detection ----
-Pillow
-opencv-python
-ultralytics
-scikit-image
-pytesseract
-
-# ---- Whisper STT ----
-openai-whisper
-
-# ---- Music Generation ----
-audiocraft
-
-# ---- Audio Processing ----
-soundfile
-pydub
-librosa
-ffmpeg-python
-
-# ---- Model Utilities ----
-einops
-safetensors
-numpy
-scipy
-
-# ---- Tools for 3D / Point-E ----
-trimesh
-plotly
-
-# ---- Supabase / Redis / Memory ----
-supabase
-redis
-asyncio
-
-# ---- Security / Moderation ----
-openai
-
-# ---- File Processing ----
-python-docx
-PyPDF2
-
-# ---- Streaming & Websockets ----
-websockets
+pydantic
 sse-starlette
 starlette
 
-# ---- Logging / Debug ----
+# --- Networking & Utils ---
+httpx
+requests
+tqdm
 loguru
 
-# ---- Uploads / Storage ----
-boto3
+# --- Database / Storage ---
+sqlite3-bro
+PyPDF2
 
-# ---- Extra backend tools ----
-tqdm
-requests
+# --- File/Image/Audio ---
+Pillow
+opencv-python
+pydub
+ffmpeg-python
+
+# --- Data Processing ---
+numpy
+scipy
+
+# --- Background Tools ---
+websockets
+
+# --- Optional STT/TTS Local fallback (not needed if using ElevenLabs) ---
+openai-whisper
+
+# --- Remove BG / Upscale (optional) ---
+rembg
