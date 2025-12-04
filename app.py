@@ -33,13 +33,20 @@ app.add_middleware(
 )
 
 # ---------- ENV KEYS ----------
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+# strip GROQ API key in case it contains whitespace/newlines
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+if GROQ_API_KEY is not None:
+    GROQ_API_KEY = GROQ_API_KEY.strip()
+
 STABILITY_API_KEY = os.getenv("STABILITY_API_KEY")
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 
 IMAGE_MODEL_FREE_URL = os.getenv("IMAGE_MODEL_FREE_URL", "").strip()
 USE_FREE_IMAGE_PROVIDER = os.getenv("USE_FREE_IMAGE_PROVIDER", "false").lower() in ("1", "true", "yes")
+
+# Quick log so you can confirm key presence without printing the key itself
+logger.info(f"GROQ key present: {bool(GROQ_API_KEY)}")
 
 # -------------------
 # Database Paths (Local fallback)
@@ -217,18 +224,32 @@ async def duckduckgo_search(q: str):
             "results": results
             }
 
+# ---------- Helper: centralize Groq headers ----------
+def get_groq_headers():
+    """
+    Return consistent headers for Groq requests.
+    Includes Authorization, Content-Type and Accept.
+    """
+    return {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+    }
+
 # ---------- Prompt enhancer ----------
 async def enhance_prompt_with_groq(prompt: str) -> str:
     if not GROQ_API_KEY:
         return prompt
     try:
         url = "https://api.groq.com/openai/v1/chat/completions"
-        headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
+        headers = get_groq_headers()
         system = "Rewrite the user's short prompt into a detailed, professional SDXL-style art prompt. Be concise but specific. Avoid explicit sexual or illegal content."
         body = {"model": CHAT_MODEL, "messages": [{"role":"system","content":system},{"role":"user","content":prompt}], "temperature":0.6,"max_tokens":300}
         async with httpx.AsyncClient(timeout=15.0) as client:
             r = await client.post(url, headers=headers, json=body)
-            r.raise_for_status()
+            if r.status_code != 200:
+                logger.warning("Groq enhance_prompt_with_groq failed: status=%s text=%s", r.status_code, (r.text[:100] + '...') if r.text else "")
+                r.raise_for_status()
             jr = r.json()
             content = jr.get("choices", [{}])[0].get("message", {}).get("content", "")
             return content.strip() or prompt
@@ -287,13 +308,15 @@ async def groq_stream(prompt: str):
         yield "data: [DONE]\n\n"
         return
     url = "https://api.groq.com/openai/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
+    headers = get_groq_headers()
     payload = {"model": CHAT_MODEL, "stream": True,"messages":[{"role":"system","content":get_system_prompt(prompt)},{"role":"user","content":prompt}]}
     async with httpx.AsyncClient(timeout=None) as client:
         try:
             async with client.stream("POST", url, headers=headers, json=payload) as resp:
                 if resp.status_code != 200:
                     text = await resp.aread()
+                    # Log more context for debugging
+                    logger.warning("Groq stream provider error: status=%s text=%s", resp.status_code, (text.decode(errors='ignore')[:300] + '...') if text else "")
                     yield f"data: {json.dumps({'error':'provider_error','status':resp.status_code,'text': text.decode(errors='ignore')[:300]})}\n\n"
                     yield "data: [DONE]\n\n"
                     return
@@ -328,10 +351,23 @@ async def chat_endpoint(req: Request):
     if not GROQ_API_KEY:
         raise HTTPException(400,"no groq key")
     payload = {"model":CHAT_MODEL,"messages":[{"role":"system","content":build_contextual_prompt(user_id, prompt)},{"role":"user","content":prompt}]}
+
+    headers = get_groq_headers()
     async with httpx.AsyncClient(timeout=30.0) as client:
-        r = await client.post("https://api.groq.com/openai/v1/chat/completions", headers={"Authorization": f"Bearer {GROQ_API_KEY}","Content-Type":"application/json"}, json=payload)
-        r.raise_for_status()
-        return r.json()
+        try:
+            r = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
+            if r.status_code != 200:
+                # Log provider response for debugging (trim to avoid huge logs)
+                logger.warning("Groq /chat returned status=%s text=%s", r.status_code, (r.text[:500] + '...') if r.text else "")
+                r.raise_for_status()
+            return r.json()
+        except httpx.HTTPStatusError as exc:
+            # Provide more helpful error to the caller while logging details
+            logger.exception("Groq HTTP error on /chat: %s", getattr(exc.response, "text", "no-response-text"))
+            raise HTTPException(status_code=exc.response.status_code if exc.response is not None else 500, detail=f"Groq error: {exc.response.text[:400] if exc.response is not None else str(exc)}")
+        except Exception:
+            logger.exception("Groq /chat request failed")
+            raise HTTPException(500, "groq_request_failed")
 
 # ---------- Image generation ----------
 @app.post("/image")
@@ -498,10 +534,13 @@ async def vision_analyze(req: Request, file: UploadFile = File(...), prompt: Opt
     }
     
     async with httpx.AsyncClient(timeout=60.0) as client:
+        headers = get_groq_headers()
         r = await client.post("https://api.groq.com/openai/v1/chat/completions",
-                              headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
+                              headers=headers,
                               json=body)
-        r.raise_for_status()
+        if r.status_code != 200:
+            logger.warning("Groq vision/analyze returned status=%s text=%s", r.status_code, (r.text[:400] + '...') if r.text else "")
+            r.raise_for_status()
         return r.json()
 
 
@@ -528,10 +567,13 @@ async def code_gen(req: Request):
     }
 
     async with httpx.AsyncClient(timeout=60.0) as client:
+        headers = get_groq_headers()
         r = await client.post("https://api.groq.com/openai/v1/chat/completions",
-                              headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
+                              headers=headers,
                               json=payload)
-        r.raise_for_status()
+        if r.status_code != 200:
+            logger.warning("Groq /code returned status=%s text=%s", r.status_code, (r.text[:400] + '...') if r.text else "")
+            r.raise_for_status()
         return r.json()
 
 @app.post("/img2img")
