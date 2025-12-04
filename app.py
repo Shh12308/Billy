@@ -406,9 +406,7 @@ async def chat_endpoint(req: Request):
             logger.exception("Groq /chat request failed")
             raise HTTPException(500, "groq_request_failed")
 
-# ---------- Image generation ----------
-# ---------- Image generation (DALL-E 3 + SDXL fallback) ----------
-@app.post("/image")
+app.post("/image")
 async def image_gen(request: Request):
     body = await request.json()
     prompt = body.get("prompt", "")
@@ -425,29 +423,22 @@ async def image_gen(request: Request):
     urls = []
     provider_used = None
 
-    # ------ 1) OpenAI DALL·E 3 ------
     if OPENAI_API_KEY:
         try:
             async with httpx.AsyncClient(timeout=90.0) as client:
                 payload = {
-                    "model": "gpt-image-3",     # DALL-E 3
+                    "model": "gpt-image-3",
                     "prompt": prompt,
                     "n": samples,
                     "size": "1024x1024"
                 }
-
                 r = await client.post(
                     "https://api.openai.com/v1/images/generations",
-                    headers={
-                        "Authorization": f"Bearer {OPENAI_API_KEY}",
-                        "Content-Type": "application/json"
-                    },
+                    headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
                     json=payload
                 )
-
                 r.raise_for_status()
                 jr = r.json()
-
                 for d in jr.get("data", []):
                     b64 = d.get("b64_json")
                     if b64:
@@ -457,51 +448,47 @@ async def image_gen(request: Request):
                             fname = unique_filename("png")
                             save_base64_image_to_file(b64, fname)
                             urls.append(local_image_url(request, fname))
-
             provider_used = "dalle3"
         except Exception:
             logger.exception("OpenAI DALL-E 3 generation failed")
-
-    # ------ 2) Stability SDXL fallback ------
-    if not urls and STABILITY_API_KEY:
-        try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                payload = {
-                    "model": "stable-diffusion-xl-1024-v1",
-                    "text_prompts": [{"text": prompt}],
-                    "cfg_scale": 7,
-                    "samples": samples,
-                    "width": 1024,
-                    "height": 1024
-                }
-                headers = {
-                    "Authorization": f"Bearer {STABILITY_API_KEY}",
-                    "Content-Type": "application/json"
-                }
-
-                r = await client.post(
-                    "https://api.stability.ai/v2beta/stable-image/generate",
-                    headers=headers, json=payload
-                )
-                r.raise_for_status()
-                jr = r.json()
-
-                for art in jr.get("artifacts", []):
-                    b64 = art.get("base64")
-                    if b64:
-                        fname = unique_filename("png")
-                        save_base64_image_to_file(b64, fname)
-                        urls.append(local_image_url(request, fname))
-
-            provider_used = "sdxl"
-        except Exception:
-            logger.exception("SDXL fallback failed")
 
     if not urls:
         raise HTTPException(500, "All image providers failed")
 
     cache_result(prompt, provider_used, urls)
     return {"provider": provider_used, "images": urls}
+
+# ---------- Img2Img (DALL·E edits) ----------
+@app.post("/img2img")
+async def img2img(request: Request, file: UploadFile = File(...), prompt: str = "", user_id: str = "anonymous"):
+    if not prompt:
+        raise HTTPException(400, "prompt required")
+    content = await file.read()
+    if not content:
+        raise HTTPException(400, "empty file")
+    if not OPENAI_API_KEY:
+        raise HTTPException(400, "no OpenAI API key configured")
+
+    urls = []
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            files = {"image": (file.filename, content)}
+            data = {"prompt": prompt, "n": 1, "size": "1024x1024"}
+            headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
+            r = await client.post("https://api.openai.com/v1/images/edits", headers=headers, files=files, data=data)
+            r.raise_for_status()
+            jr = r.json()
+            for d in jr.get("data", []):
+                b64 = d.get("b64_json")
+                if b64:
+                    fname = unique_filename("png")
+                    save_base64_image_to_file(b64, fname)
+                    urls.append(local_image_url(request, fname))
+    except Exception:
+        logger.exception("img2img DALL-E edit failed")
+        raise HTTPException(400, "img2img failed")
+
+    return {"provider": "dalle3-edit", "images": urls}
     
 # ---------- TTS ----------
 ELEVENLABS_VOICE = "Bella"
@@ -603,70 +590,6 @@ async def code_gen(req: Request):
             r.raise_for_status()
         return r.json()
 
-@app.post("/img2img")
-async def img2img(request: Request, file: UploadFile = File(...), prompt: str = "", user_id: str = "anonymous"):
-    if not prompt:
-        raise HTTPException(400, "prompt required")
-
-    content = await file.read()
-    if not content:
-        raise HTTPException(400, "empty file")
-
-    cache_key = f"img2img:{user_id}:{prompt}"
-    cached = get_cached(cache_key)
-    if cached:
-        return {"cached": True, **cached}
-
-    enhanced = await enhance_prompt_with_groq(prompt)
-    urls = []
-
-    if not STABILITY_API_KEY:
-        raise HTTPException(400, "no Stability API key")
-
-    try:
-        # correct SDXL img2img endpoint
-        url = "https://api.stability.ai/v1/generation/stable-diffusion-xl-1024x1024/image-to-image"
-
-        payload = {
-            "text_prompts": [{"text": enhanced}],
-            "cfg_scale": 7,
-            "samples": 1,
-            "steps": 30,
-            "strength": 0.6  # how much to transform the original (0.3 = mild edits, 0.8 = major changes)
-        }
-
-        # send multipart request
-        files = {
-            "init_image": (file.filename, content, file.content_type or "application/octet-stream"),
-            "options": (None, json.dumps(payload), "application/json"),
-        }
-
-        headers = {
-            "Authorization": f"Bearer {STABILITY_API_KEY}",
-            "Accept": "application/json"
-        }
-
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            resp = await client.post(url, headers=headers, files=files)
-            resp.raise_for_status()
-
-            jr = resp.json()
-            for art in jr.get("artifacts", []):
-                b64 = art.get("base64")
-                if b64:
-                    fname = unique_filename("png")
-                    save_base64_image_to_file(b64, fname)
-                    urls.append(local_image_url(request, fname))
-
-        if urls:
-            cache_result(cache_key, "stability-img2img", urls)
-            return {"provider": "stability-img2img", "images": urls}
-
-    except Exception as e:
-        logger.exception("Img2Img failed")
-
-    raise HTTPException(400, "img2img failed")
-    
 @app.get("/search")
 async def duck_search(q: str = Query(..., min_length=1)):
     """
