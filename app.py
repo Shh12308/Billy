@@ -226,16 +226,11 @@ async def duckduckgo_search(q: str):
 
 # ---------- Helper: centralize Groq headers ----------
 def get_groq_headers():
-    """
-    Return consistent headers for Groq requests.
-    Includes Authorization, Content-Type and Accept.
-    """
     return {
         "Authorization": f"Bearer {GROQ_API_KEY}",
-        "Content-Type": "application/json",
-        "Accept": "application/json"
+        "Content-Type": "application/json"
     }
-
+    
 # ---------- Prompt enhancer ----------
 async def enhance_prompt_with_groq(prompt: str) -> str:
     if not GROQ_API_KEY:
