@@ -527,36 +527,64 @@ async def text_to_speech(req: Request):
 
 # ---------- Vision analyze ----------
 @app.post("/vision/analyze")
-async def vision_analyze(req: Request, file: UploadFile = File(...), prompt: Optional[str] = None, user_id: str = "anonymous"):
+async def vision_analyze(file: UploadFile = File(...)):
     content = await file.read()
     if not content:
         raise HTTPException(400, "empty file")
-    if not GROQ_API_KEY:
-        raise HTTPException(400, "no vision provider configured")
-
-    # Build dynamic, user-focused prompt
-    user_prompt = prompt or "Analyze this image: list objects, colors, suggested tags, and short description."
-    contextual_prompt = build_contextual_prompt(user_id, user_prompt)
     
-    # Include image as base64
-    body = {
-        "model": CHAT_MODEL,
-        "messages": [
-            {"role": "system", "content": contextual_prompt},
-            {"role": "user", "content": f"Image (base64):\n{base64.b64encode(content).decode()}"}
-        ]
+    # Load image
+    try:
+        img = Image.open(BytesIO(content)).convert("RGB")
+    except Exception:
+        raise HTTPException(400, "invalid image")
+
+    # ----- 1. Dominant colors using k-means -----
+    try:
+        np_img = np.array(img).reshape(-1, 3)
+        from sklearn.cluster import KMeans
+        kmeans = KMeans(n_clusters=5, random_state=0).fit(np_img)
+        colors = [tuple(map(int, c)) for c in kmeans.cluster_centers_]
+        hex_colors = ['#%02x%02x%02x' % c for c in colors]
+    except Exception:
+        hex_colors = []
+
+    # ----- 2. Object detection (pretrained ResNet) -----
+    try:
+        model = models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
+        model.eval()
+        preprocess = transforms.Compose([
+            transforms.Resize(256),
+            transforms.CenterCrop(224),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                 std=[0.229, 0.224, 0.225])
+        ])
+        input_tensor = preprocess(img).unsqueeze(0)
+        with torch.no_grad():
+            outputs = model(input_tensor)
+        _, predicted = outputs.max(1)
+        idx_to_label = models.ResNet50_Weights.DEFAULT.meta["categories"]
+        object_label = idx_to_label[predicted.item()]
+    except Exception:
+        object_label = None
+
+    # ----- 3. Suggested tags -----
+    tags = []
+    if object_label:
+        tags.append(object_label.lower())
+    tags += [f"color_{c[1:]}" for c in hex_colors[:3]]  # top 3 colors
+
+    # ----- 4. Short description -----
+    description = f"A {object_label} image with dominant colors {', '.join(hex_colors[:3])}" if object_label else "Image analysis available."
+
+    return {
+        "filename": file.filename,
+        "size_bytes": len(content),
+        "dominant_colors": hex_colors,
+        "objects": object_label,
+        "tags": tags,
+        "description": description
     }
-    
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        headers = get_groq_headers()
-        r = await client.post("https://api.groq.com/openai/v1/chat/completions",
-                              headers=headers,
-                              json=body)
-        if r.status_code != 200:
-            logger.warning("Groq vision/analyze returned status=%s text=%s", r.status_code, (r.text[:400] + '...') if r.text else "")
-            r.raise_for_status()
-        return r.json()
-
 
 # ---------- Code generation ----------
 @app.post("/code")
