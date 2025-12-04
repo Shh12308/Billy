@@ -329,7 +329,7 @@ async def groq_stream(prompt: str):
 
 @app.get("/")
 async def root():
-    return {"message": "Zynara AI Backend is Running ✔"}
+    return {"message": "Billy AI Backend is Running ✔"}
     
 @app.get("/stream")
 async def stream(prompt: str, user_id: str = "anonymous"):
@@ -407,6 +407,7 @@ async def chat_endpoint(req: Request):
             raise HTTPException(500, "groq_request_failed")
 
 # ---------- Image generation ----------
+# ---------- Image generation (DALL-E 3 + SDXL fallback) ----------
 @app.post("/image")
 async def image_gen(request: Request):
     body = await request.json()
@@ -417,7 +418,6 @@ async def image_gen(request: Request):
     if not prompt:
         raise HTTPException(400, "prompt required")
 
-    # Check cache first
     cached = get_cached(prompt)
     if cached:
         return {"cached": True, **cached}
@@ -425,8 +425,45 @@ async def image_gen(request: Request):
     urls = []
     provider_used = None
 
-    # ---------- 1) Stability SDXL ----------
-    if STABILITY_API_KEY:
+    # ------ 1) OpenAI DALL·E 3 ------
+    if OPENAI_API_KEY:
+        try:
+            async with httpx.AsyncClient(timeout=90.0) as client:
+                payload = {
+                    "model": "gpt-image-3",     # DALL-E 3
+                    "prompt": prompt,
+                    "n": samples,
+                    "size": "1024x1024"
+                }
+
+                r = await client.post(
+                    "https://api.openai.com/v1/images/generations",
+                    headers={
+                        "Authorization": f"Bearer {OPENAI_API_KEY}",
+                        "Content-Type": "application/json"
+                    },
+                    json=payload
+                )
+
+                r.raise_for_status()
+                jr = r.json()
+
+                for d in jr.get("data", []):
+                    b64 = d.get("b64_json")
+                    if b64:
+                        if return_base64:
+                            urls.append(b64)
+                        else:
+                            fname = unique_filename("png")
+                            save_base64_image_to_file(b64, fname)
+                            urls.append(local_image_url(request, fname))
+
+            provider_used = "dalle3"
+        except Exception:
+            logger.exception("OpenAI DALL-E 3 generation failed")
+
+    # ------ 2) Stability SDXL fallback ------
+    if not urls and STABILITY_API_KEY:
         try:
             async with httpx.AsyncClient(timeout=120.0) as client:
                 payload = {
@@ -439,73 +476,26 @@ async def image_gen(request: Request):
                 }
                 headers = {
                     "Authorization": f"Bearer {STABILITY_API_KEY}",
-                    "Content-Type": "application/json",
-                    "Accept": "application/json",
+                    "Content-Type": "application/json"
                 }
-                r = await client.post("https://api.stability.ai/v2beta/stable-image/generate",
-                                      headers=headers, json=payload)
+
+                r = await client.post(
+                    "https://api.stability.ai/v2beta/stable-image/generate",
+                    headers=headers, json=payload
+                )
                 r.raise_for_status()
                 jr = r.json()
 
                 for art in jr.get("artifacts", []):
                     b64 = art.get("base64")
                     if b64:
-                        if return_base64:
-                            urls.append(b64)
-                        else:
-                            fname = unique_filename("png")
-                            save_base64_image_to_file(b64, fname)
-                            urls.append(local_image_url(request, fname))
-
-            provider_used = "stability"
-        except Exception:
-            logger.exception("Stability image generation failed")
-
-    # ---------- 2) OpenAI fallback ----------
-    if not urls and OPENAI_API_KEY:
-        try:
-            async with httpx.AsyncClient(timeout=90.0) as client:
-                payload = {"model": "gpt-image-1", "prompt": prompt, "n": samples}
-                r = await client.post(
-                    "https://api.openai.com/v1/images/generations",
-                    headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
-                    json=payload
-                )
-                r.raise_for_status()
-                jr = r.json()
-                for d in jr.get("data", []):
-                    b64 = d.get("b64_json")
-                    if b64:
-                        if return_base64:
-                            urls.append(b64)
-                        else:
-                            fname = unique_filename("png")
-                            save_base64_image_to_file(b64, fname)
-                            urls.append(local_image_url(request, fname))
-
-            provider_used = "openai"
-        except Exception:
-            logger.exception("OpenAI image generation failed")
-
-    # ---------- 3) Free fallback ----------
-    if not urls and USE_FREE_IMAGE_PROVIDER and IMAGE_MODEL_FREE_URL:
-        try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                r = await client.post(IMAGE_MODEL_FREE_URL, json={"prompt": prompt})
-                r.raise_for_status()
-                jr = r.json()
-                images = jr.get("images") or [jr.get("image")]
-                for im in images:
-                    if return_base64:
-                        urls.append(im)
-                    else:
                         fname = unique_filename("png")
-                        save_base64_image_to_file(im, fname)
+                        save_base64_image_to_file(b64, fname)
                         urls.append(local_image_url(request, fname))
 
-            provider_used = "free"
+            provider_used = "sdxl"
         except Exception:
-            logger.exception("Free image provider failed")
+            logger.exception("SDXL fallback failed")
 
     if not urls:
         raise HTTPException(500, "All image providers failed")
