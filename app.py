@@ -34,13 +34,13 @@ app.add_middleware(
 
 # ---------- ENV KEYS ----------
 # strip GROQ API key in case it contains whitespace/newlines
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 if GROQ_API_KEY is not None:
     GROQ_API_KEY = GROQ_API_KEY.strip()
 
 STABILITY_API_KEY = os.getenv("STABILITY_API_KEY")
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 IMAGE_MODEL_FREE_URL = os.getenv("IMAGE_MODEL_FREE_URL", "").strip()
 USE_FREE_IMAGE_PROVIDER = os.getenv("USE_FREE_IMAGE_PROVIDER", "false").lower() in ("1", "true", "yes")
