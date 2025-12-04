@@ -332,8 +332,50 @@ async def root():
     return {"message": "Zynara AI Backend is Running ✔"}
     
 @app.get("/stream")
-async def stream_chat(prompt: str):
-    return StreamingResponse(groq_stream(prompt), media_type="text/event-stream")
+async def stream(prompt: str, user_id: str = "anonymous"):
+    if not prompt:
+        raise HTTPException(status_code=400, detail="prompt required")
+
+    if not GROQ_API_KEY:
+        raise HTTPException(status_code=400, detail="GROQ_API_KEY missing")
+
+    payload = {
+        "model": CHAT_MODEL,
+        "stream": True,
+        "messages": [
+            {"role": "system", "content": build_contextual_prompt(user_id, prompt)},
+            {"role": "user", "content": prompt}
+        ]
+    }
+
+    async def event_generator():
+        async with httpx.AsyncClient(timeout=None) as client:
+            try:
+                async with client.stream(
+                    "POST",
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers=get_groq_headers(),
+                    json=payload,
+                ) as response:
+
+                    if response.status_code != 200:
+                        text = await response.aread()
+                        logger.warning("Groq stream provider error: status=%s text=%s",
+                                       response.status_code, text[:500])
+                        raise HTTPException(status_code=response.status_code, detail=text.decode())
+
+                    async for chunk in response.aiter_lines():
+                        if chunk.startswith("data: "):
+                            data = chunk.replace("data: ", "")
+                            if data == "[DONE]":
+                                break
+                            yield f"{data}\n"
+
+            except Exception as e:
+                logger.exception("Groq stream failed: %s", str(e))
+                yield f"event: error\ndata: {str(e)}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 # ---------- Chat endpoint ----------
 @app.post("/chat")
