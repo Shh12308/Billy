@@ -613,7 +613,9 @@ ELEVENLABS_VOICE = "Brittney"
 
 @app.post("/tts")
 async def text_to_speech(req: Request):
+    # Confirm ElevenLabs configured
     if not ELEVENLABS_API_KEY or not ELEVENLABS_VOICE_ID:
+        logger.error("ElevenLabs not configured or no voice id (ELEVENLABS_VOICE_ID=%s)", ELEVENLABS_VOICE_ID)
         raise HTTPException(400, "ElevenLabs TTS not configured or no valid voice")
 
     body = await req.json()
@@ -628,16 +630,28 @@ async def text_to_speech(req: Request):
     }
     payload = {"text": text, "voice_settings": {"stability": 0.7, "similarity_boost": 0.75}}
 
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        r = await client.post(url, headers=headers, json=payload)
-        if r.status_code != 200:
-            raise HTTPException(r.status_code, f"ElevenLabs TTS error: {r.text}")
-        audio_data = r.content
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            r = await client.post(url, headers=headers, json=payload)
+            r.raise_for_status()
+            audio_data = r.content
+    except httpx.HTTPStatusError as exc:
+        # Log provider response
+        body_text = getattr(exc.response, "text", None)
+        logger.exception("ElevenLabs TTS HTTP error: status=%s body=%s", getattr(exc.response, "status_code", None), str(body_text)[:400])
+        raise HTTPException(exc.response.status_code if exc.response is not None else 500, f"ElevenLabs TTS error: {body_text}")
+    except Exception as e:
+        logger.exception("ElevenLabs TTS request failed: %s", str(e))
+        raise HTTPException(500, f"ElevenLabs TTS failed: {str(e)}")
 
     filename = f"{int(time.time())}-{uuid.uuid4().hex[:10]}.mp3"
     path = os.path.join(IMAGES_DIR, filename)
-    with open(path, "wb") as f:
-        f.write(audio_data)
+    try:
+        with open(path, "wb") as f:
+            f.write(audio_data)
+    except Exception:
+        logger.exception("Failed to save TTS audio to disk")
+        raise HTTPException(500, "Failed to save TTS audio")
 
     return {"audio_url": local_image_url(req, filename)}
     
