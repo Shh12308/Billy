@@ -690,7 +690,47 @@ async def text_to_speech(request: Request):
             {"error": str(e), "body": r.text},
             status_code=500
         )
-        
+
+@app.post("/tts/stream")
+async def tts_stream(request: Request):
+    data = await request.json()
+    text = data.get("text", "")
+
+    if not text:
+        raise HTTPException(400, "text required")
+
+    openai_api_key = os.getenv("OPENAI_API_KEY")
+    if not openai_api_key:
+        raise HTTPException(500, "Missing OPENAI_API_KEY")
+
+    headers = {
+        "Authorization": f"Bearer {openai_api_key}",
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "model": "gpt-4o-mini-tts",
+        "voice": "alloy",
+        "input": text,
+        "stream": True
+    }
+
+    async def audio_streamer():
+        async with httpx.AsyncClient(timeout=None) as client:
+            async with client.stream(
+                "POST",
+                "https://api.openai.com/v1/audio/speech",
+                json=payload,
+                headers=headers
+            ) as resp:
+
+                async for chunk in resp.aiter_bytes():
+                    if chunk:
+                        yield chunk
+
+    return StreamingResponse(audio_streamer(), media_type="audio/mpeg")
+
+
 # ---------- Vision analyze ----------
 @app.post("/vision/analyze")
 async def vision_analyze(file: UploadFile = File(...)):
@@ -805,24 +845,32 @@ async def speech_to_text(file: UploadFile = File(...)):
     content = await file.read()
     if not content:
         raise HTTPException(400, "empty file")
-    if not ELEVENLABS_API_KEY:
-        raise HTTPException(400, "no ElevenLabs API key configured")
 
-    url = "https://api.elevenlabs.io/v1/speech-to-text"
-    headers = {"xi-api-key": ELEVENLABS_API_KEY}
-    files = {"file": (file.filename, content, file.content_type or "audio/mpeg")}
+    openai_api_key = os.getenv("OPENAI_API_KEY")
+    if not openai_api_key:
+        raise HTTPException(500, "Missing OPENAI_API_KEY")
 
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    url = "https://api.openai.com/v1/audio/transcriptions"
+
+    # Whisper API requires multipart/form-data, NOT JSON
+    files = {
+        "file": (file.filename, content, file.content_type or "audio/mpeg"),
+        "model": (None, "gpt-4o-mini-transcribe"),
+        # You can also use: "whisper-1"
+    }
+
+    headers = {
+        "Authorization": f"Bearer {openai_api_key}"
+    }
+
+    async with httpx.AsyncClient(timeout=120.0) as client:
         r = await client.post(url, headers=headers, files=files)
-        if r.status_code != 200:
-            raise HTTPException(r.status_code, f"ElevenLabs STT error: {r.text}")
-        data = r.json()
 
-    # ElevenLabs returns the transcription in `text` field
+    if r.status_code != 200:
+        raise HTTPException(r.status_code, f"OpenAI STT error: {r.text}")
+
+    data = r.json()
     return {"transcription": data.get("text", "")}
-
-# ---------- Other endpoints (/remove-bg, /upscale, /img2img, /vision/analyze, /code, /search, /root) remain unchanged ----------
-
 # ---------- Run ----------
 if __name__ == "__main__":
     import uvicorn
