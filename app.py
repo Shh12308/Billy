@@ -480,7 +480,7 @@ async def image_gen(request: Request):
         try:
             async with httpx.AsyncClient(timeout=90.0) as client:
                 payload = {
-                    "model": "gpt-image-3",
+                    "model": "dall-e-3",
                     "prompt": prompt,
                     "n": samples,
                     "size": "1024x1024",
