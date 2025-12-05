@@ -11,6 +11,7 @@ import logging
 import subprocess
 import tempfile
 from typing import Optional, Dict, Any, List
+from fastapi import Response
 
 import httpx
 from fastapi import FastAPI, Request, Header, UploadFile, File, HTTPException, Query, Form, Depends
