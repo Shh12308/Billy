@@ -349,33 +349,38 @@ async def stream(prompt: str, user_id: str = "anonymous"):
     }
 
     async def event_generator():
-        async with httpx.AsyncClient(timeout=None) as client:
-            try:
-                async with client.stream(
-                    "POST",
-                    "https://api.groq.com/openai/v1/chat/completions",
-                    headers=get_groq_headers(),
-                    json=payload,
-                ) as response:
+    async with httpx.AsyncClient(timeout=None) as client:
+        try:
+            async with client.stream(
+                "POST",
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers=get_groq_headers(),
+                json=payload,
+            ) as response:
 
-                    if response.status_code != 200:
-                        text = await response.aread()
-                        logger.warning("Groq stream provider error: status=%s text=%s",
-                                       response.status_code, text[:500])
-                        raise HTTPException(status_code=response.status_code, detail=text.decode())
+                if response.status_code != 200:
+                    text = await response.aread()
+                    yield f"data: {json.dumps({'error': 'provider_error', 'text': text.decode()[:300]})}\n\n"
+                    yield "data: [DONE]\n\n"
+                    return
 
-                    async for chunk in response.aiter_lines():
-                        if chunk.startswith("data: "):
-                            data = chunk.replace("data: ", "")
-                            if data == "[DONE]":
-                                break
-                            yield f"{data}\n"
+                async for line in response.aiter_lines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    if line.startswith("data: "):
+                        data = line[len("data: "):]
+                        if data == "[DONE]":
+                            yield "data: [DONE]\n\n"
+                            break
+                        # Proper SSE formatting
+                        yield f"data: {data}\n\n"
 
-            except Exception as e:
-                logger.exception("Groq stream failed: %s", str(e))
-                yield f"event: error\ndata: {str(e)}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'error':'exception','msg':str(e)})}\n\n"
+            yield "data: [DONE]\n\n"
 
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
+return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 # ---------- Chat endpoint ----------
 @app.post("/chat")
