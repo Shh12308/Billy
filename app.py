@@ -4,6 +4,7 @@ import io
 import json
 import uuid
 import sqlite3
+import asyncio
 import base64
 import time
 import logging
@@ -328,7 +329,7 @@ async def groq_stream(prompt: str):
             yield "data: [DONE]\n\n"
 
 # ---------- Cache valid ElevenLabs voice at startup ----------
-ELEVENLABS_VOICE_ID = None
+ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID")
 
 async def init_elevenlabs_voice():
     global ELEVENLABS_VOICE_ID
@@ -449,10 +450,17 @@ async def chat_endpoint(req: Request):
 
 @app.post("/image")
 async def image_gen(request: Request):
+    """
+    Generate images via OpenAI (DALL·E 3). Requests b64_json but will
+    fall back to URL-based results if present. Saves files locally and caches results.
+    """
     body = await request.json()
     prompt = body.get("prompt", "")
-    samples = int(body.get("samples", 1))
-    return_base64 = body.get("base64", False)
+    try:
+        samples = max(1, int(body.get("samples", 1)))
+    except Exception:
+        samples = 1
+    return_base64 = bool(body.get("base64", False))
 
     if not prompt:
         raise HTTPException(400, "prompt required")
@@ -460,12 +468,15 @@ async def image_gen(request: Request):
     # Check cache first
     cached = get_cached(prompt)
     if cached:
+        logger.info("Image cache hit for prompt: %s", prompt[:80])
         return {"cached": True, **cached}
 
-    urls = []
+    urls: List[str] = []
     provider_used = None
 
-    if OPENAI_API_KEY:
+    if not OPENAI_API_KEY:
+        logger.warning("OPENAI_API_KEY not configured; skipping OpenAI provider")
+    else:
         try:
             async with httpx.AsyncClient(timeout=90.0) as client:
                 payload = {
@@ -473,8 +484,9 @@ async def image_gen(request: Request):
                     "prompt": prompt,
                     "n": samples,
                     "size": "1024x1024",
-                    "response_format": "b64_json"  # REQUIRED
+                    "response_format": "b64_json"
                 }
+                logger.info("Sending image generation request to OpenAI for prompt: %s", prompt[:120])
                 r = await client.post(
                     "https://api.openai.com/v1/images/generations",
                     headers={
@@ -483,40 +495,77 @@ async def image_gen(request: Request):
                     },
                     json=payload
                 )
+                # If OpenAI returns an error (e.g. unauthorized), this will raise
                 r.raise_for_status()
                 jr = r.json()
-
-                # Make sure 'data' exists and b64_json is present
-                for d in jr.get("data", []):
+                logger.debug("OpenAI image response keys: %s", list(jr.keys()))
+                data_list = jr.get("data", [])
+                if not data_list:
+                    # Try to detect URL-style response (some accounts/configs)
+                    logger.warning("OpenAI returned empty 'data' for prompt: %s", prompt[:120])
+                for d in data_list:
+                    # Accept either b64_json or url (fallback)
                     b64 = d.get("b64_json")
-                    if not b64:
-                        logger.warning("OpenAI returned no b64_json for prompt: %s", prompt)
-                        continue
-                    if return_base64:
-                        urls.append(b64)
+                    url_field = d.get("url") or d.get("image_url")
+                    if b64:
+                        if return_base64:
+                            urls.append(b64)
+                        else:
+                            fname = unique_filename("png")
+                            try:
+                                save_base64_image_to_file(b64, fname)
+                                urls.append(local_image_url(request, fname))
+                            except Exception as e:
+                                logger.exception("Failed to save base64 image to file: %s", str(e))
+                                continue
+                    elif url_field:
+                        # Download the image and save locally so clients get a stable /static URL
+                        try:
+                            async with httpx.AsyncClient(timeout=30.0) as dl_client:
+                                dl = await dl_client.get(url_field)
+                                dl.raise_for_status()
+                                fname = unique_filename("png")
+                                path = os.path.join(IMAGES_DIR, fname)
+                                with open(path, "wb") as f:
+                                    f.write(dl.content)
+                                urls.append(local_image_url(request, fname))
+                        except Exception:
+                            logger.exception("Failed to download image from provider URL: %s", url_field)
+                            continue
                     else:
-                        fname = unique_filename("png")
-                        save_base64_image_to_file(b64, fname)
-                        urls.append(local_image_url(request, fname))
+                        logger.warning("No b64_json or url for one result item: %s", d.keys())
 
             provider_used = "dalle3"
-
+        except httpx.HTTPStatusError as exc:
+            logger.exception("OpenAI returned HTTP error for image generation: %s", getattr(exc.response, "text", ""))
         except Exception as e:
             logger.exception("OpenAI DALL-E 3 generation failed: %s", str(e))
 
     if not urls:
+        logger.error("Image generation returned no images for prompt: %s", prompt[:120])
         raise HTTPException(500, "Image generation failed or returned no data")
 
-    # Cache results
-    cache_result(prompt, provider_used, urls)
-    return {"provider": provider_used, "images": urls}
+    # Cache results (cache the final URLs or base64 list)
+    try:
+        cache_result(prompt, provider_used or "openai", urls)
+    except Exception:
+        logger.exception("Failed to cache image result")
+
+    return {"provider": provider_used or "openai", "images": urls}
 
 @app.post("/image/stream")
 async def image_stream(request: Request):
+    """
+    Stream progress to the client while generating images.
+    Sends SSE messages with JSON payloads and final 'done' event.
+    """
     body = await request.json()
     prompt = body.get("prompt", "")
-    samples = int(body.get("samples", 1))
-    return_base64 = body.get("base64", False)
+    try:
+        samples = max(1, int(body.get("samples", 1)))
+    except Exception:
+        samples = 1
+    return_base64 = bool(body.get("base64", False))
 
     if not prompt:
         raise HTTPException(400, "prompt required")
@@ -525,8 +574,9 @@ async def image_stream(request: Request):
 
     async def event_generator():
         try:
-            yield "data: {\"status\":\"starting\",\"message\":\"Preparing request\"}\n\n"
-            await asyncio.sleep(0.1)
+            # initial message
+            yield "data: " + json.dumps({"status": "starting", "message": "Preparing request"}) + "\n\n"
+            await asyncio.sleep(0.05)
 
             payload = {
                 "model": "gpt-image-3",
@@ -536,7 +586,7 @@ async def image_stream(request: Request):
                 "response_format": "b64_json"
             }
 
-            yield "data: {\"status\":\"request\",\"message\":\"Sending to OpenAI\"}\n\n"
+            yield "data: " + json.dumps({"status": "request", "message": "Sending to OpenAI"}) + "\n\n"
 
             async with httpx.AsyncClient(timeout=120.0) as client:
                 r = await client.post(
@@ -549,29 +599,52 @@ async def image_stream(request: Request):
                 )
 
             if r.status_code != 200:
-                yield f"data: {json.dumps({'status':'error','message':r.text[:200]})}\n\n"
+                text_snip = (await r.aread()).decode(errors="ignore")[:1000]
+                yield "data: " + json.dumps({"status": "error", "message": "OpenAI error", "detail": text_snip}) + "\n\n"
                 yield "data: [DONE]\n\n"
                 return
 
             jr = r.json()
             urls = []
 
-            for i, d in enumerate(jr.get("data", []), start=1):
-                yield f"data: {{\"status\":\"progress\",\"message\":\"Writing {i}/{samples}\"}}\n\n"
+            data_list = jr.get("data", [])
+            if not data_list:
+                yield "data: " + json.dumps({"status": "warning", "message": "No data returned from provider"}) + "\n\n"
+
+            for i, d in enumerate(data_list, start=1):
+                yield "data: " + json.dumps({"status": "progress", "message": f"Processing {i}/{samples}"}) + "\n\n"
+                await asyncio.sleep(0.01)  # yield control
                 b64 = d.get("b64_json")
+                url_field = d.get("url") or d.get("image_url")
                 if b64:
                     if return_base64:
                         urls.append(b64)
                     else:
                         fname = unique_filename("png")
-                        save_base64_image_to_file(b64, fname)
-                        urls.append(local_image_url(request, fname))
+                        try:
+                            save_base64_image_to_file(b64, fname)
+                            urls.append(local_image_url(request, fname))
+                        except Exception:
+                            logger.exception("Failed saving streamed b64 image")
+                elif url_field:
+                    try:
+                        async with httpx.AsyncClient(timeout=30.0) as dl_client:
+                            dl = await dl_client.get(url_field)
+                            dl.raise_for_status()
+                            fname = unique_filename("png")
+                            with open(os.path.join(IMAGES_DIR, fname), "wb") as f:
+                                f.write(dl.content)
+                            urls.append(local_image_url(request, fname))
+                    except Exception:
+                        logger.exception("Failed to download streamed image URL")
+                else:
+                    logger.warning("Stream result missing both b64_json and url: %s", d.keys())
 
-            yield f"data: {json.dumps({'status':'done','images':urls})}\n\n"
+            yield "data: " + json.dumps({"status": "done", "images": urls}) + "\n\n"
             yield "data: [DONE]\n\n"
-
         except Exception as e:
-            yield f"data: {json.dumps({'status':'exception','message':str(e)})}\n\n"
+            logger.exception("image_stream exception: %s", str(e))
+            yield "data: " + json.dumps({"status": "exception", "message": str(e)}) + "\n\n"
             yield "data: [DONE]\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
