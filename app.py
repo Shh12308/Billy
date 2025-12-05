@@ -666,7 +666,7 @@ async def text_to_speech(request: Request):
 
     payload = {
         "model": "gpt-4o-mini-tts",     # <-- OpenAI TTS model
-        "voice": "sunrise",               # <-- OpenAI default voice
+        "voice": "alloy",               # <-- OpenAI default voice
         "input": text
     }
 
