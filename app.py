@@ -422,6 +422,7 @@ async def image_gen(request: Request):
     if not prompt:
         raise HTTPException(400, "prompt required")
 
+    # Check cache first
     cached = get_cached(prompt)
     if cached:
         return {"cached": True, **cached}
@@ -433,35 +434,45 @@ async def image_gen(request: Request):
         try:
             async with httpx.AsyncClient(timeout=90.0) as client:
                 payload = {
-    "model": "gpt-image-3",
-    "prompt": prompt,
-    "n": samples,
-    "size": "1024x1024",
-    "response_format": "b64_json"   # <<< REQUIRED FIX
-}
+                    "model": "gpt-image-3",
+                    "prompt": prompt,
+                    "n": samples,
+                    "size": "1024x1024",
+                    "response_format": "b64_json"  # REQUIRED
+                }
                 r = await client.post(
                     "https://api.openai.com/v1/images/generations",
-                    headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
+                    headers={
+                        "Authorization": f"Bearer {OPENAI_API_KEY}",
+                        "Content-Type": "application/json"
+                    },
                     json=payload
                 )
                 r.raise_for_status()
                 jr = r.json()
+
+                # Make sure 'data' exists and b64_json is present
                 for d in jr.get("data", []):
                     b64 = d.get("b64_json")
-                    if b64:
-                        if return_base64:
-                            urls.append(b64)
-                        else:
-                            fname = unique_filename("png")
-                            save_base64_image_to_file(b64, fname)
-                            urls.append(local_image_url(request, fname))
+                    if not b64:
+                        logger.warning("OpenAI returned no b64_json for prompt: %s", prompt)
+                        continue
+                    if return_base64:
+                        urls.append(b64)
+                    else:
+                        fname = unique_filename("png")
+                        save_base64_image_to_file(b64, fname)
+                        urls.append(local_image_url(request, fname))
+
             provider_used = "dalle3"
-        except Exception:
-            logger.exception("OpenAI DALL-E 3 generation failed")
+
+        except Exception as e:
+            logger.exception("OpenAI DALL-E 3 generation failed: %s", str(e))
 
     if not urls:
-        raise HTTPException(500, "All image providers failed")
+        raise HTTPException(500, "Image generation failed or returned no data")
 
+    # Cache results
     cache_result(prompt, provider_used, urls)
     return {"provider": provider_used, "images": urls}
 
@@ -563,7 +574,7 @@ async def img2img(request: Request, file: UploadFile = File(...), prompt: str = 
     return {"provider": "dalle3-edit", "images": urls}
     
 # ---------- TTS ----------
-ELEVENLABS_VOICE = "Bella"
+ELEVENLABS_VOICE = "Brittney"
 
 @app.post("/tts")
 async def text_to_speech(req: Request):
