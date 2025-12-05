@@ -348,7 +348,7 @@ async def stream(prompt: str, user_id: str = "anonymous"):
         ]
     }
 
-    async def event_generator():
+   async def event_generator(payload):
     async with httpx.AsyncClient(timeout=None) as client:
         try:
             async with client.stream(
@@ -364,22 +364,15 @@ async def stream(prompt: str, user_id: str = "anonymous"):
                     yield "data: [DONE]\n\n"
                     return
 
+                # Example of reading streaming lines
                 async for line in response.aiter_lines():
-                    line = line.strip()
-                    if not line:
-                        continue
-                    if line.startswith("data: "):
-                        data = line[len("data: "):]
-                        if data == "[DONE]":
-                            yield "data: [DONE]\n\n"
-                            break
-                        # Proper SSE formatting
-                        yield f"data: {data}\n\n"
+                    if line:
+                        yield f"data: {line}\n\n"
 
         except Exception as e:
-            yield f"data: {json.dumps({'error':'exception','msg':str(e)})}\n\n"
+            yield f"data: {json.dumps({'error': 'exception', 'text': str(e)})}\n\n"
             yield "data: [DONE]\n\n"
-
+            
 return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 # ---------- Chat endpoint ----------
