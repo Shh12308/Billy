@@ -40,7 +40,6 @@ if GROQ_API_KEY is not None:
     GROQ_API_KEY = GROQ_API_KEY.strip()
 
 STABILITY_API_KEY = os.getenv("STABILITY_API_KEY")
-ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 IMAGE_MODEL_FREE_URL = os.getenv("IMAGE_MODEL_FREE_URL", "").strip()
@@ -328,40 +327,6 @@ async def groq_stream(prompt: str):
             yield f"data: {json.dumps({'error':'stream_exception','msg':str(e)})}\n\n"
             yield "data: [DONE]\n\n"
 
-# ---------- Cache valid ElevenLabs voice at startup ----------
-ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID")
-
-async def init_elevenlabs_voice():
-    global ELEVENLABS_VOICE_ID
-    if not ELEVENLABS_API_KEY:
-        logger.warning("No ElevenLabs API key configured; TTS will be disabled.")
-        return
-
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        try:
-            r = await client.get(
-                "https://api.elevenlabs.io/v1/voices",
-                headers={"xi-api-key": ELEVENLABS_API_KEY}
-            )
-            r.raise_for_status()
-            voices_data = r.json()
-            # Use default "Bella" if available, else first available voice
-            voices = voices_data.get("voices", [])
-            for v in voices:
-                if v.get("name") == "Bella":
-                    ELEVENLABS_VOICE_ID = v.get("voice_id")
-                    break
-            if not ELEVENLABS_VOICE_ID and voices:
-                ELEVENLABS_VOICE_ID = voices[0].get("voice_id")
-            if not ELEVENLABS_VOICE_ID:
-                logger.warning("No valid ElevenLabs voice found; TTS will fail.")
-        except Exception:
-            logger.exception("Failed to fetch ElevenLabs voices; TTS may not work.")
-
-# Run this on startup
-@app.on_event("startup")
-async def startup_event():
-    await init_elevenlabs_voice()
 
 @app.get("/")
 async def root():
@@ -684,55 +649,46 @@ async def img2img(request: Request, file: UploadFile = File(...), prompt: str = 
 # ---------- TTS ----------
 @app.post("/tts")
 async def text_to_speech(request: Request):
-
-    if not OPENAI_API_KEY:
-        raise HTTPException(400, "OPENAI_API_KEY missing")
-
-    body = await request.json()
-    text = body.get("text", "")
-    voice = body.get("voice", "alloy")  # OpenAI default voice
+    data = await request.json()
+    text = data.get("text", "")
 
     if not text:
-        raise HTTPException(400, "text required")
+        return JSONResponse({"error": "Missing text"}, status_code=400)
+
+    openai_api_key = os.getenv("OPENAI_API_KEY")
+    if not openai_api_key:
+        return JSONResponse({"error": "Missing OPENAI_API_KEY"}, status_code=500)
+
+    headers = {
+        "Authorization": f"Bearer {openai_api_key}",
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "model": "gpt-4o-mini-tts",     # <-- OpenAI TTS model
+        "voice": "sunrise",               # <-- OpenAI default voice
+        "input": text
+    }
 
     try:
-        async with httpx.AsyncClient(timeout=90.0) as client:
+        r = httpx.post(
+            "https://api.openai.com/v1/audio/speech",
+            headers=headers,
+            json=payload,
+            timeout=60
+        )
+        r.raise_for_status()
 
-            payload = {
-                "model": "gpt-4o-mini-tts",   # OpenAI text-to-speech model
-                "voice": voice,
-                "input": text,
-                "format": "mp3"
-            }
+        return Response(
+            content=r.content,
+            media_type="audio/mpeg"
+        )
 
-            r = await client.post(
-                "https://api.openai.com/v1/audio/speech",
-                headers={
-                    "Authorization": f"Bearer {OPENAI_API_KEY}",
-                    "Content-Type": "application/json"
-                },
-                json=payload
-            )
-
-            r.raise_for_status()
-
-            # save audio file
-            audio_bytes = r.content
-            filename = unique_filename("mp3")
-            filepath = f"static/audio/{filename}"
-
-            os.makedirs("static/audio", exist_ok=True)
-            with open(filepath, "wb") as f:
-                f.write(audio_bytes)
-
-            return {
-                "success": True,
-                "url": f"{request.url.scheme}://{request.url.hostname}/static/audio/{filename}"
-            }
-
-    except Exception as e:
-        logger.exception("OpenAI TTS failed")
-        raise HTTPException(500, f"TTS failed: {str(e)}")
+    except httpx.HTTPStatusError as e:
+        return JSONResponse(
+            {"error": str(e), "body": r.text},
+            status_code=500
+        )
         
 # ---------- Vision analyze ----------
 @app.post("/vision/analyze")
