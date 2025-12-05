@@ -464,6 +464,71 @@ async def image_gen(request: Request):
     cache_result(prompt, provider_used, urls)
     return {"provider": provider_used, "images": urls}
 
+@app.post("/image/stream")
+async def image_stream(request: Request):
+    body = await request.json()
+    prompt = body.get("prompt", "")
+    samples = int(body.get("samples", 1))
+    return_base64 = body.get("base64", False)
+
+    if not prompt:
+        raise HTTPException(400, "prompt required")
+    if not OPENAI_API_KEY:
+        raise HTTPException(400, "no OpenAI KEY")
+
+    async def event_generator():
+        try:
+            yield "data: {\"status\":\"starting\",\"message\":\"Preparing request\"}\n\n"
+            await asyncio.sleep(0.1)
+
+            payload = {
+                "model": "gpt-image-3",
+                "prompt": prompt,
+                "n": samples,
+                "size": "1024x1024",
+                "response_format": "b64_json"
+            }
+
+            yield "data: {\"status\":\"request\",\"message\":\"Sending to OpenAI\"}\n\n"
+
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                r = await client.post(
+                    "https://api.openai.com/v1/images/generations",
+                    headers={
+                        "Authorization": f"Bearer {OPENAI_API_KEY}",
+                        "Content-Type": "application/json",
+                    },
+                    json=payload
+                )
+
+            if r.status_code != 200:
+                yield f"data: {json.dumps({'status':'error','message':r.text[:200]})}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+
+            jr = r.json()
+            urls = []
+
+            for i, d in enumerate(jr.get("data", []), start=1):
+                yield f"data: {{\"status\":\"progress\",\"message\":\"Writing {i}/{samples}\"}}\n\n"
+                b64 = d.get("b64_json")
+                if b64:
+                    if return_base64:
+                        urls.append(b64)
+                    else:
+                        fname = unique_filename("png")
+                        save_base64_image_to_file(b64, fname)
+                        urls.append(local_image_url(request, fname))
+
+            yield f"data: {json.dumps({'status':'done','images':urls})}\n\n"
+            yield "data: [DONE]\n\n"
+
+        except Exception as e:
+            yield f"data: {json.dumps({'status':'exception','message':str(e)})}\n\n"
+            yield "data: [DONE]\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+    
 # ---------- Img2Img (DALL·E edits) ----------
 @app.post("/img2img")
 async def img2img(request: Request, file: UploadFile = File(...), prompt: str = "", user_id: str = "anonymous"):
