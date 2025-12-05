@@ -327,6 +327,41 @@ async def groq_stream(prompt: str):
             yield f"data: {json.dumps({'error':'stream_exception','msg':str(e)})}\n\n"
             yield "data: [DONE]\n\n"
 
+# ---------- Cache valid ElevenLabs voice at startup ----------
+ELEVENLABS_VOICE_ID = None
+
+async def init_elevenlabs_voice():
+    global ELEVENLABS_VOICE_ID
+    if not ELEVENLABS_API_KEY:
+        logger.warning("No ElevenLabs API key configured; TTS will be disabled.")
+        return
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            r = await client.get(
+                "https://api.elevenlabs.io/v1/voices",
+                headers={"xi-api-key": ELEVENLABS_API_KEY}
+            )
+            r.raise_for_status()
+            voices_data = r.json()
+            # Use default "Bella" if available, else first available voice
+            voices = voices_data.get("voices", [])
+            for v in voices:
+                if v.get("name") == "Bella":
+                    ELEVENLABS_VOICE_ID = v.get("voice_id")
+                    break
+            if not ELEVENLABS_VOICE_ID and voices:
+                ELEVENLABS_VOICE_ID = voices[0].get("voice_id")
+            if not ELEVENLABS_VOICE_ID:
+                logger.warning("No valid ElevenLabs voice found; TTS will fail.")
+        except Exception:
+            logger.exception("Failed to fetch ElevenLabs voices; TTS may not work.")
+
+# Run this on startup
+@app.on_event("startup")
+async def startup_event():
+    await init_elevenlabs_voice()
+
 @app.get("/")
 async def root():
     return {"message": "Billy AI Backend is Running ✔"}
@@ -578,14 +613,15 @@ ELEVENLABS_VOICE = "Brittney"
 
 @app.post("/tts")
 async def text_to_speech(req: Request):
+    if not ELEVENLABS_API_KEY or not ELEVENLABS_VOICE_ID:
+        raise HTTPException(400, "ElevenLabs TTS not configured or no valid voice")
+
     body = await req.json()
     text = body.get("text")
     if not text:
         raise HTTPException(400, "text required")
-    if not ELEVENLABS_API_KEY:
-        raise HTTPException(400, "no ElevenLabs API key configured")
 
-    url = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE}"
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}"
     headers = {
         "xi-api-key": ELEVENLABS_API_KEY,
         "Content-Type": "application/json"
@@ -596,10 +632,8 @@ async def text_to_speech(req: Request):
         r = await client.post(url, headers=headers, json=payload)
         if r.status_code != 200:
             raise HTTPException(r.status_code, f"ElevenLabs TTS error: {r.text}")
-
         audio_data = r.content
 
-    # Save audio locally
     filename = f"{int(time.time())}-{uuid.uuid4().hex[:10]}.mp3"
     path = os.path.join(IMAGES_DIR, filename)
     with open(path, "wb") as f:
@@ -607,7 +641,6 @@ async def text_to_speech(req: Request):
 
     return {"audio_url": local_image_url(req, filename)}
     
-
 # ---------- Vision analyze ----------
 @app.post("/vision/analyze")
 async def vision_analyze(file: UploadFile = File(...)):
