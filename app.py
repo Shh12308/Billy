@@ -406,7 +406,7 @@ async def chat_endpoint(req: Request):
             logger.exception("Groq /chat request failed")
             raise HTTPException(500, "groq_request_failed")
 
-app.post("/image")
+@app.post("/image")
 async def image_gen(request: Request):
     body = await request.json()
     prompt = body.get("prompt", "")
