@@ -682,52 +682,58 @@ async def img2img(request: Request, file: UploadFile = File(...), prompt: str = 
     return {"provider": "dalle3-edit", "images": urls}
     
 # ---------- TTS ----------
-ELEVENLABS_VOICE = "Brittney"
-
 @app.post("/tts")
-async def text_to_speech(req: Request):
-    # Confirm ElevenLabs configured
-    if not ELEVENLABS_API_KEY or not ELEVENLABS_VOICE_ID:
-        logger.error("ElevenLabs not configured or no voice id (ELEVENLABS_VOICE_ID=%s)", ELEVENLABS_VOICE_ID)
-        raise HTTPException(400, "ElevenLabs TTS not configured or no valid voice")
+async def text_to_speech(request: Request):
 
-    body = await req.json()
-    text = body.get("text")
+    if not OPENAI_API_KEY:
+        raise HTTPException(400, "OPENAI_API_KEY missing")
+
+    body = await request.json()
+    text = body.get("text", "")
+    voice = body.get("voice", "alloy")  # OpenAI default voice
+
     if not text:
         raise HTTPException(400, "text required")
 
-    url = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}"
-    headers = {
-        "xi-api-key": ELEVENLABS_API_KEY,
-        "Content-Type": "application/json"
-    }
-    payload = {"text": text, "voice_settings": {"stability": 0.7, "similarity_boost": 0.75}}
-
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            r = await client.post(url, headers=headers, json=payload)
+        async with httpx.AsyncClient(timeout=90.0) as client:
+
+            payload = {
+                "model": "gpt-4o-mini-tts",   # OpenAI text-to-speech model
+                "voice": voice,
+                "input": text,
+                "format": "mp3"
+            }
+
+            r = await client.post(
+                "https://api.openai.com/v1/audio/speech",
+                headers={
+                    "Authorization": f"Bearer {OPENAI_API_KEY}",
+                    "Content-Type": "application/json"
+                },
+                json=payload
+            )
+
             r.raise_for_status()
-            audio_data = r.content
-    except httpx.HTTPStatusError as exc:
-        # Log provider response
-        body_text = getattr(exc.response, "text", None)
-        logger.exception("ElevenLabs TTS HTTP error: status=%s body=%s", getattr(exc.response, "status_code", None), str(body_text)[:400])
-        raise HTTPException(exc.response.status_code if exc.response is not None else 500, f"ElevenLabs TTS error: {body_text}")
+
+            # save audio file
+            audio_bytes = r.content
+            filename = unique_filename("mp3")
+            filepath = f"static/audio/{filename}"
+
+            os.makedirs("static/audio", exist_ok=True)
+            with open(filepath, "wb") as f:
+                f.write(audio_bytes)
+
+            return {
+                "success": True,
+                "url": f"{request.url.scheme}://{request.url.hostname}/static/audio/{filename}"
+            }
+
     except Exception as e:
-        logger.exception("ElevenLabs TTS request failed: %s", str(e))
-        raise HTTPException(500, f"ElevenLabs TTS failed: {str(e)}")
-
-    filename = f"{int(time.time())}-{uuid.uuid4().hex[:10]}.mp3"
-    path = os.path.join(IMAGES_DIR, filename)
-    try:
-        with open(path, "wb") as f:
-            f.write(audio_data)
-    except Exception:
-        logger.exception("Failed to save TTS audio to disk")
-        raise HTTPException(500, "Failed to save TTS audio")
-
-    return {"audio_url": local_image_url(req, filename)}
-    
+        logger.exception("OpenAI TTS failed")
+        raise HTTPException(500, f"TTS failed: {str(e)}")
+        
 # ---------- Vision analyze ----------
 @app.post("/vision/analyze")
 async def vision_analyze(file: UploadFile = File(...)):
