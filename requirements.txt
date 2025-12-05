@@ -12,7 +12,7 @@ requests==2.32.3
 supabase==2.9.0
 databases[postgresql]==0.7.0
 asyncpg==0.30.0
-sqlite3  # built-in, included with Python
+# sqlite3  <- REMOVE THIS LINE, it's built-in
 
 # ---------------------- Pydantic ----------------------
 pydantic==2.9.2
