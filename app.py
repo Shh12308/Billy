@@ -678,47 +678,57 @@ async def img2img(request: Request, file: UploadFile = File(...), prompt: str = 
 # ---------- TTS ----------
 @app.post("/tts")
 async def text_to_speech(request: Request):
+    """
+    Convert text to speech using OpenAI TTS (gpt-4o-mini-tts).
+    Returns audio/mpeg directly.
+    """
     data = await request.json()
     text = data.get("text", "")
 
     if not text:
-        return JSONResponse({"error": "Missing text"}, status_code=400)
+        raise HTTPException(400, "Missing 'text' in request.")
 
-    openai_api_key = os.getenv("OPENAI_API_KEY")
-    if not openai_api_key:
-        return JSONResponse({"error": "Missing OPENAI_API_KEY"}, status_code=500)
+    if not OPENAI_API_KEY:
+        raise HTTPException(500, "Missing OPENAI_API_KEY")
+
+    payload = {
+        "model": "gpt-4o-mini-tts",  # OpenAI TTS model
+        "voice": "alloy",            # default voice
+        "input": text,
+        "format": "mp3"
+    }
 
     headers = {
-        "Authorization": f"Bearer {openai_api_key}",
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
         "Content-Type": "application/json"
     }
 
-    payload = {
-        "model": "gpt-4o-mini-tts",     # <-- OpenAI TTS model
-        "voice": "alloy",               # <-- OpenAI default voice
-        "input": text
-    }
-
     try:
-        r = httpx.post(
-            "https://api.openai.com/v1/audio/speech",
-            headers=headers,
-            json=payload,
-            timeout=60
-        )
-        r.raise_for_status()
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            r = await client.post(
+                "https://api.openai.com/v1/audio/speech",
+                headers=headers,
+                json=payload
+            )
+            r.raise_for_status()
 
-        return Response(
-            content=r.content,
-            media_type="audio/mpeg"
-        )
+            return Response(
+                content=r.content,
+                media_type="audio/mpeg"
+            )
 
     except httpx.HTTPStatusError as e:
+        # Provide detailed error for debugging
         return JSONResponse(
-            {"error": str(e), "body": r.text},
+            {"error": f"OpenAI HTTP error: {e.response.status_code}", "detail": e.response.text},
             status_code=500
         )
-
+    except Exception as e:
+        return JSONResponse(
+            {"error": "TTS request failed", "detail": str(e)},
+            status_code=500
+        )
+        
 @app.post("/tts/stream")
 async def tts_stream(request: Request):
     data = await request.json()
