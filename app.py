@@ -680,26 +680,33 @@ async def img2img(request: Request, file: UploadFile = File(...), prompt: str = 
 async def text_to_speech(request: Request):
     """
     Convert text to speech using OpenAI TTS (gpt-4o-mini-tts).
+    Accepts either JSON: {"text": "..."} or raw text/plain in the body.
     Returns audio/mpeg directly.
     """
-    data = await request.json()
-    text = data.get("text", "")
-
-    if not text:
-        raise HTTPException(400, "Missing 'text' in request.")
-
-    if not OPENAI_API_KEY:
+    openai_api_key = os.getenv("OPENAI_API_KEY")
+    if not openai_api_key:
         raise HTTPException(500, "Missing OPENAI_API_KEY")
 
+    # Try JSON first
+    try:
+        data = await request.json()
+        text = data.get("text", None)
+    except Exception:
+        # Fallback: read raw text from body
+        text = (await request.body()).decode("utf-8")
+
+    if not text or not text.strip():
+        raise HTTPException(400, "Missing 'text' in request")
+
     payload = {
-        "model": "gpt-4o-mini-tts",  # OpenAI TTS model
-        "voice": "alloy",            # default voice
-        "input": text,
+        "model": "gpt-4o-mini-tts",
+        "voice": "alloy",  # default voice
+        "input": text.strip(),
         "format": "mp3"
     }
 
     headers = {
-        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Authorization": f"Bearer {openai_api_key}",
         "Content-Type": "application/json"
     }
 
@@ -718,7 +725,6 @@ async def text_to_speech(request: Request):
             )
 
     except httpx.HTTPStatusError as e:
-        # Provide detailed error for debugging
         return JSONResponse(
             {"error": f"OpenAI HTTP error: {e.response.status_code}", "detail": e.response.text},
             status_code=500
