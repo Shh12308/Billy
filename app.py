@@ -333,58 +333,86 @@ async def groq_stream(prompt: str):
 async def root():
     return {"message": "Billy AI Backend is Running ✔"}
     
-@app.get("/stream")
-async def stream(prompt: str, user_id: str = "anonymous"):
+@app.post("/chat/stream")
+async def chat_stream(req: Request, tts: bool = False, samples: int = 1, user_id: str = "anonymous"):
+    """
+    Unified streaming endpoint:
+    - Streams chat responses from Groq
+    - Streams image generation if prompt implies an image
+    - Streams TTS audio at the end (if tts=True)
+    SSE events:
+      chat_progress, image_progress, tts_progress, done
+    """
+    body = await req.json()
+    prompt = body.get("prompt", "")
     if not prompt:
-        raise HTTPException(status_code=400, detail="prompt required")
+        raise HTTPException(400, "prompt required")
 
-    if not GROQ_API_KEY:
-        raise HTTPException(status_code=400, detail="GROQ_API_KEY missing")
-
-    payload = {
-        "model": CHAT_MODEL,
-        "stream": True,
-        "messages": [
-            {"role": "system", "content": build_contextual_prompt(user_id, prompt)},
-            {"role": "user", "content": prompt}
-        ]
-    }
-
-    async def event_generator(payload):
-        async with httpx.AsyncClient(timeout=None) as client:
+    async def event_generator():
+        # --- 1. Image Generation (if detected) ---
+        if any(w in prompt.lower() for w in ("image","draw","illustrate","painting","art","picture")):
             try:
+                yield f"data: {json.dumps({'status':'image_start','message':'Starting image generation'})}\n\n"
+                img_payload = {"prompt": prompt, "samples": samples, "base64": False}
+                async with httpx.AsyncClient(timeout=None) as client:
+                    async with client.stream("POST", str(req.base_url) + "image/stream", json=img_payload) as resp:
+                        async for line in resp.aiter_lines():
+                            if line.strip():
+                                yield line + "\n\n"
+                yield f"data: {json.dumps({'status':'image_done','message':'Image generation complete'})}\n\n"
+            except Exception:
+                logger.exception("Image streaming failed")
+                yield f"data: {json.dumps({'status':'image_error','message':'Image generation failed'})}\n\n"
+
+        # --- 2. Chat Streaming ---
+        payload = {
+            "model": CHAT_MODEL,
+            "stream": True,
+            "messages": [
+                {"role": "system", "content": build_contextual_prompt(user_id, prompt)},
+                {"role": "user", "content": prompt}
+            ]
+        }
+        try:
+            async with httpx.AsyncClient(timeout=None) as client:
                 async with client.stream(
                     "POST",
                     "https://api.groq.com/openai/v1/chat/completions",
                     headers=get_groq_headers(),
-                    json=payload,
-                ) as response:
-
-                    if response.status_code != 200:
-                        text = await response.aread()
-                        yield f"data: {json.dumps({'error': 'provider_error', 'text': text.decode()[:300]})}\n\n"
-                        yield "data: [DONE]\n\n"
-                        return
-
-                    # Read streaming lines
-                    async for line in response.aiter_lines():
-                        line = line.strip()
-                        if not line:
-                            continue
+                    json=payload
+                ) as resp:
+                    async for line in resp.aiter_lines():
                         if line.startswith("data: "):
                             data = line[len("data: "):]
-                            if data == "[DONE]":
-                                yield "data: [DONE]\n\n"
+                            if data.strip() == "[DONE]":
                                 break
-                            yield f"data: {data}\n\n"
+                            yield f"data: {json.dumps({'status':'chat_progress','message':data})}\n\n"
+        except Exception:
+            logger.exception("Chat streaming failed")
+            yield f"data: {json.dumps({'status':'chat_error','message':'Chat stream failed'})}\n\n"
 
-            except Exception as e:
-                yield f"data: {json.dumps({'error': 'exception', 'text': str(e)})}\n\n"
-                yield "data: [DONE]\n\n"
+        # --- 3. TTS Streaming (optional) ---
+        if tts:
+            tts_payload = {"text": prompt}
+            try:
+                async with httpx.AsyncClient(timeout=None) as client:
+                    async with client.stream(
+                        "POST",
+                        str(req.base_url) + "tts/stream",
+                        json=tts_payload
+                    ) as resp:
+                        async for chunk in resp.aiter_bytes():
+                            if chunk:
+                                b64_chunk = base64.b64encode(chunk).decode("utf-8")
+                                yield f"data: {json.dumps({'status':'tts_progress','chunk':b64_chunk})}\n\n"
+            except Exception:
+                logger.exception("TTS streaming failed")
+                yield f"data: {json.dumps({'status':'tts_error','message':'TTS stream failed'})}\n\n"
 
-    # Properly pass payload here
-    return StreamingResponse(event_generator(payload), media_type="text/event-stream")
+        yield f"data: {json.dumps({'status':'done'})}\n\n"
 
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+    
 # ---------- Chat endpoint ----------
 @app.post("/chat")
 async def chat_endpoint(req: Request):
