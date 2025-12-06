@@ -339,9 +339,9 @@ async def chat_stream(req: Request, tts: bool = False, samples: int = 1, user_id
     Unified streaming endpoint:
     - Streams chat responses from Groq
     - Streams image generation if prompt implies an image
-    - Streams TTS audio at the end (if tts=True)
+    - Sends TTS audio (as base64) if tts=True at the end
     SSE events:
-      chat_progress, image_progress, tts_progress, done
+      chat_progress, image_progress, tts_done, done
     """
     body = await req.json()
     prompt = body.get("prompt", "")
@@ -349,7 +349,7 @@ async def chat_stream(req: Request, tts: bool = False, samples: int = 1, user_id
         raise HTTPException(400, "prompt required")
 
     async def event_generator():
-        # --- 1. Image Generation (if detected) ---
+        # --- 1. Image Generation (if prompt implies image) ---
         if any(w in prompt.lower() for w in ("image","draw","illustrate","painting","art","picture")):
             try:
                 yield f"data: {json.dumps({'status':'image_start','message':'Starting image generation'})}\n\n"
@@ -365,15 +365,15 @@ async def chat_stream(req: Request, tts: bool = False, samples: int = 1, user_id
                 yield f"data: {json.dumps({'status':'image_error','message':'Image generation failed'})}\n\n"
 
         # --- 2. Chat Streaming ---
-        payload = {
-            "model": CHAT_MODEL,
-            "stream": True,
-            "messages": [
-                {"role": "system", "content": build_contextual_prompt(user_id, prompt)},
-                {"role": "user", "content": prompt}
-            ]
-        }
         try:
+            payload = {
+                "model": CHAT_MODEL,
+                "stream": True,
+                "messages": [
+                    {"role": "system", "content": build_contextual_prompt(user_id, prompt)},
+                    {"role": "user", "content": prompt}
+                ]
+            }
             async with httpx.AsyncClient(timeout=None) as client:
                 async with client.stream(
                     "POST",
@@ -391,23 +391,37 @@ async def chat_stream(req: Request, tts: bool = False, samples: int = 1, user_id
             logger.exception("Chat streaming failed")
             yield f"data: {json.dumps({'status':'chat_error','message':'Chat stream failed'})}\n\n"
 
-        # --- 3. TTS Streaming (optional) ---
+        # --- 3. TTS (optional) ---
         if tts:
-            tts_payload = {"text": prompt}
             try:
+                tts_payload = {
+                    "model": "gpt-4o-mini-tts",
+                    "voice": "alloy",
+                    "input": prompt,
+                    "format": "mp3",
+                    "stream": True
+                }
+                headers = {
+                    "Authorization": f"Bearer {OPENAI_API_KEY}",
+                    "Content-Type": "application/json"
+                }
+                audio_buffer = bytearray()
                 async with httpx.AsyncClient(timeout=None) as client:
                     async with client.stream(
                         "POST",
-                        str(req.base_url) + "tts/stream",
+                        "https://api.openai.com/v1/audio/speech",
+                        headers=headers,
                         json=tts_payload
                     ) as resp:
                         async for chunk in resp.aiter_bytes():
                             if chunk:
-                                b64_chunk = base64.b64encode(chunk).decode("utf-8")
-                                yield f"data: {json.dumps({'status':'tts_progress','chunk':b64_chunk})}\n\n"
+                                audio_buffer.extend(chunk)
+                # Send final base64-encoded audio
+                b64_audio = base64.b64encode(audio_buffer).decode("utf-8")
+                yield f"data: {json.dumps({'status':'tts_done','audio':b64_audio})}\n\n"
             except Exception:
                 logger.exception("TTS streaming failed")
-                yield f"data: {json.dumps({'status':'tts_error','message':'TTS stream failed'})}\n\n"
+                yield f"data: {json.dumps({'status':'tts_error','message':'TTS failed'})}\n\n"
 
         yield f"data: {json.dumps({'status':'done'})}\n\n"
 
