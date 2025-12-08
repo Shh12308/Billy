@@ -253,6 +253,33 @@ async def enhance_prompt_with_groq(prompt: str) -> str:
         logger.exception("Prompt enhancer failed")
     return prompt
 
+# ---------- Intent Detection ----------
+def detect_intent(prompt: str) -> str:
+    p = prompt.lower()
+
+    # Image requests
+    if any(w in p for w in ["image of", "draw", "picture of", "generate image", "make me an image", "photo of", "art of"]):
+        return "image"
+
+    # Video generation (placeholder – uses your future DreamWAN integration)
+    if any(w in p for w in ["video of", "make a video", "animation of", "clip of"]):
+        return "video"
+
+    # TTS
+    if any(w in p for w in ["say this", "speak", "tts", "read this", "read aloud"]):
+        return "tts"
+
+    # Code generation
+    if any(w in p for w in ["write code", "generate code", "python code", "javascript code", "fix this code"]):
+        return "code"
+
+    # Search / info lookup
+    if any(w in p for w in ["search", "look up", "find info", "who is", "what is"]):
+        return "search"
+
+    # Default → Chat model
+    return "chat"
+
 def run_code_safely(code: str, language: str = "python") -> Dict[str, str]:
     """
     Run code in a temporary file safely.
@@ -456,6 +483,68 @@ async def chat_endpoint(req: Request):
             logger.exception("Groq /chat request failed")
             raise HTTPException(500, "groq_request_failed")
 
+# ---------------------------------------------------------
+# 🚀 UNIVERSAL MULTIMODAL ENDPOINT — /ask
+# ---------------------------------------------------------
+@app.post("/ask")
+async def ask(
+    request: Request,
+    prompt: str = Form(...),
+    user_id: str = Form("anonymous"),
+):
+    """
+    The ONE endpoint to rule them all.
+    Users type anything (natural language), and the AI routes automatically:
+    - Chat
+    - Image
+    - Video
+    - TTS
+    - Code
+    - Search
+    """
+    if not prompt:
+        raise HTTPException(400, "prompt is required")
+
+    # ---- Detect user intent ----
+    intent = detect_intent(prompt)
+
+    # ---- IMAGE ----
+    if intent == "image":
+        return await image_gen(request)
+
+    # ---- VIDEO (placeholder, ready for DreamWAN) ----
+    if intent == "video":
+        return {
+            "status": "video_requested",
+            "message": "Video model integration ready. Add DreamWAN next.",
+            "prompt": prompt
+        }
+
+    # ---- TTS ----
+    if intent == "tts":
+        try:
+            audio = await text_to_speech(request)
+            return Response(content=audio.body, media_type="audio/mpeg")
+        except Exception as e:
+            return {"error": "tts_failed", "detail": str(e)}
+
+    # ---- CODE ----
+    if intent == "code":
+        return await code_gen(request)
+
+    # ---- SEARCH ----
+    if intent == "search":
+        return await duck_search(prompt)
+
+    # ---- DEFAULT → CHAT ----
+    body = {"prompt": prompt, "user_id": user_id}
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        r = await client.post(
+            str(request.base_url) + "chat",
+            json=body,
+        )
+        return r.json()
+        
 @app.post("/image")
 async def image_gen(request: Request):
     """
