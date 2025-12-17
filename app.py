@@ -1,4 +1,4 @@
-# app.py — Billy AI full multimodal server: SDXL + TTS/STT + code + vision + search + remove-bg/upscale + caching + metadata
+# app.py — ZyNara1 AI full multimodal server: SDXL + TTS/STT + code + vision + search + remove-bg/upscale + caching + metadata
 import os
 import io
 import json
@@ -79,12 +79,12 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 # ---------- Creator info ----------
 CREATOR_INFO = {
-    "name": "GoldBoy",
+    "name": "GoldYLocks",
     "age": 17,
     "country": "England",
     "projects": ["MintZa", "LuxStream", "SwapX", "CryptoBean"],
-    "socials": {"instagram":"GoldBoyy", "twitter":"GoldBoy"},
-    "bio": "Created by GoldBoy (17, England). Projects: MintZa, LuxStream, SwapX, CryptoBean. Socials: Instagram @GoldBoyy, Twitter @GoldBoy."
+    "socials": { "discord":"@nexisphere123_89431", "twitter":"@NexiSphere"},
+    "bio": "Created by GoldBoy (17, England). Projects: MZ, LS, SX, CB. Socials: Discord @nexisphere123_89431 Twitter @NexiSphere."
 }
 
 # ---------- Dynamic, user-focused system prompt ----------
@@ -101,7 +101,7 @@ def build_contextual_prompt(user_id: str, message: str) -> str:
     rows = cur.fetchall()
     conn.close()
     context = "\n".join(f"{k}: {v}" for k, v in rows)
-    return f"You are Billy AI: helpful, concise, friendly. Focus on exactly what the user wants.\nUser context:\n{context}\nUser message: {message}"
+    return f"You are ZyNara1 AI: helpful, concise, friendly. Focus on exactly what the user wants.\nUser context:\n{context}\nUser message: {message}"
 
 # ---------- SQLITE helpers ----------
 def ensure_db(path: str, schema_sql: str):
