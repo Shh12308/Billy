@@ -28,7 +28,7 @@ app = FastAPI(title="Billy AI Multimodal Server")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://zynara.xyz"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
