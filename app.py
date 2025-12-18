@@ -24,7 +24,10 @@ from sse_starlette.sse import EventSourceResponse
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger("billy-server")
 
-app = FastAPI(title="Billy AI Multimodal Server")
+app = FastAPI(
+    title="Billy AI Multimodal Server",
+    redirect_slashes=False
+)
 
 app.add_middleware(
     CORSMiddleware,
