@@ -492,56 +492,67 @@ async def ask(
     prompt: str = Form(...),
     user_id: str = Form("anonymous"),
 ):
-    """
-    The ONE endpoint to rule them all.
-    Users type anything (natural language), and the AI routes automatically:
-    - Chat
-    - Image
-    - Video
-    - TTS
-    - Code
-    - Search
-    """
     if not prompt:
         raise HTTPException(400, "prompt is required")
 
-    # ---- Detect user intent ----
     intent = detect_intent(prompt)
+    base = str(request.base_url)
 
-    # ---- IMAGE ----
-    if intent == "image":
-        return await image_gen(request)
+    async with httpx.AsyncClient(timeout=60.0) as client:
 
-    # ---- VIDEO (placeholder, ready for DreamWAN) ----
-    if intent == "video":
-        return {
-            "status": "video_requested",
-            "message": "Video model integration ready. Add DreamWAN next.",
-            "prompt": prompt
-        }
+        # ---------- IMAGE ----------
+        if intent == "image":
+            r = await client.post(
+                base + "image",
+                json={"prompt": prompt}
+            )
+            return r.json()
 
-    # ---- TTS ----
-    if intent == "tts":
-        try:
-            audio = await text_to_speech(request)
-            return Response(content=audio.body, media_type="audio/mpeg")
-        except Exception as e:
-            return {"error": "tts_failed", "detail": str(e)}
+        # ---------- VIDEO ----------
+        if intent == "video":
+            return {
+                "status": "video_requested",
+                "message": "Video model integration ready",
+                "prompt": prompt
+            }
 
-    # ---- CODE ----
-    if intent == "code":
-        return await code_gen(request)
+        # ---------- TTS ----------
+        if intent == "tts":
+            r = await client.post(
+                base + "tts",
+                json={"text": prompt}
+            )
+            return Response(
+                content=r.content,
+                media_type="audio/mpeg"
+            )
 
-    # ---- SEARCH ----
-    if intent == "search":
-        return await duck_search(prompt)
+        # ---------- CODE ----------
+        if intent == "code":
+            r = await client.post(
+                base + "code",
+                json={
+                    "prompt": prompt,
+                    "user_id": user_id
+                }
+            )
+            return r.json()
 
-    # ---- DEFAULT → CHAT ----
-    body = {"prompt": prompt, "user_id": user_id}
-    async with httpx.AsyncClient(timeout=30.0) as client:
+        # ---------- SEARCH ----------
+        if intent == "search":
+            r = await client.get(
+                base + "search",
+                params={"q": prompt}
+            )
+            return r.json()
+
+        # ---------- DEFAULT → CHAT ----------
         r = await client.post(
-            str(request.base_url) + "chat",
-            json=body,
+            base + "chat",
+            json={
+                "prompt": prompt,
+                "user_id": user_id
+            }
         )
         return r.json()
         
