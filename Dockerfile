@@ -4,7 +4,8 @@ FROM python:3.11-slim
 # ---------- Environment ----------
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
-ENV PORT=8080  # default fallback port
+# Default fallback port
+ENV PORT=8080
 
 # ---------- System dependencies ----------
 RUN apt-get update && apt-get install -y \
@@ -32,5 +33,5 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD curl -f http://localhost:${PORT}/health || exit 1
 
 # ---------- Run ----------
-# Use shell form to expand $PORT
+# Use shell form to expand $PORT at runtime
 CMD ["sh", "-c", "uvicorn app:app --host 0.0.0.0 --port ${PORT} --workers 1"]
