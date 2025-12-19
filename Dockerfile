@@ -20,5 +20,4 @@ COPY . .
 
 EXPOSE 8080
 
-# 🔹 Shell form ensures $PORT expands
-CMD uvicorn app:app --host 0.0.0.0 --port $PORT
+CMD ["python", "app.py"]
