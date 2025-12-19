@@ -500,64 +500,54 @@ async def ask(
 
     intent = detect_intent(prompt)
 
-    # 🔑 FIX: normalize base URL (prevents 301 redirects)
-    base = str(request.base_url).rstrip("/") + "/"
+    # ---------- IMAGE ----------
+    if intent == "image":
+        request._json = {"prompt": prompt}
+        return await image_gen(request)
 
-    async with httpx.AsyncClient(timeout=60.0) as client:
-
-        # ---------- IMAGE ----------
-        if intent == "image":
-            r = await client.post(base + "image", json={"prompt": prompt})
-            return r.json() if r.headers.get("content-type","").startswith("application/json") else {
-                "error": "image_non_json",
-                "status": r.status_code,
-                "body": r.text[:500]
-            }
-
-        # ---------- VIDEO ----------
-        if intent == "video":
-            return {
-                "status": "video_requested",
-                "message": "Video model integration ready",
-                "prompt": prompt
-            }
-
-        # ---------- TTS ----------
-        if intent == "tts":
-            r = await client.post(base + "tts", json={"text": prompt})
-            return Response(content=r.content, media_type="audio/mpeg")
-
-        # ---------- CODE ----------
-        if intent == "code":
-            r = await client.post(
-                base + "code",
-                json={"prompt": prompt, "user_id": user_id}
-            )
-            return r.json() if r.headers.get("content-type","").startswith("application/json") else {
-                "error": "code_non_json",
-                "status": r.status_code,
-                "body": r.text[:500]
-            }
-
-        # ---------- SEARCH ----------
-        if intent == "search":
-            r = await client.get(base + "search", params={"q": prompt})
-            return r.json() if r.headers.get("content-type","").startswith("application/json") else {
-                "error": "search_non_json",
-                "status": r.status_code,
-                "body": r.text[:500]
-            }
-
-        # ---------- DEFAULT → CHAT ----------
-        r = await client.post(
-            base + "chat",
-            json={"prompt": prompt, "user_id": user_id}
-        )
-        return r.json() if r.headers.get("content-type","").startswith("application/json") else {
-            "error": "chat_non_json",
-            "status": r.status_code,
-            "body": r.text[:500]
+    # ---------- VIDEO ----------
+    if intent == "video":
+        return {
+            "status": "video_requested",
+            "message": "Video model integration ready",
+            "prompt": prompt
         }
+
+    # ---------- TTS ----------
+    if intent == "tts":
+        fake_req = Request(
+            scope=request.scope,
+            receive=request.receive
+        )
+        fake_req._json = {"text": prompt}
+        return await text_to_speech(fake_req)
+
+    # ---------- CODE ----------
+    if intent == "code":
+        fake_req = Request(
+            scope=request.scope,
+            receive=request.receive
+        )
+        fake_req._json = {
+            "prompt": prompt,
+            "user_id": user_id
+        }
+        return await code_gen(fake_req)
+
+    # ---------- SEARCH ----------
+    if intent == "search":
+        return await duck_search(prompt)
+
+    # ---------- DEFAULT → CHAT ----------
+    fake_req = Request(
+        scope=request.scope,
+        receive=request.receive
+    )
+    fake_req._json = {
+        "prompt": prompt,
+        "user_id": user_id
+    }
+    return await chat_endpoint(fake_req)
         
 @app.post("/image")
 async def image_gen(request: Request):
