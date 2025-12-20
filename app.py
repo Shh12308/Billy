@@ -899,27 +899,27 @@ async def image_gen(request: Request):
                     b64 = d.get("b64_json")
                     url_field = d.get("url") or d.get("image_url")
                     if b64:
-                        if return_base64:
-                            urls.append(b64)
-                        else:
-                            fname = unique_filename("png")
-              try:
-    image_bytes = base64.b64decode(b64)
+    try:
+        image_bytes = base64.b64decode(b64)
 
-flagged = await nsfw_check(prompt)
-if flagged:
-    raise HTTPException(400, "NSFW content blocked")
+        flagged = await nsfw_check(prompt)
+        if flagged:
+            raise HTTPException(400, "NSFW content blocked")
 
-filename = f"{user_id}/{unique_filename('png')}"
-upload_image_to_supabase(image_bytes, filename)
+        filename = f"{user_id}/{unique_filename('png')}"
+        upload_image_to_supabase(image_bytes, filename)
 
-save_image_record(user_id, prompt, filename, flagged)
+        save_image_record(user_id, prompt, filename, flagged)
 
-signed = supabase.storage.from_("ai-images").create_signed_url(
-    filename, 60 * 60
-)
+        signed = supabase.storage.from_("ai-images").create_signed_url(
+            filename, 60 * 60
+        )
 
-urls.append(signed["signedURL"])
+        urls.append(signed["signedURL"])
+
+    except Exception:
+        logger.exception("Failed processing OpenAI base64 image")
+        
                         # Download the image and save locally so clients get a stable /static URL
                         try:
                             async with httpx.AsyncClient(timeout=30.0) as dl_client:
