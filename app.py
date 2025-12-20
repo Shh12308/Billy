@@ -669,11 +669,11 @@ async def ask_stream(request: Request):
 except Exception:
     body = {}
 
-    prompt  = body.get("prompt", "")
-    user_id = body.get("user_id", "anonymous")
-    mode    = body.get("mode", "auto")
-    tts     = bool(body.get("tts", False))
-    samples = int(body.get("samples", 1))
+prompt  = body.get("prompt", "").strip()
+user_id = body.get("user_id", "anonymous")
+mode    = body.get("mode", "auto")
+tts     = bool(body.get("tts", False))
+samples = int(body.get("samples", 1))
 
     if not prompt:
         raise HTTPException(400, "prompt required")
