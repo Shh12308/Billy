@@ -19,6 +19,12 @@ from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse, Fil
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
+from supabase import create_client
+
+supabase = create_client(
+    SUPABASE_URL,
+    SUPABASE_KEY
+)
 
 # ---------- CONFIG & LOGGING ----------
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
@@ -182,15 +188,46 @@ def get_cached(prompt: str) -> Optional[Dict[str, Any]]:
 def unique_filename(ext="png"):
     return f"{int(time.time())}-{uuid.uuid4().hex[:10]}.{ext}"
 
-def local_image_url(request: Request, filename: str):
-    return str(request.base_url).rstrip("/") + f"/static/images/{filename}"
+def upload_image_to_supabase(image_bytes: bytes, filename: str) -> str:
+    supabase.storage.from_("ai-images").upload(
+        path=filename,
+        file=image_bytes,
+        file_options={"content-type": "image/png"}
+    )
+    return filename
 
-def save_base64_image_to_file(b64: str, filename: str) -> str:
-    path = os.path.join(IMAGES_DIR, filename)
-    img_bytes = base64.b64decode(b64)
-    with open(path, "wb") as f:
-        f.write(img_bytes)
-    return path
+def upload_image_to_supabase(image_bytes: bytes, filename: str) -> str:
+    supabase.storage.from_("ai-images").upload(
+        path=filename,
+        file=image_bytes,
+        file_options={"content-type": "image/png"}
+    )
+    return filename
+
+def save_image_record(user_id, prompt, path, is_nsfw):
+    supabase.table("images").insert({
+        "user_id": user_id,
+        "prompt": prompt,
+        "image_path": path,
+        "is_nsfw": is_nsfw
+    }).execute()
+
+
+async def nsfw_check(prompt: str) -> bool:
+    async with httpx.AsyncClient(timeout=15) as client:
+        r = await client.post(
+            "https://api.openai.com/v1/moderations",
+            headers={
+                "Authorization": f"Bearer {OPENAI_API_KEY}",
+                "Content-Type": "application/json"
+            },
+            json={"model": "omni-moderation-latest", "input": prompt}
+        )
+        r.raise_for_status()
+        result = r.json()["results"][0]
+        return result["flagged"]
+
+
 
 #------duckduckgo
 
@@ -867,8 +904,22 @@ async def image_gen(request: Request):
                         else:
                             fname = unique_filename("png")
                             try:
-                                save_base64_image_to_file(b64, fname)
-                                urls.append(local_image_url(request, fname))
+                               image_bytes = base64.b64decode(b64)
+
+flagged = await nsfw_check(prompt)
+if flagged:
+    raise HTTPException(400, "NSFW content blocked")
+
+filename = f"{user_id}/{unique_filename('png')}"
+upload_image_to_supabase(image_bytes, filename)
+
+save_image_record(user_id, prompt, filename, flagged)
+
+signed = supabase.storage.from_("ai-images").create_signed_url(
+    filename, 60 * 60
+)
+
+urls.append(signed["signedURL"])
                             except Exception as e:
                                 logger.exception("Failed to save base64 image to file: %s", str(e))
                                 continue
