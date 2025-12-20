@@ -643,6 +643,157 @@ async def ask(request: Request):
         "user_id": user_id
     }
     return await chat_endpoint(request)
+
+# =========================================================
+# 🚀 UNIVERSAL STREAMING MULTIMODAL ENDPOINT — /ask/stream
+# Chat + Image + TTS in ONE SSE stream
+# =========================================================
+@app.post("/ask/stream")
+async def ask_stream(request: Request):
+    """
+    Unified SSE stream.
+
+    Streams:
+    - chat tokens
+    - image progress + final URLs
+    - optional TTS audio (base64)
+
+    Client may specify:
+      mode: chat | image | tts | auto
+      tts: true/false
+      samples: number of images
+    """
+
+    body = await request.json()
+    prompt  = body.get("prompt", "")
+    user_id = body.get("user_id", "anonymous")
+    mode    = body.get("mode", "auto")
+    tts     = bool(body.get("tts", False))
+    samples = int(body.get("samples", 1))
+
+    if not prompt:
+        raise HTTPException(400, "prompt required")
+
+    if mode == "auto":
+        intent = detect_intent(prompt)
+    else:
+        intent = mode
+
+    async def event_generator():
+        # -------------------------------------------------
+        # IMAGE STREAM (if requested or auto-detected)
+        # -------------------------------------------------
+        if intent == "image":
+            try:
+                yield f"data: {json.dumps({'type':'image_start'})}\n\n"
+
+                payload = {
+                    "prompt": prompt,
+                    "samples": samples,
+                    "base64": False
+                }
+
+                async with httpx.AsyncClient(timeout=None) as client:
+                    async with client.stream(
+                        "POST",
+                        str(request.base_url) + "image/stream",
+                        json=payload
+                    ) as resp:
+                        async for line in resp.aiter_lines():
+                            if line.startswith("data: "):
+                                data = line[6:]
+                                if data.strip() == "[DONE]":
+                                    break
+                                yield f"data: {json.dumps({'type':'image_progress','data':json.loads(data)})}\n\n"
+
+                yield f"data: {json.dumps({'type':'image_done'})}\n\n"
+
+            except Exception as e:
+                yield f"data: {json.dumps({'type':'image_error','error':str(e)})}\n\n"
+
+        # -------------------------------------------------
+        # CHAT STREAM
+        # -------------------------------------------------
+        try:
+            payload = {
+                "model": CHAT_MODEL,
+                "stream": True,
+                "messages": [
+                    {"role": "system", "content": build_contextual_prompt(user_id, prompt)},
+                    {"role": "user", "content": prompt}
+                ]
+            }
+
+            async with httpx.AsyncClient(timeout=None) as client:
+                async with client.stream(
+                    "POST",
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers=get_groq_headers(),
+                    json=payload
+                ) as resp:
+
+                    async for line in resp.aiter_lines():
+                        if not line.startswith("data: "):
+                            continue
+
+                        data = line[6:]
+                        if data.strip() == "[DONE]":
+                            break
+
+                        yield f"data: {json.dumps({'type':'chat_token','data':data})}\n\n"
+
+        except Exception as e:
+            yield f"data: {json.dumps({'type':'chat_error','error':str(e)})}\n\n"
+
+        # -------------------------------------------------
+        # OPTIONAL TTS (FINAL AUDIO EVENT)
+        # -------------------------------------------------
+        if tts:
+            try:
+                tts_payload = {
+                    "model": "gpt-4o-mini-tts",
+                    "voice": "alloy",
+                    "input": prompt,
+                    "format": "mp3"
+                }
+
+                audio_buffer = bytearray()
+
+                async with httpx.AsyncClient(timeout=None) as client:
+                    async with client.stream(
+                        "POST",
+                        "https://api.openai.com/v1/audio/speech",
+                        headers={
+                            "Authorization": f"Bearer {OPENAI_API_KEY}",
+                            "Content-Type": "application/json"
+                        },
+                        json=tts_payload
+                    ) as resp:
+                        async for chunk in resp.aiter_bytes():
+                            if chunk:
+                                audio_buffer.extend(chunk)
+
+                audio_b64 = base64.b64encode(audio_buffer).decode()
+
+                yield f"data: {json.dumps({'type':'tts_done','audio':audio_b64})}\n\n"
+
+            except Exception as e:
+                yield f"data: {json.dumps({'type':'tts_error','error':str(e)})}\n\n"
+
+        # -------------------------------------------------
+        # DONE
+        # -------------------------------------------------
+        yield f"data: {json.dumps({'type':'done'})}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive"
+        }
+    )
     
 @app.post("/image")
 async def image_gen(request: Request):
