@@ -664,9 +664,7 @@ async def ask_stream(request: Request):
       samples: number of images
     """
 
-    # -----------------------------
-    # SAFE JSON PARSE
-    # -----------------------------
+    # ---------------- SAFE JSON PARSE ----------------
     try:
         body = await request.json()
     except Exception:
@@ -681,22 +679,14 @@ async def ask_stream(request: Request):
     if not prompt:
         raise HTTPException(status_code=400, detail="prompt required")
 
-    if mode == "auto":
-        intent = detect_intent(prompt)
-    else:
-        intent = mode
+    intent = detect_intent(prompt) if mode == "auto" else mode
 
-    # -----------------------------
-    # SSE GENERATOR
-    # -----------------------------
+    # ---------------- SSE GENERATOR ----------------
     async def event_generator():
-
-        # =============================
-        # IMAGE STREAM
-        # =============================
-        if intent == "image":
-            try:
-                yield f"data: {json.dumps({'type': 'image_start'})}\n\n"
+        try:
+            # ========== IMAGE STREAM ==========
+            if intent == "image":
+                yield sse({"type": "image_start"})
 
                 payload = {
                     "prompt": prompt,
@@ -707,34 +697,34 @@ async def ask_stream(request: Request):
                 async with httpx.AsyncClient(timeout=None) as client:
                     async with client.stream(
                         "POST",
-                        str(request.base_url) + "image/stream",
+                        f"{request.base_url}image/stream",
                         json=payload
                     ) as resp:
                         async for line in resp.aiter_lines():
-                            if not line.startswith("data: "):
-                                continue
+                            if line.startswith("data: "):
+                                data = line[6:]
+                                if data.strip() == "[DONE]":
+                                    break
+                                yield sse({
+                                    "type": "image_progress",
+                                    "data": json.loads(data)
+                                })
 
-                            data = line[6:]
-                            if data.strip() == "[DONE]":
-                                break
+                yield sse({"type": "image_done"})
 
-                            yield f"data: {json.dumps({'type': 'image_progress', 'data': json.loads(data)})}\n\n"
-
-                yield f"data: {json.dumps({'type': 'image_done'})}\n\n"
-
-            except Exception as e:
-                yield f"data: {json.dumps({'type': 'image_error', 'error': str(e)})}\n\n"
-
-        # =============================
-        # CHAT STREAM
-        # =============================
-        try:
+            # ========== CHAT STREAM ==========
             payload = {
                 "model": CHAT_MODEL,
                 "stream": True,
                 "messages": [
-                    {"role": "system", "content": build_contextual_prompt(user_id, prompt)},
-                    {"role": "user", "content": prompt}
+                    {
+                        "role": "system",
+                        "content": build_contextual_prompt(user_id, prompt)
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
                 ]
             }
 
@@ -745,32 +735,19 @@ async def ask_stream(request: Request):
                     headers=get_groq_headers(),
                     json=payload
                 ) as resp:
-
                     async for line in resp.aiter_lines():
                         if not line.startswith("data: "):
                             continue
-
                         data = line[6:]
                         if data.strip() == "[DONE]":
                             break
+                        yield sse({
+                            "type": "chat_token",
+                            "data": data
+                        })
 
-                        yield f"data: {json.dumps({'type': 'chat_token', 'data': data})}\n\n"
-
-        except Exception as e:
-            yield f"data: {json.dumps({'type': 'chat_error', 'error': str(e)})}\n\n"
-
-        # =============================
-        # OPTIONAL TTS
-        # =============================
-        if tts:
-            try:
-                tts_payload = {
-                    "model": "gpt-4o-mini-tts",
-                    "voice": "alloy",
-                    "input": prompt,
-                    "format": "mp3"
-                }
-
+            # ========== OPTIONAL TTS ==========
+            if tts:
                 audio_buffer = bytearray()
 
                 async with httpx.AsyncClient(timeout=None) as client:
@@ -781,23 +758,33 @@ async def ask_stream(request: Request):
                             "Authorization": f"Bearer {OPENAI_API_KEY}",
                             "Content-Type": "application/json"
                         },
-                        json=tts_payload
+                        json={
+                            "model": "gpt-4o-mini-tts",
+                            "voice": "alloy",
+                            "input": prompt,
+                            "format": "mp3"
+                        }
                     ) as resp:
                         async for chunk in resp.aiter_bytes():
                             if chunk:
                                 audio_buffer.extend(chunk)
 
-                audio_b64 = base64.b64encode(audio_buffer).decode()
+                yield sse({
+                    "type": "tts_done",
+                    "audio": base64.b64encode(audio_buffer).decode()
+                })
 
-                yield f"data: {json.dumps({'type': 'tts_done', 'audio': audio_b64})}\n\n"
+        except asyncio.CancelledError:
+            return
 
-            except Exception as e:
-                yield f"data: {json.dumps({'type': 'tts_error', 'error': str(e)})}\n\n"
+        except Exception as e:
+            yield sse({
+                "type": "error",
+                "error": str(e)
+            })
 
-        # =============================
-        # DONE
-        # =============================
-        yield f"data: {json.dumps({'type': 'done'})}\n\n"
+        # ========== DONE ==========
+        yield sse({"type": "done"})
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(
@@ -805,9 +792,15 @@ async def ask_stream(request: Request):
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
-            "Connection": "keep-alive"
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
         }
     )
+
+
+# ---------------- SSE HELPER ----------------
+def sse(obj: dict) -> str:
+    return f"data: {json.dumps(obj)}\n\n"
     
 @app.post("/image")
 async def image_gen(request: Request):
