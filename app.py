@@ -841,119 +841,106 @@ def sse(obj: dict) -> str:
     
 @app.post("/image")
 async def image_gen(request: Request):
-    """
-    Generate images via OpenAI (DALL·E 3). Requests b64_json but will
-    fall back to URL-based results if present. Saves files locally and caches results.
-    """
     body = await request.json()
     prompt = body.get("prompt", "")
+    user_id = body.get("user_id", "anonymous")
+
     try:
         samples = max(1, int(body.get("samples", 1)))
     except Exception:
         samples = 1
+
     return_base64 = bool(body.get("base64", False))
 
     if not prompt:
         raise HTTPException(400, "prompt required")
 
-    # Check cache first
     cached = get_cached(prompt)
     if cached:
-        logger.info("Image cache hit for prompt: %s", prompt[:80])
         return {"cached": True, **cached}
 
-    urls: List[str] = []
-    provider_used = None
-
     if not OPENAI_API_KEY:
-        logger.warning("OPENAI_API_KEY not configured; skipping OpenAI provider")
-    else:
-        try:
-            async with httpx.AsyncClient(timeout=90.0) as client:
-                payload = {
-                    "model": "dall-e-3",
-                    "prompt": prompt,
-                    "n": samples,
-                    "size": "1024x1024",
-                    "response_format": "b64_json"
-                }
-                logger.info("Sending image generation request to OpenAI for prompt: %s", prompt[:120])
-                r = await client.post(
-                    "https://api.openai.com/v1/images/generations",
-                    headers={
-                        "Authorization": f"Bearer {OPENAI_API_KEY}",
-                        "Content-Type": "application/json"
-                    },
-                    json=payload
-                )
-                # If OpenAI returns an error (e.g. unauthorized), this will raise
-                r.raise_for_status()
-                jr = r.json()
-                logger.debug("OpenAI image response keys: %s", list(jr.keys()))
-                data_list = jr.get("data", [])
-                if not data_list:
-                    # Try to detect URL-style response (some accounts/configs)
-                    logger.warning("OpenAI returned empty 'data' for prompt: %s", prompt[:120])
-                for d in data_list:
-                    # Accept either b64_json or url (fallback)
-                    b64 = d.get("b64_json")
-                    url_field = d.get("url") or d.get("image_url")
-                    if b64:
-    try:
-        image_bytes = base64.b64decode(b64)
+        raise HTTPException(500, "OPENAI_API_KEY missing")
 
-        flagged = await nsfw_check(prompt)
-        if flagged:
-            raise HTTPException(400, "NSFW content blocked")
+    urls = []
+    provider_used = "openai"
 
-        filename = f"{user_id}/{unique_filename('png')}"
-        upload_image_to_supabase(image_bytes, filename)
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        payload = {
+            "model": "dall-e-3",
+            "prompt": prompt,
+            "n": samples,
+            "size": "1024x1024",
+            "response_format": "b64_json"
+        }
 
-        save_image_record(user_id, prompt, filename, flagged)
-
-        signed = supabase.storage.from_("ai-images").create_signed_url(
-            filename, 60 * 60
+        r = await client.post(
+            "https://api.openai.com/v1/images/generations",
+            headers={
+                "Authorization": f"Bearer {OPENAI_API_KEY}",
+                "Content-Type": "application/json"
+            },
+            json=payload
         )
 
-        urls.append(signed["signedURL"])
+        r.raise_for_status()
+        jr = r.json()
 
-    except Exception:
-        logger.exception("Failed processing OpenAI base64 image")
-        
-                        # Download the image and save locally so clients get a stable /static URL
-                        try:
-                            async with httpx.AsyncClient(timeout=30.0) as dl_client:
-                                dl = await dl_client.get(url_field)
-                                dl.raise_for_status()
-                                fname = unique_filename("png")
-                                path = os.path.join(IMAGES_DIR, fname)
-                                with open(path, "wb") as f:
-                                    f.write(dl.content)
-                                urls.append(local_image_url(request, fname))
-                        except Exception:
-                            logger.exception("Failed to download image from provider URL: %s", url_field)
-                            continue
-                    else:
-                        logger.warning("No b64_json or url for one result item: %s", d.keys())
+    for d in jr.get("data", []):
+        b64 = d.get("b64_json")
+        url_field = d.get("url")
 
-            provider_used = "dalle3"
-        except httpx.HTTPStatusError as exc:
-            logger.exception("OpenAI returned HTTP error for image generation: %s", getattr(exc.response, "text", ""))
-        except Exception as e:
-            logger.exception("OpenAI DALL-E 3 generation failed: %s", str(e))
+        # ---------- BASE64 FLOW ----------
+        if b64:
+            try:
+                image_bytes = base64.b64decode(b64)
+
+                flagged = await nsfw_check(prompt)
+                if flagged:
+                    raise HTTPException(400, "NSFW content blocked")
+
+                filename = f"{user_id}/{unique_filename('png')}"
+                upload_image_to_supabase(image_bytes, filename)
+
+                save_image_record(user_id, prompt, filename, flagged)
+
+                signed = supabase.storage.from_("ai-images").create_signed_url(
+                    filename, 60 * 60
+                )
+
+                urls.append(signed["signedURL"])
+
+            except Exception:
+                logger.exception("Failed processing OpenAI base64 image")
+
+        # ---------- URL FALLBACK ----------
+        elif url_field:
+            try:
+                async with httpx.AsyncClient(timeout=30.0) as dl_client:
+                    dl = await dl_client.get(url_field)
+                    dl.raise_for_status()
+
+                    fname = unique_filename("png")
+                    path = os.path.join(IMAGES_DIR, fname)
+
+                    with open(path, "wb") as f:
+                        f.write(dl.content)
+
+                    urls.append(local_image_url(request, fname))
+
+            except Exception:
+                logger.exception("Failed downloading image URL")
 
     if not urls:
-        logger.error("Image generation returned no images for prompt: %s", prompt[:120])
-        raise HTTPException(500, "Image generation failed or returned no data")
+        raise HTTPException(500, "Image generation failed")
 
-    # Cache results (cache the final URLs or base64 list)
-    try:
-        cache_result(prompt, provider_used or "openai", urls)
-    except Exception:
-        logger.exception("Failed to cache image result")
+    cache_result(prompt, provider_used, urls)
 
-    return {"provider": provider_used or "openai", "images": urls}
-
+    return {
+        "provider": provider_used,
+        "images": urls
+    }
+    
 @app.post("/image/stream")
 async def image_stream(request: Request):
     """
