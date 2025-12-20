@@ -664,32 +664,39 @@ async def ask_stream(request: Request):
       samples: number of images
     """
 
+    # -----------------------------
+    # SAFE JSON PARSE
+    # -----------------------------
     try:
-    body = await request.json()
-except Exception:
-    body = {}
+        body = await request.json()
+    except Exception:
+        body = {}
 
-prompt  = body.get("prompt", "").strip()
-user_id = body.get("user_id", "anonymous")
-mode    = body.get("mode", "auto")
-tts     = bool(body.get("tts", False))
-samples = int(body.get("samples", 1))
+    prompt  = body.get("prompt", "").strip()
+    user_id = body.get("user_id", "anonymous")
+    mode    = body.get("mode", "auto")
+    tts     = bool(body.get("tts", False))
+    samples = int(body.get("samples", 1))
 
     if not prompt:
-        raise HTTPException(400, "prompt required")
+        raise HTTPException(status_code=400, detail="prompt required")
 
     if mode == "auto":
         intent = detect_intent(prompt)
     else:
         intent = mode
 
+    # -----------------------------
+    # SSE GENERATOR
+    # -----------------------------
     async def event_generator():
-        # -------------------------------------------------
-        # IMAGE STREAM (if requested or auto-detected)
-        # -------------------------------------------------
+
+        # =============================
+        # IMAGE STREAM
+        # =============================
         if intent == "image":
             try:
-                yield f"data: {json.dumps({'type':'image_start'})}\n\n"
+                yield f"data: {json.dumps({'type': 'image_start'})}\n\n"
 
                 payload = {
                     "prompt": prompt,
@@ -704,20 +711,23 @@ samples = int(body.get("samples", 1))
                         json=payload
                     ) as resp:
                         async for line in resp.aiter_lines():
-                            if line.startswith("data: "):
-                                data = line[6:]
-                                if data.strip() == "[DONE]":
-                                    break
-                                yield f"data: {json.dumps({'type':'image_progress','data':json.loads(data)})}\n\n"
+                            if not line.startswith("data: "):
+                                continue
 
-                yield f"data: {json.dumps({'type':'image_done'})}\n\n"
+                            data = line[6:]
+                            if data.strip() == "[DONE]":
+                                break
+
+                            yield f"data: {json.dumps({'type': 'image_progress', 'data': json.loads(data)})}\n\n"
+
+                yield f"data: {json.dumps({'type': 'image_done'})}\n\n"
 
             except Exception as e:
-                yield f"data: {json.dumps({'type':'image_error','error':str(e)})}\n\n"
+                yield f"data: {json.dumps({'type': 'image_error', 'error': str(e)})}\n\n"
 
-        # -------------------------------------------------
+        # =============================
         # CHAT STREAM
-        # -------------------------------------------------
+        # =============================
         try:
             payload = {
                 "model": CHAT_MODEL,
@@ -744,14 +754,14 @@ samples = int(body.get("samples", 1))
                         if data.strip() == "[DONE]":
                             break
 
-                        yield f"data: {json.dumps({'type':'chat_token','data':data})}\n\n"
+                        yield f"data: {json.dumps({'type': 'chat_token', 'data': data})}\n\n"
 
         except Exception as e:
-            yield f"data: {json.dumps({'type':'chat_error','error':str(e)})}\n\n"
+            yield f"data: {json.dumps({'type': 'chat_error', 'error': str(e)})}\n\n"
 
-        # -------------------------------------------------
-        # OPTIONAL TTS (FINAL AUDIO EVENT)
-        # -------------------------------------------------
+        # =============================
+        # OPTIONAL TTS
+        # =============================
         if tts:
             try:
                 tts_payload = {
@@ -779,15 +789,15 @@ samples = int(body.get("samples", 1))
 
                 audio_b64 = base64.b64encode(audio_buffer).decode()
 
-                yield f"data: {json.dumps({'type':'tts_done','audio':audio_b64})}\n\n"
+                yield f"data: {json.dumps({'type': 'tts_done', 'audio': audio_b64})}\n\n"
 
             except Exception as e:
-                yield f"data: {json.dumps({'type':'tts_error','error':str(e)})}\n\n"
+                yield f"data: {json.dumps({'type': 'tts_error', 'error': str(e)})}\n\n"
 
-        # -------------------------------------------------
+        # =============================
         # DONE
-        # -------------------------------------------------
-        yield f"data: {json.dumps({'type':'done'})}\n\n"
+        # =============================
+        yield f"data: {json.dumps({'type': 'done'})}\n\n"
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(
