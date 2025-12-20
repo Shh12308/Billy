@@ -903,8 +903,8 @@ async def image_gen(request: Request):
                             urls.append(b64)
                         else:
                             fname = unique_filename("png")
-                            try:
-                               image_bytes = base64.b64decode(b64)
+              try:
+    image_bytes = base64.b64decode(b64)
 
 flagged = await nsfw_check(prompt)
 if flagged:
@@ -920,10 +920,6 @@ signed = supabase.storage.from_("ai-images").create_signed_url(
 )
 
 urls.append(signed["signedURL"])
-                            except Exception as e:
-                                logger.exception("Failed to save base64 image to file: %s", str(e))
-                                continue
-                    elif url_field:
                         # Download the image and save locally so clients get a stable /static URL
                         try:
                             async with httpx.AsyncClient(timeout=30.0) as dl_client:
