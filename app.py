@@ -21,6 +21,13 @@ from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
 from supabase import create_client
 
+# ---------- ENV KEYS ----------
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+
+if not SUPABASE_URL or not SUPABASE_KEY:
+    raise RuntimeError("SUPABASE_URL or SUPABASE_KEY is missing")
+    
 supabase = create_client(
     SUPABASE_URL,
     SUPABASE_KEY
@@ -73,12 +80,6 @@ CHAT_MODEL = os.getenv("CHAT_MODEL", "llama-3.1-8b-instant")
 # TTS/STT are handled via ElevenLabs now
 TTS_MODEL = None
 STT_MODEL = None
-
-# -------------------
-# Supabase Config
-# -------------------
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 # Image hosting dirs
 STATIC_DIR = os.getenv("STATIC_DIR", "static")
