@@ -486,69 +486,164 @@ async def chat_endpoint(req: Request):
             logger.exception("Groq /chat request failed")
             raise HTTPException(500, "groq_request_failed")
 
-# ---------------------------------------------------------
+# =========================================================
 # 🚀 UNIVERSAL MULTIMODAL ENDPOINT — /ask
-# ---------------------------------------------------------
+# Routes to EVERYTHING
+# =========================================================
 @app.post("/ask")
-async def ask(
-    request: Request,
-    prompt: str = Form(...),
-    user_id: str = Form("anonymous"),
-):
-    if not prompt:
-        raise HTTPException(400, "prompt is required")
+async def ask(request: Request):
+    """
+    Universal multimodal router.
 
-    intent = detect_intent(prompt)
+    Supports:
+    - chat (sync + stream)
+    - image + image/stream
+    - img2img
+    - vision
+    - tts + tts/stream
+    - stt
+    - search
+    - code
+    - video (placeholder)
+    - JSON / form-data / multipart / raw text
 
-    # ---------- IMAGE ----------
-    if intent == "image":
-        request._json = {"prompt": prompt}
+    Client may optionally specify:
+      mode: chat | chat_stream | image | image_stream | img2img |
+            vision | tts | tts_stream | stt | search | code | video
+    """
+
+    content_type = request.headers.get("content-type", "")
+    data: Dict[str, Any] = {}
+    files: Dict[str, UploadFile] = {}
+
+    # -------------------------------------------------
+    # Parse input (JSON / multipart / form / raw)
+    # -------------------------------------------------
+    if "application/json" in content_type:
+        data = await request.json()
+
+    elif "multipart/form-data" in content_type:
+        form = await request.form()
+        for k, v in form.items():
+            if hasattr(v, "filename"):
+                files[k] = v
+            else:
+                data[k] = v
+
+    elif "application/x-www-form-urlencoded" in content_type:
+        form = await request.form()
+        data = dict(form)
+
+    else:
+        raw = (await request.body()).decode("utf-8", errors="ignore")
+        data["prompt"] = raw
+
+    prompt   = (data.get("prompt") or "").strip()
+    user_id  = data.get("user_id", "anonymous")
+    mode     = data.get("mode")               # explicit override
+    stream   = bool(data.get("stream", False))
+    samples  = int(data.get("samples", 1))
+
+    if not prompt and not files:
+        raise HTTPException(400, "prompt or file required")
+
+    # -------------------------------------------------
+    # EXPLICIT MODE ROUTING (highest priority)
+    # -------------------------------------------------
+
+    if mode == "chat":
+        request._json = {"prompt": prompt, "user_id": user_id}
+        return await chat_endpoint(request)
+
+    if mode == "chat_stream":
+        return await chat_stream(request)
+
+    if mode == "image":
+        request._json = {"prompt": prompt, "samples": samples}
         return await image_gen(request)
 
-    # ---------- VIDEO ----------
-    if intent == "video":
+    if mode == "image_stream":
+        request._json = {"prompt": prompt, "samples": samples}
+        return await image_stream(request)
+
+    if mode == "img2img":
+        if "file" not in files:
+            raise HTTPException(400, "file required for img2img")
+        return await img2img(
+            request=request,
+            file=files["file"],
+            prompt=prompt,
+            user_id=user_id
+        )
+
+    if mode == "vision":
+        if "file" not in files:
+            raise HTTPException(400, "file required for vision")
+        return await vision_analyze(files["file"])
+
+    if mode == "tts":
+        request._json = {"text": prompt}
+        return await text_to_speech(request)
+
+    if mode == "tts_stream":
+        request._json = {"text": prompt}
+        return await tts_stream(request)
+
+    if mode == "stt":
+        if "file" not in files:
+            raise HTTPException(400, "audio file required for stt")
+        return await speech_to_text(files["file"])
+
+    if mode == "search":
+        return await duck_search(prompt)
+
+    if mode == "code":
+        request._json = {
+            "prompt": prompt,
+            "user_id": user_id,
+            "language": data.get("language", "python")
+        }
+        return await code_gen(request)
+
+    if mode == "video":
         return {
             "status": "video_requested",
-            "message": "Video model integration ready",
+            "message": "Video generation pipeline ready",
             "prompt": prompt
         }
 
-    # ---------- TTS ----------
+    # -------------------------------------------------
+    # AUTO INTENT FALLBACK (no mode specified)
+    # -------------------------------------------------
+    intent = detect_intent(prompt)
+
+    if intent == "image":
+        request._json = {"prompt": prompt, "samples": samples}
+        return await image_gen(request)
+
     if intent == "tts":
-        fake_req = Request(
-            scope=request.scope,
-            receive=request.receive
-        )
-        fake_req._json = {"text": prompt}
-        return await text_to_speech(fake_req)
+        request._json = {"text": prompt}
+        return await text_to_speech(request)
 
-    # ---------- CODE ----------
-    if intent == "code":
-        fake_req = Request(
-            scope=request.scope,
-            receive=request.receive
-        )
-        fake_req._json = {
-            "prompt": prompt,
-            "user_id": user_id
-        }
-        return await code_gen(fake_req)
-
-    # ---------- SEARCH ----------
     if intent == "search":
         return await duck_search(prompt)
 
-    # ---------- DEFAULT → CHAT ----------
-    fake_req = Request(
-        scope=request.scope,
-        receive=request.receive
-    )
-    fake_req._json = {
+    if intent == "code":
+        request._json = {
+            "prompt": prompt,
+            "user_id": user_id
+        }
+        return await code_gen(request)
+
+    # -------------------------------------------------
+    # DEFAULT → CHAT
+    # -------------------------------------------------
+    request._json = {
         "prompt": prompt,
         "user_id": user_id
     }
-    return await chat_endpoint(fake_req)
-        
+    return await chat_endpoint(request)
+    
 @app.post("/image")
 async def image_gen(request: Request):
     """
