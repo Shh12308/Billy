@@ -664,7 +664,11 @@ async def ask_stream(request: Request):
       samples: number of images
     """
 
+    try:
     body = await request.json()
+except Exception:
+    body = {}
+
     prompt  = body.get("prompt", "")
     user_id = body.get("user_id", "anonymous")
     mode    = body.get("mode", "auto")
