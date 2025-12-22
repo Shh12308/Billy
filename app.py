@@ -616,6 +616,10 @@ async def chat_endpoint(req: Request):
 # 🚀 UNIVERSAL MULTIMODAL ENDPOINT — /ask
 # Routes to EVERYTHING
 # =========================================================
+# =========================================================
+# 🚀 UNIVERSAL MULTIMODAL ENDPOINT — /ask
+# Routes to EVERYTHING
+# =========================================================
 @app.post("/ask/universal")
 async def ask_universal(request: Request):
     content_type = request.headers.get("content-type", "")
@@ -659,49 +663,50 @@ async def ask_universal(request: Request):
     # -----------------------------
     # Streaming logic
     # -----------------------------
-  if stream and intent in ["chat", "image", "tts"]:
-    async def event_generator():
-        try:
-            # Register active task
-            active_streams[user_id] = asyncio.current_task()
-            yield sse({"type": "starting", "message": "Stream started"})
-            await asyncio.sleep(0)
+    if stream and intent in ["chat", "image", "tts"]:
+        async def event_generator():
+            try:
+                # Register active task
+                active_streams[user_id] = asyncio.current_task()
+                yield sse({"type": "starting", "message": "Stream started"})
+                await asyncio.sleep(0)
 
-            # ===== IMAGE STREAM =====
-            if intent == "image":
-                async for chunk in image_stream_helper(prompt, samples):
-                    yield sse(chunk)
+                # ===== IMAGE STREAM =====
+                if intent == "image":
+                    async for chunk in image_stream_helper(prompt, samples):
+                        yield sse(chunk)
 
-            # ===== CHAT STREAM =====
-            if intent in ["chat", "chat_stream"]:
-                async for chunk in chat_stream_helper(user_id, prompt):
-                    yield sse(chunk)
+                # ===== CHAT STREAM =====
+                if intent in ["chat", "chat_stream"]:
+                    async for chunk in chat_stream_helper(user_id, prompt):
+                        yield sse(chunk)
 
-            # ===== TTS STREAM =====
-            if intent in ["tts", "tts_stream"] or tts_flag:
-                async for chunk in tts_stream_helper(prompt):
-                    yield sse(chunk)
+                # ===== TTS STREAM =====
+                if intent in ["tts", "tts_stream"] or tts_flag:
+                    async for chunk in tts_stream_helper(prompt):
+                        yield sse(chunk)
 
-        except asyncio.CancelledError:
-            yield sse({"type": "stopped", "message": "Stream cancelled"})
-            return
-        except Exception as e:
-            yield sse({"type": "error", "error": str(e)})
-        finally:
-            active_streams.pop(user_id, None)
+            except asyncio.CancelledError:
+                yield sse({"type": "stopped", "message": "Stream cancelled"})
+                return
+            except Exception as e:
+                yield sse({"type": "error", "error": str(e)})
+            finally:
+                active_streams.pop(user_id, None)
 
-        yield sse({"type": "done"})
-        yield "data: [DONE]\n\n"
+            yield sse({"type": "done"})
+            yield "data: [DONE]\n\n"
 
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache, no-transform",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"
-        }
-    )
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache, no-transform",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
+
     # -----------------------------
     # Non-stream fallback (JSON)
     # -----------------------------
@@ -758,7 +763,7 @@ async def ask_universal(request: Request):
     # Default fallback → chat
     request._json = {"prompt": prompt, "user_id": user_id}
     return await chat_endpoint(request)
-
+    
 # -----------------------------
 # Stop endpoint
 # -----------------------------
