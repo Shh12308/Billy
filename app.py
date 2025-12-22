@@ -688,21 +688,7 @@ async def ask(request: Request):
 # =========================================================
 @app.post("/ask/stream")
 async def ask_stream(request: Request):
-    """
-    Unified SSE stream.
 
-    Streams:
-    - chat tokens
-    - image progress + final URLs
-    - optional TTS audio (base64)
-
-    Client may specify:
-      mode: chat | image | tts | auto
-      tts: true/false
-      samples: number of images
-    """
-
-    # ---------------- SAFE JSON PARSE ----------------
     try:
         body = await request.json()
     except Exception:
@@ -719,74 +705,80 @@ async def ask_stream(request: Request):
 
     intent = detect_intent(prompt) if mode == "auto" else mode
 
-    # ---------------- SSE GENERATOR ----------------
     async def event_generator():
         try:
+            # 🚀 Force immediate flush
+            yield "data: {}\n\n"
+            await asyncio.sleep(0)
+
             # ========== IMAGE STREAM ==========
             if intent == "image":
                 yield sse({"type": "image_start"})
-
-                payload = {
-                    "prompt": prompt,
-                    "samples": samples,
-                    "base64": False
-                }
 
                 async with httpx.AsyncClient(timeout=None) as client:
                     async with client.stream(
                         "POST",
                         f"{request.base_url}image/stream",
-                        json=payload
+                        json={
+                            "prompt": prompt,
+                            "samples": samples,
+                            "base64": False
+                        }
                     ) as resp:
                         async for line in resp.aiter_lines():
-                            if line.startswith("data: "):
-                                data = line[6:]
-                                if data.strip() == "[DONE]":
-                                    break
-                                yield sse({
-                                    "type": "image_progress",
-                                    "data": json.loads(data)
-                                })
+                            if not line.startswith("data: "):
+                                continue
+
+                            payload = line[6:].strip()
+                            if payload == "[DONE]":
+                                break
+
+                            yield sse({
+                                "type": "image_progress",
+                                "data": json.loads(payload)
+                            })
 
                 yield sse({"type": "image_done"})
 
             # ========== CHAT STREAM ==========
-            payload = {
-                "model": CHAT_MODEL,
-                "stream": True,
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": build_contextual_prompt(user_id, prompt)
-                    },
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ]
-            }
-
             async with httpx.AsyncClient(timeout=None) as client:
                 async with client.stream(
                     "POST",
                     "https://api.groq.com/openai/v1/chat/completions",
                     headers=get_groq_headers(),
-                    json=payload
+                    json={
+                        "model": CHAT_MODEL,
+                        "stream": True,
+                        "messages": [
+                            {
+                                "role": "system",
+                                "content": build_contextual_prompt(user_id, prompt)
+                            },
+                            {
+                                "role": "user",
+                                "content": prompt
+                            }
+                        ]
+                    }
                 ) as resp:
                     async for line in resp.aiter_lines():
                         if not line.startswith("data: "):
                             continue
-                        data = line[6:]
-                        if data.strip() == "[DONE]":
+
+                        payload = line[6:].strip()
+                        if payload == "[DONE]":
                             break
-                        yield sse({
-                            "type": "chat_token",
-                            "data": data
-                        })
+
+                        chunk = json.loads(payload)
+                        delta = chunk["choices"][0]["delta"].get("content")
+
+                        # ✅ STREAM ONLY TEXT TOKENS
+                        if delta:
+                            yield f"data: {json.dumps({'type':'chat_token','text':delta})}\n\n"
 
             # ========== OPTIONAL TTS ==========
             if tts:
-                audio_buffer = bytearray()
+                audio = bytearray()
 
                 async with httpx.AsyncClient(timeout=None) as client:
                     async with client.stream(
@@ -804,24 +796,19 @@ async def ask_stream(request: Request):
                         }
                     ) as resp:
                         async for chunk in resp.aiter_bytes():
-                            if chunk:
-                                audio_buffer.extend(chunk)
+                            audio.extend(chunk)
 
                 yield sse({
                     "type": "tts_done",
-                    "audio": base64.b64encode(audio_buffer).decode()
+                    "audio": base64.b64encode(audio).decode()
                 })
 
         except asyncio.CancelledError:
             return
 
         except Exception as e:
-            yield sse({
-                "type": "error",
-                "error": str(e)
-            })
+            yield sse({"type": "error", "error": str(e)})
 
-        # ========== DONE ==========
         yield sse({"type": "done"})
         yield "data: [DONE]\n\n"
 
@@ -829,7 +816,7 @@ async def ask_stream(request: Request):
         event_generator(),
         media_type="text/event-stream",
         headers={
-            "Cache-Control": "no-cache",
+            "Cache-Control": "no-cache, no-transform",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no"
         }
