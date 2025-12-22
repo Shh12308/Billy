@@ -329,19 +329,27 @@ async def chat_stream_helper(user_id: str, prompt: str):
     """
     Helper to stream chat responses for /ask/universal
     """
-    from types import SimpleNamespace
+    from fastapi import Request
+    from io import BytesIO
 
-    # Create a mock Request object
-    req = SimpleNamespace()
-    req.json = lambda: asyncio.Future()
-    fut = req.json()
-    fut.set_result({"prompt": prompt, "user_id": user_id})
+    class DummyRequest:
+        def __init__(self, prompt, user_id):
+            self._body = {"prompt": prompt, "user_id": user_id}
 
-    # Call the existing chat_stream endpoint
-    async for chunk in chat_stream(req, tts=False, samples=1, user_id=user_id).body_iterator:
+        async def json(self):
+            return self._body
+
+    req = DummyRequest(prompt, user_id)
+    response: StreamingResponse = await chat_stream(req, tts=False, samples=1, user_id=user_id)
+
+    async for chunk in response.body_iterator:
         try:
-            data = json.loads(chunk.decode("utf-8"))
-            yield data
+            # Some SSE chunks are prefixed with "data: "
+            line = chunk.decode("utf-8").strip()
+            if line.startswith("data:"):
+                line = line[len("data:"):].strip()
+            if line and line != "[DONE]":
+                yield json.loads(line)
         except Exception:
             continue
 
@@ -350,17 +358,25 @@ async def image_stream_helper(prompt: str, samples: int = 1):
     """
     Helper to stream image generation for /ask/universal
     """
-    from types import SimpleNamespace
+    from fastapi import Request
 
-    req = SimpleNamespace()
-    req.json = lambda: asyncio.Future()
-    fut = req.json()
-    fut.set_result({"prompt": prompt, "samples": samples})
+    class DummyRequest:
+        def __init__(self, prompt, samples):
+            self._body = {"prompt": prompt, "samples": samples}
 
-    async for chunk in image_stream(req).body_iterator:
+        async def json(self):
+            return self._body
+
+    req = DummyRequest(prompt, samples)
+    response: StreamingResponse = await image_stream(req)
+
+    async for chunk in response.body_iterator:
         try:
-            data = json.loads(chunk.decode("utf-8"))
-            yield data
+            line = chunk.decode("utf-8").strip()
+            if line.startswith("data:"):
+                line = line[len("data:"):].strip()
+            if line and line != "[DONE]":
+                yield json.loads(line)
         except Exception:
             continue
 
@@ -369,23 +385,29 @@ async def tts_stream_helper(text: str):
     """
     Helper to stream TTS audio for /ask/universal
     """
-    from types import SimpleNamespace
+    from fastapi import Request
 
-    req = SimpleNamespace()
-    req.json = lambda: asyncio.Future()
-    fut = req.json()
-    fut.set_result({"text": text})
+    class DummyRequest:
+        def __init__(self, text):
+            self._body = {"text": text}
 
-    async for chunk in tts_stream(req).body_iterator:
+        async def json(self):
+            return self._body
+
+    req = DummyRequest(text)
+    response: StreamingResponse = await tts_stream(req)
+
+    async for chunk in response.body_iterator:
         try:
-            # Some chunks may be bytes, decode safely
             if isinstance(chunk, bytes):
                 chunk = chunk.decode("utf-8", errors="ignore")
-            data = json.loads(chunk)
-            yield data
+            if chunk.startswith("data:"):
+                chunk = chunk[len("data:"):].strip()
+            if chunk and chunk != "[DONE]":
+                yield json.loads(chunk)
         except Exception:
             continue
-
+            
 def run_code_safely(code: str, language: str = "python") -> Dict[str, str]:
     """
     Run code in a temporary file safely.
