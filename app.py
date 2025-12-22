@@ -928,6 +928,30 @@ async def image_gen(request: Request):
         "provider": provider_used,
         "images": urls
     }
+
+
+
+@app.get("/test-stream")
+async def test_stream(request: Request):
+    async def event_generator():
+        for i in range(1, 6):
+            # Check if client disconnected
+            if await request.is_disconnected():
+                break
+            yield sse({"message": f"This is chunk {i}"})
+            await asyncio.sleep(1)
+        yield sse({"message": "Done"})
+        yield "data: [DONE]\n\n"
+    
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
     
 @app.post("/image/stream")
 async def image_stream(request: Request):
