@@ -528,38 +528,17 @@ async def chat_endpoint(req: Request):
 # 🚀 UNIVERSAL MULTIMODAL ENDPOINT — /ask
 # Routes to EVERYTHING
 # =========================================================
-@app.post("/ask")
-async def ask(request: Request):
-    """
-    Universal multimodal router.
-
-    Supports:
-    - chat (sync + stream)
-    - image + image/stream
-    - img2img
-    - vision
-    - tts + tts/stream
-    - stt
-    - search
-    - code
-    - video (placeholder)
-    - JSON / form-data / multipart / raw text
-
-    Client may optionally specify:
-      mode: chat | chat_stream | image | image_stream | img2img |
-            vision | tts | tts_stream | stt | search | code | video
-    """
-
+@app.post("/ask/universal")
+async def ask_universal(request: Request):
     content_type = request.headers.get("content-type", "")
-    data: Dict[str, Any] = {}
-    files: Dict[str, UploadFile] = {}
+    data: dict = {}
+    files: dict = {}
 
-    # -------------------------------------------------
-    # Parse input (JSON / multipart / form / raw)
-    # -------------------------------------------------
+    # -----------------------------
+    # Parse input
+    # -----------------------------
     if "application/json" in content_type:
         data = await request.json()
-
     elif "multipart/form-data" in content_type:
         form = await request.form()
         for k, v in form.items():
@@ -567,44 +546,87 @@ async def ask(request: Request):
                 files[k] = v
             else:
                 data[k] = v
-
     elif "application/x-www-form-urlencoded" in content_type:
         form = await request.form()
         data = dict(form)
-
     else:
         raw = (await request.body()).decode("utf-8", errors="ignore")
         data["prompt"] = raw
 
     prompt   = (data.get("prompt") or "").strip()
     user_id  = data.get("user_id", "anonymous")
-    mode     = data.get("mode")               # explicit override
+    mode     = data.get("mode", None)
     stream   = bool(data.get("stream", False))
     samples  = int(data.get("samples", 1))
+    tts_flag = bool(data.get("tts", False))
 
     if not prompt and not files:
         raise HTTPException(400, "prompt or file required")
 
-    # -------------------------------------------------
-    # EXPLICIT MODE ROUTING (highest priority)
-    # -------------------------------------------------
+    # -----------------------------
+    # Determine mode / intent
+    # -----------------------------
+    intent = mode or detect_intent(prompt) or "chat"
 
-    if mode == "chat":
+    # -----------------------------
+    # Streaming logic
+    # -----------------------------
+    if stream and intent in ["chat", "image", "tts"]:
+        async def event_generator():
+            try:
+                # Register active task
+                active_streams[user_id] = asyncio.current_task()
+                yield "data: {}\n\n"
+                await asyncio.sleep(0)
+
+                # ===== IMAGE STREAM =====
+                if intent == "image":
+                    async for chunk in image_stream_helper(prompt, samples):
+                        yield sse(chunk)
+
+                # ===== CHAT STREAM =====
+                if intent in ["chat", "chat_stream"]:
+                    async for chunk in chat_stream_helper(user_id, prompt):
+                        yield sse(chunk)
+
+                # ===== TTS STREAM =====
+                if intent in ["tts", "tts_stream"] or tts_flag:
+                    async for chunk in tts_stream_helper(prompt):
+                        yield sse(chunk)
+
+            except asyncio.CancelledError:
+                yield sse({"type": "stopped", "message": "Stream cancelled"})
+                return
+            except Exception as e:
+                yield sse({"type": "error", "error": str(e)})
+            finally:
+                active_streams.pop(user_id, None)
+
+            yield sse({"type": "done"})
+            yield "data: [DONE]\n\n"
+
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache, no-transform",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
+
+    # -----------------------------
+    # Non-stream fallback (JSON)
+    # -----------------------------
+    if intent in ["chat", "chat_stream"]:
         request._json = {"prompt": prompt, "user_id": user_id}
         return await chat_endpoint(request)
 
-    if mode == "chat_stream":
-        return await chat_stream(request)
-
-    if mode == "image":
+    if intent in ["image", "image_stream"]:
         request._json = {"prompt": prompt, "samples": samples}
         return await image_gen(request)
 
-    if mode == "image_stream":
-        request._json = {"prompt": prompt, "samples": samples}
-        return await image_stream(request)
-
-    if mode == "img2img":
+    if intent == "img2img":
         if "file" not in files:
             raise HTTPException(400, "file required for img2img")
         return await img2img(
@@ -614,54 +636,19 @@ async def ask(request: Request):
             user_id=user_id
         )
 
-    if mode == "vision":
+    if intent == "vision":
         if "file" not in files:
             raise HTTPException(400, "file required for vision")
         return await vision_analyze(files["file"])
 
-    if mode == "tts":
+    if intent in ["tts", "tts_stream"]:
         request._json = {"text": prompt}
         return await text_to_speech(request)
 
-    if mode == "tts_stream":
-        request._json = {"text": prompt}
-        return await tts_stream(request)
-
-    if mode == "stt":
+    if intent == "stt":
         if "file" not in files:
             raise HTTPException(400, "audio file required for stt")
         return await speech_to_text(files["file"])
-
-    if mode == "search":
-        return await duck_search(prompt)
-
-    if mode == "code":
-        request._json = {
-            "prompt": prompt,
-            "user_id": user_id,
-            "language": data.get("language", "python")
-        }
-        return await code_gen(request)
-
-    if mode == "video":
-        return {
-            "status": "video_requested",
-            "message": "Video generation pipeline ready",
-            "prompt": prompt
-        }
-
-    # -------------------------------------------------
-    # AUTO INTENT FALLBACK (no mode specified)
-    # -------------------------------------------------
-    intent = detect_intent(prompt)
-
-    if intent == "image":
-        request._json = {"prompt": prompt, "samples": samples}
-        return await image_gen(request)
-
-    if intent == "tts":
-        request._json = {"text": prompt}
-        return await text_to_speech(request)
 
     if intent == "search":
         return await duck_search(prompt)
@@ -669,160 +656,43 @@ async def ask(request: Request):
     if intent == "code":
         request._json = {
             "prompt": prompt,
-            "user_id": user_id
+            "user_id": user_id,
+            "language": data.get("language", "python")
         }
         return await code_gen(request)
 
-    # -------------------------------------------------
-    # DEFAULT → CHAT
-    # -------------------------------------------------
-    request._json = {
-        "prompt": prompt,
-        "user_id": user_id
-    }
+    if intent == "video":
+        return {
+            "status": "video_requested",
+            "message": "Video generation pipeline ready",
+            "prompt": prompt
+        }
+
+    # Default fallback → chat
+    request._json = {"prompt": prompt, "user_id": user_id}
     return await chat_endpoint(request)
 
-# =========================================================
-# 🚀 UNIVERSAL STREAMING MULTIMODAL ENDPOINT — /ask/stream
-# Chat + Image + TTS in ONE SSE stream
-# =========================================================
-@app.post("/ask/stream")
-async def ask_stream(request: Request):
+# -----------------------------
+# Stop endpoint
+# -----------------------------
+@app.post("/stop")
+async def stop_stream(user_id: str):
+    task = active_streams.get(user_id)
+    if task and not task.done():
+        task.cancel()
+        return {"status": "stopped"}
+    return {"status": "no_active_stream"}
 
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
-
-    prompt  = body.get("prompt", "").strip()
-    user_id = body.get("user_id", "anonymous")
-    mode    = body.get("mode", "auto")
-    tts     = bool(body.get("tts", False))
-    samples = int(body.get("samples", 1))
-
-    if not prompt:
-        raise HTTPException(status_code=400, detail="prompt required")
-
-    intent = detect_intent(prompt) if mode == "auto" else mode
-
-    async def event_generator():
-        try:
-            # 🚀 Force immediate flush
-            yield "data: {}\n\n"
-            await asyncio.sleep(0)
-
-            # ========== IMAGE STREAM ==========
-            if intent == "image":
-                yield sse({"type": "image_start"})
-
-                async with httpx.AsyncClient(timeout=None) as client:
-                    async with client.stream(
-                        "POST",
-                        f"{request.base_url}image/stream",
-                        json={
-                            "prompt": prompt,
-                            "samples": samples,
-                            "base64": False
-                        }
-                    ) as resp:
-                        async for line in resp.aiter_lines():
-                            if not line.startswith("data: "):
-                                continue
-
-                            payload = line[6:].strip()
-                            if payload == "[DONE]":
-                                break
-
-                            yield sse({
-                                "type": "image_progress",
-                                "data": json.loads(payload)
-                            })
-
-                yield sse({"type": "image_done"})
-
-            # ========== CHAT STREAM ==========
-            async with httpx.AsyncClient(timeout=None) as client:
-                async with client.stream(
-                    "POST",
-                    "https://api.groq.com/openai/v1/chat/completions",
-                    headers=get_groq_headers(),
-                    json={
-                        "model": CHAT_MODEL,
-                        "stream": True,
-                        "messages": [
-                            {
-                                "role": "system",
-                                "content": build_contextual_prompt(user_id, prompt)
-                            },
-                            {
-                                "role": "user",
-                                "content": prompt
-                            }
-                        ]
-                    }
-                ) as resp:
-                    async for line in resp.aiter_lines():
-                        if not line.startswith("data: "):
-                            continue
-
-                        payload = line[6:].strip()
-                        if payload == "[DONE]":
-                            break
-
-                        chunk = json.loads(payload)
-                        delta = chunk["choices"][0]["delta"].get("content")
-
-                        # ✅ STREAM ONLY TEXT TOKENS
-                        if delta:
-                            yield f"data: {json.dumps({'type':'chat_token','text':delta})}\n\n"
-
-            # ========== OPTIONAL TTS ==========
-            if tts:
-                audio = bytearray()
-
-                async with httpx.AsyncClient(timeout=None) as client:
-                    async with client.stream(
-                        "POST",
-                        "https://api.openai.com/v1/audio/speech",
-                        headers={
-                            "Authorization": f"Bearer {OPENAI_API_KEY}",
-                            "Content-Type": "application/json"
-                        },
-                        json={
-                            "model": "gpt-4o-mini-tts",
-                            "voice": "alloy",
-                            "input": prompt,
-                            "format": "mp3"
-                        }
-                    ) as resp:
-                        async for chunk in resp.aiter_bytes():
-                            audio.extend(chunk)
-
-                yield sse({
-                    "type": "tts_done",
-                    "audio": base64.b64encode(audio).decode()
-                })
-
-        except asyncio.CancelledError:
-            return
-
-        except Exception as e:
-            yield sse({"type": "error", "error": str(e)})
-
-        yield sse({"type": "done"})
-        yield "data: [DONE]\n\n"
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache, no-transform",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"
-        }
-    )
-
-
+# -----------------------------
+# Regenerate endpoint
+# -----------------------------
+@app.post("/regenerate")
+async def regenerate(user_id: str, prompt: str, mode: str = "chat", samples: int = 1):
+    """
+    Re-run the same prompt as a fresh request.
+    """
+    return await ask_universal_helper(prompt=prompt, user_id=user_id, mode=mode, samples=samples)
+    
 # ---------------- SSE HELPER ----------------
 def sse(obj: dict) -> str:
     return f"data: {json.dumps(obj)}\n\n"
