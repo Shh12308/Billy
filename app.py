@@ -395,7 +395,8 @@ async def groq_stream(prompt: str):
             logger.exception("groq_stream error")
             yield f"data: {json.dumps({'error':'stream_exception','msg':str(e)})}\n\n"
             yield "data: [DONE]\n\n"
-
+# Tracks currently active SSE/streaming tasks per user
+active_streams: Dict[str, asyncio.Task] = {}
 
 @app.get("/")
 async def root():
@@ -682,7 +683,7 @@ async def stop_stream(user_id: str):
         task.cancel()
         return {"status": "stopped"}
     return {"status": "no_active_stream"}
-
+    
 # -----------------------------
 # Regenerate endpoint
 # -----------------------------
