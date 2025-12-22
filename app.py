@@ -659,7 +659,7 @@ async def ask_universal(request: Request):
     # -----------------------------
     # Streaming logic
     # -----------------------------
-   if stream and intent in ["chat", "image", "tts"]:
+  if stream and intent in ["chat", "image", "tts"]:
     async def event_generator():
         try:
             # Register active task
@@ -702,7 +702,6 @@ async def ask_universal(request: Request):
             "X-Accel-Buffering": "no"
         }
     )
-
     # -----------------------------
     # Non-stream fallback (JSON)
     # -----------------------------
