@@ -214,6 +214,17 @@ def save_image_record(user_id, prompt, path, is_nsfw):
     }).execute()
 
 
+async def image_stream_helper(prompt: str, samples: int):
+    yield {"type": "image_start"}
+
+    result = await image_gen_internal(prompt, samples)
+
+    for url in result["images"]:
+        yield {"type": "image", "url": url}
+
+    yield {"type": "image_done"}
+
+
 async def nsfw_check(prompt: str) -> bool:
     async with httpx.AsyncClient(timeout=15) as client:
         r = await client.post(
@@ -272,6 +283,29 @@ def get_groq_headers():
         "Authorization": f"Bearer {GROQ_API_KEY}",
         "Content-Type": "application/json"
     }
+
+async def tts_stream_helper(text: str):
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "model": "gpt-4o-mini-tts",
+        "voice": "alloy",
+        "input": text
+    }
+
+    async with httpx.AsyncClient(timeout=60) as client:
+        r = await client.post(
+            "https://api.openai.com/v1/audio/speech",
+            headers=headers,
+            json=payload
+        )
+        r.raise_for_status()
+
+    b64 = base64.b64encode(r.content).decode()
+    yield {"type": "tts_done", "audio": b64}
     
 # ---------- Prompt enhancer ----------
 async def enhance_prompt_with_groq(prompt: str) -> str:
@@ -400,35 +434,41 @@ def analyze_prompt(prompt: str):
     return settings
 
 # ---------- Streaming chat ----------
-async def groq_stream(prompt: str):
-    if not GROQ_API_KEY:
-        yield f"data: {json.dumps({'error':'no_groq_key'})}\n\n"
-        yield "data: [DONE]\n\n"
-        return
+async def chat_stream_helper(user_id: str, prompt: str):
     url = "https://api.groq.com/openai/v1/chat/completions"
-    headers = get_groq_headers()
-    payload = {"model": CHAT_MODEL, "stream": True,"messages":[{"role":"system","content":get_system_prompt(prompt)},{"role":"user","content":prompt}]}
+
+    payload = {
+        "model": CHAT_MODEL,
+        "stream": True,
+        "messages": [
+            {"role": "system", "content": build_contextual_prompt(user_id, prompt)},
+            {"role": "user", "content": prompt}
+        ]
+    }
+
     async with httpx.AsyncClient(timeout=None) as client:
-        try:
-            async with client.stream("POST", url, headers=headers, json=payload) as resp:
-                if resp.status_code != 200:
-                    text = await resp.aread()
-                    # Log more context for debugging
-                    logger.warning("Groq stream provider error: status=%s text=%s", resp.status_code, (text.decode(errors='ignore')[:300] + '...') if text else "")
-                    yield f"data: {json.dumps({'error':'provider_error','status':resp.status_code,'text': text.decode(errors='ignore')[:300]})}\n\n"
-                    yield "data: [DONE]\n\n"
-                    return
-                async for raw_line in resp.aiter_lines():
-                    if raw_line.startswith("data: "):
-                        data = raw_line[len("data: "):]
-                        if data.strip() == "[DONE]":
-                            yield "data: [DONE]\n\n"
-                            return
-                        yield f"data: {data}\n\n"
-        except Exception as e:
-            logger.exception("groq_stream error")
-            yield f"data: {json.dumps({'error':'stream_exception','msg':str(e)})}\n\n"
-            yield "data: [DONE]\n\n"
+        async with client.stream(
+            "POST",
+            url,
+            headers=get_groq_headers(),
+            json=payload
+        ) as resp:
+            async for line in resp.aiter_lines():
+                if not line or not line.startswith("data: "):
+                    continue
+
+                data = line[6:].strip()
+                if data == "[DONE]":
+                    break
+
+                try:
+                    chunk = json.loads(data)
+                    delta = chunk["choices"][0]["delta"].get("content")
+                    if delta:
+                        yield {"type": "token", "text": delta}
+                except Exception:
+                    continue
+                    
 # Tracks currently active SSE/streaming tasks per user
 active_streams: Dict[str, asyncio.Task] = {}
 
@@ -566,67 +606,45 @@ async def chat_endpoint(req: Request):
 async def ask_universal(request: Request):
     body = await request.json()
 
-    prompt  = (body.get("prompt") or "").strip()
+    prompt = body.get("prompt", "").strip()
     user_id = body.get("user_id", "anonymous")
-    stream  = bool(body.get("stream", False))
-    tts     = bool(body.get("tts", False))
+    stream = bool(body.get("stream", False))
+    tts = bool(body.get("tts", False))
     samples = int(body.get("samples", 1))
-    mode    = body.get("mode")  # optional override
+    intent = body.get("mode") or detect_intent(prompt)
 
     if not prompt:
         raise HTTPException(400, "prompt required")
 
-    intent = mode or detect_intent(prompt)
+    if not stream:
+        return {"error": "Non-stream mode deprecated. Use stream=true."}
 
-    # =========================
-    # STREAMING MODE
-    # =========================
-    if stream:
+    async def event_generator():
+        yield sse({"type": "starting", "intent": intent})
 
-        async def event_generator():
-            yield sse({"type": "starting", "intent": intent})
+        if intent == "chat":
+            async for chunk in chat_stream_helper(user_id, prompt):
+                yield sse(chunk)
 
-            # ---- IMAGE STREAM ----
-            if intent == "image":
-                async with httpx.AsyncClient(timeout=None) as client:
-                    async with client.stream(
-                        "POST",
-                        str(request.base_url) + "image/stream",
-                        json={"prompt": prompt, "samples": samples}
-                    ) as resp:
-                        async for line in resp.aiter_lines():
-                            if line:
-                                yield line + "\n\n"
+        elif intent == "image":
+            async for chunk in image_stream_helper(prompt, samples):
+                yield sse(chunk)
 
-            # ---- CHAT STREAM ----
-            elif intent == "chat":
-                async for chunk in groq_stream(prompt):
-                    yield chunk
+        if tts:
+            async for chunk in tts_stream_helper(prompt):
+                yield sse(chunk)
 
-            # ---- TTS STREAM (optional) ----
-            if tts:
-                async with httpx.AsyncClient(timeout=None) as client:
-                    async with client.stream(
-                        "POST",
-                        str(request.base_url) + "tts/stream",
-                        json={"text": prompt}
-                    ) as resp:
-                        async for chunk in resp.aiter_bytes():
-                            if chunk:
-                                yield chunk
+        yield sse({"type": "done"})
 
-            yield sse({"type": "done"})
-            yield "data: [DONE]\n\n"
-
-        return StreamingResponse(
-            event_generator(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no"
-            }
-        )
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
 
     # =========================
     # NON-STREAM MODE
