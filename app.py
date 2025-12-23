@@ -4,9 +4,15 @@ import io
 import json
 import uuid
 import sqlite3
+import numpy as np
+from PIL import Image
+from io import BytesIO
+import torch
+from torchvision import models, transforms
 import asyncio
 import base64
 import time
+import docker
 import logging
 import subprocess
 import tempfile
@@ -188,14 +194,6 @@ def get_cached(prompt: str) -> Optional[Dict[str, Any]]:
 # ---------- Image helpers ----------
 def unique_filename(ext="png"):
     return f"{int(time.time())}-{uuid.uuid4().hex[:10]}.{ext}"
-
-def upload_image_to_supabase(image_bytes: bytes, filename: str) -> str:
-    supabase.storage.from_("ai-images").upload(
-        path=filename,
-        file=image_bytes,
-        file_options={"content-type": "image/png"}
-    )
-    return filename
 
 def upload_image_to_supabase(image_bytes: bytes, filename: str) -> str:
     supabase.storage.from_("ai-images").upload(
@@ -389,33 +387,63 @@ async def universal_chat_stream(user_id: str, prompt: str):
                 except Exception:
                     continue
             
-def run_code_safely(code: str, language: str = "python") -> Dict[str, str]:
-    """
-    Run code in a temporary file safely.
-    Returns {'output': ..., 'error': ...}
-    """
-    if language.lower() != "python":
-        return {"output": "", "error": f"Execution for {language} not supported yet."}
+# Initialize Docker client
+docker_client = docker.from_env()
 
-    with tempfile.NamedTemporaryFile("w+", suffix=".py", delete=True) as tmpfile:
-        tmpfile.write(code)
-        tmpfile.flush()
+LANGUAGE_CONFIG = {
+    "python": {"image": "python:3.11-slim", "cmd": "python {file}"},
+    "javascript": {"image": "node:20-slim", "cmd": "node {file}"},
+    "java": {"image": "openjdk:20-slim", "cmd": "bash -c 'javac {file} && java {classname}'"},
+    "c": {"image": "gcc:12-slim", "cmd": "bash -c 'gcc {file} -o /tmp/a.out && /tmp/a.out'"},
+    "cpp": {"image": "gcc:12-slim", "cmd": "bash -c 'g++ {file} -o /tmp/a.out && /tmp/a.out'"}
+}
+
+def run_code_in_docker(code: str, language: str) -> dict:
+    """
+    Executes code in a Docker container safely.
+    Returns a dict: {"output": ..., "error": ...}
+    """
+    language = language.lower()
+    if language not in LANGUAGE_CONFIG:
+        return {"output": "", "error": f"Execution for {language} is not supported."}
+
+    config = LANGUAGE_CONFIG[language]
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Create file
+        ext = language if language not in ["c", "cpp", "java"] else language
+        filename = f"/tmp/{uuid.uuid4().hex}.{ext}"
+        filepath = os.path.join(tmpdir, os.path.basename(filename))
+        with open(filepath, "w") as f:
+            f.write(code)
+
+        # Special case for Java: extract class name
+        classname = "Main"
+        if language == "java":
+            import re
+            m = re.search(r"class\s+(\w+)", code)
+            if m:
+                classname = m.group(1)
+
         try:
-            result = subprocess.run(
-                ["python3", tmpfile.name],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=10
+            output = docker_client.containers.run(
+                image=config["image"],
+                command=config["cmd"].format(file=os.path.basename(filepath), classname=classname),
+                volumes={tmpdir: {"bind": "/tmp", "mode": "rw"}},
+                working_dir="/tmp",
+                stderr=True,
+                stdout=True,
+                remove=True,
+                mem_limit="256m",
+                network_disabled=True,
+                user="nobody",
+                detach=False
             )
-            return {
-                "output": result.stdout.decode().strip(),
-                "error": result.stderr.decode().strip()
-            }
-        except subprocess.TimeoutExpired:
-            return {"output": "", "error": "Execution timed out."}
+            return {"output": output.decode("utf-8"), "error": ""}
+        except docker.errors.ContainerError as e:
+            return {"output": e.stdout.decode() if e.stdout else "", "error": e.stderr.decode() if e.stderr else str(e)}
         except Exception as e:
             return {"output": "", "error": str(e)}
-
 
 
 # ---------- Prompt analysis ----------
@@ -1145,32 +1173,61 @@ async def vision_analyze(file: UploadFile = File(...)):
 async def code_gen(req: Request):
     body = await req.json()
     prompt = body.get("prompt", "")
-    language = body.get("language", "python")
+    language = body.get("language", "python").lower()
     user_id = body.get("user_id", "anonymous")
+    run_code_flag = bool(body.get("run", False))
 
     if not prompt:
         raise HTTPException(400, "prompt required")
     if not GROQ_API_KEY:
         raise HTTPException(400, "no groq key")
 
-    # Build user-focused prompt with context
-    contextual_prompt = build_contextual_prompt(user_id, f"Write a complete, well-documented {language} program for the following request:\n\n{prompt}")
+    # Build user-focused prompt
+    contextual_prompt = build_contextual_prompt(
+        user_id,
+        f"Write a complete, well-documented {language} program for the following request:\n\n{prompt}"
+    )
 
     payload = {
         "model": CHAT_MODEL,
-        "messages": [{"role": "system", "content": contextual_prompt}, {"role": "user", "content": prompt}],
+        "messages": [
+            {"role": "system", "content": contextual_prompt},
+            {"role": "user", "content": prompt}
+        ],
         "temperature": 0.1
     }
 
     async with httpx.AsyncClient(timeout=60.0) as client:
         headers = get_groq_headers()
-        r = await client.post("https://api.groq.com/openai/v1/chat/completions",
-                              headers=headers,
-                              json=payload)
-        if r.status_code != 200:
-            logger.warning("Groq /code returned status=%s text=%s", r.status_code, (r.text[:400] + '...') if r.text else "")
+        try:
+            r = await client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers=headers,
+                json=payload
+            )
             r.raise_for_status()
-        return r.json()
+            result_json = r.json()
+        except Exception as e:
+            logger.exception("Groq /code request failed")
+            raise HTTPException(500, f"Groq request failed: {str(e)}")
+
+    # Extract generated code
+    code_text = ""
+    try:
+        choices = result_json.get("choices", [])
+        if choices:
+            code_text = choices[0]["message"]["content"]
+    except Exception:
+        logger.warning("Failed to extract code from Groq response")
+
+    response = {"generated_code": code_text, "language": language}
+
+    # Run code in Docker safely if requested
+    if run_code_flag:
+        exec_result = run_code_in_docker(code_text, language)
+        response["execution"] = exec_result
+
+    return response
 
 @app.get("/search")
 async def duck_search(q: str = Query(..., min_length=1)):
