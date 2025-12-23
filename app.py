@@ -604,13 +604,14 @@ async def chat_endpoint(req: Request):
 # =========================================================
 @app.post("/ask/universal")
 async def ask_universal(request: Request):
+
     try:
-    body = await request.json()
-except Exception:
-    return JSONResponse(
-        status_code=400,
-        content={"error": "Invalid or missing JSON body"}
-    )
+        body = await request.json()
+    except Exception:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "Invalid or missing JSON body"}
+        )
 
     prompt = body.get("prompt", "").strip()
     user_id = body.get("user_id", "anonymous")
@@ -623,7 +624,10 @@ except Exception:
         raise HTTPException(400, "prompt required")
 
     if not stream:
-        return {"error": "Non-stream mode deprecated. Use stream=true."}
+        return JSONResponse(
+            status_code=400,
+            content={"error": "Non-stream mode deprecated. Use stream=true"}
+        )
 
     async def event_generator():
         yield sse({"type": "starting", "intent": intent})
@@ -635,6 +639,14 @@ except Exception:
         elif intent == "image":
             async for chunk in image_stream_helper(prompt, samples):
                 yield sse(chunk)
+
+        elif intent == "search":
+            result = await duckduckgo_search(prompt)
+            yield sse({"type": "search_result", "data": result})
+
+        elif intent == "code":
+            result = run_code_safely(prompt)
+            yield sse({"type": "code_result", "data": result})
 
         if tts:
             async for chunk in tts_stream_helper(prompt):
@@ -651,7 +663,7 @@ except Exception:
             "X-Accel-Buffering": "no"
         }
     )
-
+    
     # =========================
     # NON-STREAM MODE
     # =========================
