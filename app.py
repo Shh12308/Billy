@@ -324,89 +324,36 @@ def detect_intent(prompt: str) -> str:
 # =========================
 # STREAM HELPERS FOR UNIVERSAL ENDPOINT
 # =========================
+async def universal_chat_stream(user_id: str, prompt: str):
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = get_groq_headers()
 
-async def chat_stream_helper(user_id: str, prompt: str):
-    """
-    Helper to stream chat responses for /ask/universal
-    """
-    from fastapi import Request
-    from io import BytesIO
+    payload = {
+        "model": CHAT_MODEL,
+        "stream": True,
+        "messages": [
+            {"role": "system", "content": build_contextual_prompt(user_id, prompt)},
+            {"role": "user", "content": prompt}
+        ]
+    }
 
-    class DummyRequest:
-        def __init__(self, prompt, user_id):
-            self._body = {"prompt": prompt, "user_id": user_id}
+    async with httpx.AsyncClient(timeout=None) as client:
+        async with client.stream("POST", url, headers=headers, json=payload) as resp:
+            async for line in resp.aiter_lines():
+                if not line or not line.startswith("data: "):
+                    continue
 
-        async def json(self):
-            return self._body
+                data = line[6:].strip()
+                if data == "[DONE]":
+                    break
 
-    req = DummyRequest(prompt, user_id)
-    response: StreamingResponse = await chat_stream(req, tts=False, samples=1, user_id=user_id)
-
-    async for chunk in response.body_iterator:
-        try:
-            # Some SSE chunks are prefixed with "data: "
-            line = chunk.decode("utf-8").strip()
-            if line.startswith("data:"):
-                line = line[len("data:"):].strip()
-            if line and line != "[DONE]":
-                yield json.loads(line)
-        except Exception:
-            continue
-
-
-async def image_stream_helper(prompt: str, samples: int = 1):
-    """
-    Helper to stream image generation for /ask/universal
-    """
-    from fastapi import Request
-
-    class DummyRequest:
-        def __init__(self, prompt, samples):
-            self._body = {"prompt": prompt, "samples": samples}
-
-        async def json(self):
-            return self._body
-
-    req = DummyRequest(prompt, samples)
-    response: StreamingResponse = await image_stream(req)
-
-    async for chunk in response.body_iterator:
-        try:
-            line = chunk.decode("utf-8").strip()
-            if line.startswith("data:"):
-                line = line[len("data:"):].strip()
-            if line and line != "[DONE]":
-                yield json.loads(line)
-        except Exception:
-            continue
-
-
-async def tts_stream_helper(text: str):
-    """
-    Helper to stream TTS audio for /ask/universal
-    """
-    from fastapi import Request
-
-    class DummyRequest:
-        def __init__(self, text):
-            self._body = {"text": text}
-
-        async def json(self):
-            return self._body
-
-    req = DummyRequest(text)
-    response: StreamingResponse = await tts_stream(req)
-
-    async for chunk in response.body_iterator:
-        try:
-            if isinstance(chunk, bytes):
-                chunk = chunk.decode("utf-8", errors="ignore")
-            if chunk.startswith("data:"):
-                chunk = chunk[len("data:"):].strip()
-            if chunk and chunk != "[DONE]":
-                yield json.loads(chunk)
-        except Exception:
-            continue
+                try:
+                    chunk = json.loads(data)
+                    delta = chunk["choices"][0]["delta"].get("content")
+                    if delta:
+                        yield {"type": "chat_token", "text": delta}
+                except Exception:
+                    continue
             
 def run_code_safely(code: str, language: str = "python") -> Dict[str, str]:
     """
@@ -663,7 +610,43 @@ async def ask_universal(request: Request):
     # -----------------------------
     # Streaming logic
     # -----------------------------
-    if stream and intent in ["chat", "image", "tts"]:
+    if stream:
+    async def event_generator():
+        try:
+            active_streams[user_id] = asyncio.current_task()
+            yield sse({"type": "starting"})
+
+            # ===== CHAT =====
+            if intent == "chat":
+                async for chunk in universal_chat_stream(user_id, prompt):
+                    yield sse(chunk)
+
+            # ===== OPTIONAL TTS =====
+            if tts_flag:
+                async for audio in tts_stream_helper(prompt):
+                    yield sse(audio)
+
+        except asyncio.CancelledError:
+            yield sse({"type": "stopped"})
+            return
+        except Exception as e:
+            yield sse({"type": "error", "error": str(e)})
+        finally:
+            active_streams.pop(user_id, None)
+
+        yield sse({"type": "done"})
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
+    
         async def event_generator():
             try:
                 # Register active task
