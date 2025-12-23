@@ -604,7 +604,13 @@ async def chat_endpoint(req: Request):
 # =========================================================
 @app.post("/ask/universal")
 async def ask_universal(request: Request):
+    try:
     body = await request.json()
+except Exception:
+    return JSONResponse(
+        status_code=400,
+        content={"error": "Invalid or missing JSON body"}
+    )
 
     prompt = body.get("prompt", "").strip()
     user_id = body.get("user_id", "anonymous")
