@@ -441,17 +441,75 @@ LANGUAGE_CONFIG = {
     "cpp": {"image": "gcc:12-slim", "cmd": "bash -c 'g++ {file} -o /tmp/a.out && /tmp/a.out'"}
 }
 
-def run_code_in_docker(code: str, language: str) -> dict:
-    if not docker_client:
-        return {"output": "", "error": "Docker not available in this environment."}
-    # Existing implementation remains if docker_client exists
-        
-         try:
+try:
     import docker
     docker_client = docker.from_env()
 except (ImportError, docker.errors.DockerException, FileNotFoundError, OSError):
     docker_client = None
     logger.warning("Docker not available; code execution disabled.")
+
+# Configuration for supported languages
+LANGUAGE_CONFIG = {
+    "python": {"image": "python:3.11-slim", "cmd": "python {file}"},
+    "javascript": {"image": "node:20-slim", "cmd": "node {file}"},
+    "java": {"image": "openjdk:20-slim", "cmd": "bash -c 'javac {file} && java {classname}'"},
+    "c": {"image": "gcc:12-slim", "cmd": "bash -c 'gcc {file} -o /tmp/a.out && /tmp/a.out'"},
+    "cpp": {"image": "gcc:12-slim", "cmd": "bash -c 'g++ {file} -o /tmp/a.out && /tmp/a.out'"}
+}
+
+def run_code_in_docker(code: str, language: str) -> dict:
+    """
+    Executes code in a Docker container safely.
+    Returns a dict: {"output": ..., "error": ...}
+    """
+    if not docker_client:
+        return {"output": "", "error": "Docker not available in this environment."}
+
+    language = language.lower()
+    if language not in LANGUAGE_CONFIG:
+        return {"output": "", "error": f"Execution for {language} is not supported."}
+
+    config = LANGUAGE_CONFIG[language]
+
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Determine file extension
+            ext = language if language not in ["c", "cpp", "java"] else language
+            filename = f"{uuid.uuid4().hex}.{ext}"
+            filepath = f"{tmpdir}/{filename}"
+
+            # Write code to file
+            with open(filepath, "w") as f:
+                f.write(code)
+
+            # Special case for Java: extract class name
+            classname = "Main"
+            if language == "java":
+                import re
+                m = re.search(r"class\s+(\w+)", code)
+                if m:
+                    classname = m.group(1)
+
+            # Run Docker container
+            output = docker_client.containers.run(
+                image=config["image"],
+                command=config["cmd"].format(file=filename, classname=classname),
+                volumes={tmpdir: {"bind": "/tmp", "mode": "rw"}},
+                working_dir="/tmp",
+                stderr=True,
+                stdout=True,
+                remove=True,
+                mem_limit="256m",
+                network_disabled=True,
+                user="nobody",
+                detach=False
+            )
+            return {"output": output.decode("utf-8"), "error": ""}
+
+    except docker.errors.ContainerError as e:
+        return {"output": e.stdout.decode() if e.stdout else "", "error": e.stderr.decode() if e.stderr else str(e)}
+    except Exception as e:
+        return {"output": "", "error": str(e)}
 
 # ---------- Prompt analysis ----------
 def analyze_prompt(prompt: str):
