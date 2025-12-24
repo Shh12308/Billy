@@ -44,7 +44,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger("billy-server")
 
 app = FastAPI(
-    title="Billy AI Multimodal Server",
+    title="ZyNaraAI1.0 Multimodal Server",
     redirect_slashes=False
 )
 
