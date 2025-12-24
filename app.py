@@ -87,7 +87,7 @@ CHAT_MODEL = os.getenv("CHAT_MODEL", "llama-3.1-8b-instant")
 TTS_MODEL = None
 STT_MODEL = None
 
-# Image hosting dirs
+# Image hosting dirs (Kept for legacy/local testing, but logic forces Supabase)
 STATIC_DIR = os.getenv("STATIC_DIR", "static")
 IMAGES_DIR = os.path.join(STATIC_DIR, "images")
 os.makedirs(IMAGES_DIR, exist_ok=True)
@@ -282,6 +282,7 @@ def upload_image_to_supabase(image_bytes, filename):
     return upload_to_supabase(image_bytes, filename, bucket="ai-images", content_type="image/png")
 
 def local_image_url(request: Request, filename: str) -> str:
+    # Kept for legacy, but primary path uses Supabase URLs
     return f"{request.base_url}static/images/{filename}"
 
 def save_base64_image_to_file(b64_str: str, filename: str):
@@ -505,7 +506,7 @@ async def duckduckgo_search(q: str):
     Returns a simple structured result with abstract, answer and a list of related topics.
     """
     url = "https://api.duckduckgo.com/"
-    params = {"q": q, "format": "json", "no_html": 1, "skip_disambig": 1}
+    params = {"q": q, "format": "json", "no_html":1, "skip_disambig": 1}
     async with httpx.AsyncClient(timeout=10.0) as client:
         r = await client.get(url, params=params)
         r.raise_for_status()
@@ -685,95 +686,6 @@ def analyze_prompt(prompt: str):
             if 1 <= n <= 6:
                 settings["samples"] = n
     return settings
-
-@app.post("/image/stream")
-async def image_stream(request: Request):
-    """
-    Stream progress to the client while generating images.
-    Uses Supabase for permanent storage.
-    """
-    body = await request.json()
-    prompt = body.get("prompt", "")
-    try:
-        samples = max(1, int(body.get("samples", 1)))
-    except Exception:
-        samples = 1
-    
-    # We ignore base64 preference for this endpoint to ensure it works on cloud
-    return_base64 = False 
-
-    if not prompt:
-        raise HTTPException(400, "prompt required")
-    if not OPENAI_API_KEY:
-        raise HTTPException(400, "no OpenAI KEY")
-
-    async def event_generator():
-        try:
-            yield "data: " + json.dumps({"status": "starting", "message": "Preparing request"}) + "\n\n"
-            await asyncio.sleep(0.05)
-
-            payload = {
-                "model": "dall-e-3",
-                "prompt": prompt,
-                "n": 1, # Dalle 3 only supports 1
-                "size": "1024x1024",
-                "response_format": "b64_json"
-            }
-
-            yield "data: " + json.dumps({"status": "request", "message": "Sending to OpenAI"}) + "\n\n"
-
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                r = await client.post(
-                    "https://api.openai.com/v1/images/generations",
-                    headers={
-                        "Authorization": f"Bearer {OPENAI_API_KEY}",
-                        "Content-Type": "application/json",
-                    },
-                    json=payload
-                )
-
-            if r.status_code != 200:
-                text_snip = (await r.aread()).decode(errors="ignore")[:1000]
-                yield "data: " + json.dumps({"status": "error", "message": "OpenAI error", "detail": text_snip}) + "\n\n"
-                yield "data: [DONE]\n\n"
-                return
-
-            jr = r.json()
-            urls = []
-
-            data_list = jr.get("data", [])
-            if not data_list:
-                yield "data: " + json.dumps({"status": "warning", "message": "No data returned from provider"}) + "\n\n"
-
-            for i, d in enumerate(data_list, start=1):
-                yield "data: " + json.dumps({"status": "progress", "message": f"Processing {i}/{samples}"}) + "\n\n"
-                await asyncio.sleep(0.01)  # yield control
-                
-                b64 = d.get("b64_json")
-                
-                if b64:
-                    # --- FORCE SUPABASE UPLOAD ---
-                    try:
-                        image_bytes = base64.b64decode(b64)
-                        filename = f"streaming/{unique_filename('png')}" # Use a subfolder for streaming
-                        upload_image_to_supabase(image_bytes, filename)
-                        
-                        # Get signed URL
-                        signed = supabase.storage.from_("ai-images").create_signed_url(filename, 60*60)
-                        urls.append(signed["signedURL"])
-                        
-                    except Exception as e:
-                        logger.exception("Supabase upload failed in stream")
-                        yield "data: " + json.dumps({"status": "error", "message": f"Storage failed: {str(e)}"}) + "\n\n"
-                
-            yield "data: " + json.dumps({"status": "done", "images": urls}) + "\n\n"
-            yield "data: [DONE]\n\n"
-        except Exception as e:
-            logger.exception("image_stream exception: %s", str(e))
-            yield "data: " + json.dumps({"status": "exception", "message": str(e)}) + "\n\n"
-            yield "data: [DONE]\n\n"
-
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 # ---------- Streaming chat ----------
 async def chat_stream_helper(user_id: str, prompt: str):
@@ -1360,6 +1272,7 @@ async def image_stream(request: Request):
     """
     Stream progress to the client while generating images.
     Sends SSE messages with JSON payloads and final 'done' event.
+    Uses Supabase for permanent storage (Fixed for Railway Ephemeral Storage).
     """
     body = await request.json()
     prompt = body.get("prompt", "")
@@ -1392,7 +1305,7 @@ async def image_stream(request: Request):
 
             async with httpx.AsyncClient(timeout=120.0) as client:
                 r = await client.post(
-                    "https://api.openai.com/v1/images/generations",
+                    "https://api.openai.com/v1/images/generations", # Corrected API URL
                     headers={
                         "Authorization": f"Bearer {OPENAI_API_KEY}",
                         "Content-Type": "application/json",
@@ -1417,31 +1330,22 @@ async def image_stream(request: Request):
                 yield "data: " + json.dumps({"status": "progress", "message": f"Processing {i}/{samples}"}) + "\n\n"
                 await asyncio.sleep(0.01)  # yield control
                 b64 = d.get("b64_json")
-                url_field = d.get("url") or d.get("image_url")
+                
                 if b64:
-                    if return_base64:
-                        urls.append(b64)
-                    else:
-                        fname = unique_filename("png")
-                        try:
-                            save_base64_image_to_file(b64, fname)
-                            urls.append(local_image_url(request, fname))
-                        except Exception:
-                            logger.exception("Failed saving streamed b64 image")
-                elif url_field:
+                    # --- FORCE SUPABASE UPLOAD (REMOVED LOCAL SAVING) ---
                     try:
-                        async with httpx.AsyncClient(timeout=30.0) as dl_client:
-                            dl = await dl_client.get(url_field)
-                            dl.raise_for_status()
-                            fname = unique_filename("png")
-                            with open(os.path.join(IMAGES_DIR, fname), "wb") as f:
-                                f.write(dl.content)
-                            urls.append(local_image_url(request, fname))
-                    except Exception:
-                        logger.exception("Failed to download streamed image URL")
-                else:
-                    logger.warning("Stream result missing both b64_json and url: %s", d.keys())
-
+                        image_bytes = base64.b64decode(b64)
+                        filename = f"streaming/{unique_filename('png')}" # Use a subfolder for streaming
+                        upload_image_to_supabase(image_bytes, filename)
+                        
+                        # Get signed URL
+                        signed = supabase.storage.from_("ai-images").create_signed_url(filename, 60*60)
+                        urls.append(signed["signedURL"])
+                        
+                    except Exception as e:
+                        logger.exception("Supabase upload failed in stream")
+                        yield "data: " + json.dumps({"status": "error", "message": f"Storage failed: {str(e)}"}) + "\n\n"
+                
             yield "data: " + json.dumps({"status": "done", "images": urls}) + "\n\n"
             yield "data: [DONE]\n\n"
         except Exception as e:
@@ -1475,8 +1379,15 @@ async def img2img(request: Request, file: UploadFile = File(...), prompt: str = 
                 b64 = d.get("b64_json")
                 if b64:
                     fname = unique_filename("png")
-                    save_base64_image_to_file(b64, fname)
-                    urls.append(local_image_url(request, fname))
+                    # Note: Edit API still returns B64 or URL. If B64, we MUST upload to Supabase.
+                    # If we use local_image_url for edits, we will hit the same 404 error on Railway.
+                    # Let's upload to Supabase here too for consistency.
+                    save_base64_image_to_file(b64, fname) 
+                    image_bytes = base64.b64decode(b64)
+                    supabase_fname = f"{user_id}/edits/{fname}"
+                    upload_image_to_supabase(image_bytes, supabase_fname)
+                    signed = supabase.storage.from_("ai-images").create_signed_url(supabase_fname, 60*60)
+                    urls.append(signed["signedURL"])
     except Exception:
         logger.exception("img2img DALL-E edit failed")
         raise HTTPException(400, "img2img failed")
