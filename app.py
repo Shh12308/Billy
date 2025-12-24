@@ -320,7 +320,187 @@ async def nsfw_check(prompt: str) -> bool:
         result = r.json()["results"][0]
         return result["flagged"]
 
+async def get_or_create_user(req: Request, res: Response) -> str:
+    user_id = req.cookies.get("uid")
 
+    if user_id:
+        return user_id
+
+    user_id = str(uuid4())
+    supabase.table("users").insert({"id": user_id}).execute()
+
+    res.set_cookie(
+        key="uid",
+        value=user_id,
+        httponly=True,
+        samesite="lax",
+        max_age=60 * 60 * 24 * 365
+    )
+    return user_id
+
+# ----------------------------------
+# MEMORY LOADER
+# ----------------------------------
+def load_memory(conversation_id: str, limit: int = 20):
+    res = supabase.table("messages") \
+        .select("role,content") \
+        .eq("conversation_id", conversation_id) \
+        .order("created_at") \
+        .limit(limit) \
+        .execute()
+
+    return res.data or []
+
+# ----------------------------------
+# NEW CHAT
+# ----------------------------------
+@app.post("/chat/new")
+async def new_chat(req: Request, res: Response):
+    user_id = await get_or_create_user(req, res)
+
+    convo_id = str(uuid4())
+    supabase.table("conversations").insert({
+        "id": convo_id,
+        "user_id": user_id,
+        "title": "New Chat"
+    }).execute()
+
+    return {"conversation_id": convo_id}
+
+# ----------------------------------
+# SEND MESSAGE (MEMORY AWARE)
+# ----------------------------------
+@app.post("/chat/{conversation_id}/message")
+async def send_message(
+    conversation_id: str,
+    req: Request,
+    res: Response
+):
+    user_id = await get_or_create_user(req, res)
+    body = await req.json()
+    text = body.get("message")
+
+    if not text:
+        raise HTTPException(400, "message required")
+
+    # Save user message
+    supabase.table("messages").insert({
+        "id": str(uuid4()),
+        "conversation_id": conversation_id,
+        "role": "user",
+        "content": text
+    }).execute()
+
+    # LOAD MEMORY FOR AI
+    memory = load_memory(conversation_id)
+
+    # ----------------------------------
+    # ⬇️ REPLACE WITH YOUR GROQ CALL ⬇️
+    # ----------------------------------
+    ai_reply = "AI RESPONSE HERE"
+    # ----------------------------------
+
+    supabase.table("messages").insert({
+        "id": str(uuid4()),
+        "conversation_id": conversation_id,
+        "role": "assistant",
+        "content": ai_reply
+    }).execute()
+
+    return {"reply": ai_reply}
+
+# ----------------------------------
+# LIST CHATS
+# ----------------------------------
+@app.get("/chats")
+async def list_chats(req: Request, res: Response):
+    user_id = await get_or_create_user(req, res)
+
+    res = supabase.table("conversations") \
+        .select("*") \
+        .eq("user_id", user_id) \
+        .eq("archived", False) \
+        .order("pinned", desc=True) \
+        .order("created_at", desc=True) \
+        .execute()
+
+    return res.data or []
+
+# ----------------------------------
+# SEARCH CHATS
+# ----------------------------------
+@app.get("/chats/search")
+async def search_chats(q: str, req: Request, res: Response):
+    user_id = await get_or_create_user(req, res)
+
+    res = supabase.table("conversations") \
+        .select("id,title") \
+        .eq("user_id", user_id) \
+        .ilike("title", f"%{q}%") \
+        .execute()
+
+    return res.data or []
+
+# ----------------------------------
+# PIN / ARCHIVE
+# ----------------------------------
+@app.post("/chat/{id}/pin")
+async def pin_chat(id: str):
+    supabase.table("conversations").update({"pinned": True}).eq("id", id).execute()
+    return {"status": "pinned"}
+
+@app.post("/chat/{id}/archive")
+async def archive_chat(id: str):
+    supabase.table("conversations").update({"archived": True}).eq("id", id).execute()
+    return {"status": "archived"}
+
+# ----------------------------------
+# FOLDER
+# ----------------------------------
+@app.post("/chat/{id}/folder")
+async def move_folder(id: str, folder: Optional[str] = None):
+    supabase.table("conversations").update({"folder": folder}).eq("id", id).execute()
+    return {"status": "moved"}
+
+# ----------------------------------
+# SHARE CHAT
+# ----------------------------------
+@app.post("/chat/{id}/share")
+async def share_chat(id: str):
+    token = uuid4().hex
+
+    supabase.table("conversations").update({
+        "share_token": token,
+        "is_public": True
+    }).eq("id", id).execute()
+
+    return {"share_url": f"/share/{token}"}
+
+# ----------------------------------
+# VIEW SHARED CHAT (READ ONLY)
+# ----------------------------------
+@app.get("/share/{token}")
+async def view_shared_chat(token: str):
+    convo = supabase.table("conversations") \
+        .select("id,title") \
+        .eq("share_token", token) \
+        .eq("is_public", True) \
+        .single() \
+        .execute()
+
+    if not convo.data:
+        raise HTTPException(404)
+
+    messages = supabase.table("messages") \
+        .select("role,content,created_at") \
+        .eq("conversation_id", convo.data["id"]) \
+        .order("created_at") \
+        .execute()
+
+    return {
+        "title": convo.data["title"],
+        "messages": messages.data
+    }
 
 #------duckduckgo
 
