@@ -64,8 +64,8 @@ if GROQ_API_KEY is not None:
 
 STABILITY_API_KEY = os.getenv("STABILITY_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-
-IMAGE_MODEL_FREE_URL = os.getenv("IMAGE_MODEL_FREE_URL", "").strip()
+HF_API_KEY = os.getenv("HF_API_KEY")
+IMAGE_MODEL_FREE_URL = os.getenv("IMAGE_MODEL_FREE_URL")
 USE_FREE_IMAGE_PROVIDER = os.getenv("USE_FREE_IMAGE_PROVIDER", "false").lower() in ("1", "true", "yes")
 
 # Quick log so you can confirm key presence without printing the key itself
@@ -734,7 +734,7 @@ async def ask_universal(request: Request):
                 yield sse(chunk)
 
         elif intent == "video":
-            result = await generate_video(prompt, samples, user_id)
+            result = await generate_video_internal(prompt, samples, user_id)
             yield sse({"type": "video_result", "data": result})
 
         elif intent == "search":
@@ -822,7 +822,8 @@ async def regenerate(user_id: str, prompt: str, mode: str = "chat", samples: int
 def sse(obj: dict) -> str:
     return f"data: {json.dumps(obj)}\n\n"
 
-    @app.post("/video")
+   
+@app.post("/video")
 async def generate_video(request: Request):
     """
     Generate a video from a prompt using Hugging Face and upload to Supabase.
@@ -978,8 +979,6 @@ async def image_gen(request: Request):
         "provider": provider_used,
         "images": urls
     }
-
-
 
 @app.get("/test-stream")
 async def test_stream(request: Request):
