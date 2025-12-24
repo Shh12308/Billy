@@ -734,8 +734,8 @@ async def ask_universal(request: Request):
                 yield sse(chunk)
 
         elif intent == "video":
-    result = await generate_video(prompt, samples, user_id)
-    yield sse({"type": "video_result", "data": result})
+            result = await generate_video(prompt, samples, user_id)
+            yield sse({"type": "video_result", "data": result})
 
         elif intent == "search":
             result = await duckduckgo_search(prompt)
@@ -821,6 +821,61 @@ async def regenerate(user_id: str, prompt: str, mode: str = "chat", samples: int
 # ---------------- SSE HELPER ----------------
 def sse(obj: dict) -> str:
     return f"data: {json.dumps(obj)}\n\n"
+
+    @app.post("/video")
+async def generate_video(request: Request):
+    """
+    Generate a video from a prompt using Hugging Face and upload to Supabase.
+    Returns signed URL(s) to the video(s).
+    """
+    body = await request.json()
+    prompt = body.get("prompt", "").strip()
+    user_id = body.get("user_id", "anonymous")
+    samples = max(1, int(body.get("samples", 1)))
+
+    if not prompt:
+        raise HTTPException(400, "prompt required")
+    if not HF_API_KEY:
+        raise HTTPException(500, "HF_API_KEY missing")
+
+    video_urls = []
+
+    try:
+        async with httpx.AsyncClient(timeout=600.0) as client:
+            headers = {"Authorization": f"Bearer {HF_API_KEY}"}
+            for _ in range(samples):
+                payload = {"inputs": prompt}
+
+                r = await client.post(
+                    "https://api-inference.huggingface.co/models/runwayml/stable-diffusion-videos",
+                    headers=headers,
+                    json=payload
+                )
+                r.raise_for_status()
+                # HF returns bytes, not base64
+                video_bytes = r.content
+
+                # Generate a unique filename
+                filename = f"{user_id}/{int(time.time())}-video-{uuid.uuid4().hex[:10]}.mp4"
+
+                # Upload to Supabase
+                supabase.storage.from_("ai-videos").upload(
+                    path=filename,
+                    file=video_bytes,
+                    file_options={"content-type": "video/mp4"}
+                )
+
+                # Create signed URL (1 hour)
+                signed = supabase.storage.from_("ai-videos").create_signed_url(filename, 60*60)
+                video_urls.append(signed["signedURL"])
+
+    except Exception as e:
+        raise HTTPException(500, f"Video generation failed: {str(e)}")
+
+    if not video_urls:
+        raise HTTPException(500, "No video generated")
+
+    return {"provider": "huggingface", "videos": video_urls}
     
 @app.post("/image")
 async def image_gen(request: Request):
