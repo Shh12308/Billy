@@ -686,6 +686,95 @@ def analyze_prompt(prompt: str):
                 settings["samples"] = n
     return settings
 
+@app.post("/image/stream")
+async def image_stream(request: Request):
+    """
+    Stream progress to the client while generating images.
+    Uses Supabase for permanent storage.
+    """
+    body = await request.json()
+    prompt = body.get("prompt", "")
+    try:
+        samples = max(1, int(body.get("samples", 1)))
+    except Exception:
+        samples = 1
+    
+    # We ignore base64 preference for this endpoint to ensure it works on cloud
+    return_base64 = False 
+
+    if not prompt:
+        raise HTTPException(400, "prompt required")
+    if not OPENAI_API_KEY:
+        raise HTTPException(400, "no OpenAI KEY")
+
+    async def event_generator():
+        try:
+            yield "data: " + json.dumps({"status": "starting", "message": "Preparing request"}) + "\n\n"
+            await asyncio.sleep(0.05)
+
+            payload = {
+                "model": "dall-e-3",
+                "prompt": prompt,
+                "n": 1, # Dalle 3 only supports 1
+                "size": "1024x1024",
+                "response_format": "b64_json"
+            }
+
+            yield "data: " + json.dumps({"status": "request", "message": "Sending to OpenAI"}) + "\n\n"
+
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                r = await client.post(
+                    "https://api.openai.com/v1/images/generations",
+                    headers={
+                        "Authorization": f"Bearer {OPENAI_API_KEY}",
+                        "Content-Type": "application/json",
+                    },
+                    json=payload
+                )
+
+            if r.status_code != 200:
+                text_snip = (await r.aread()).decode(errors="ignore")[:1000]
+                yield "data: " + json.dumps({"status": "error", "message": "OpenAI error", "detail": text_snip}) + "\n\n"
+                yield "data: [DONE]\n\n"
+                return
+
+            jr = r.json()
+            urls = []
+
+            data_list = jr.get("data", [])
+            if not data_list:
+                yield "data: " + json.dumps({"status": "warning", "message": "No data returned from provider"}) + "\n\n"
+
+            for i, d in enumerate(data_list, start=1):
+                yield "data: " + json.dumps({"status": "progress", "message": f"Processing {i}/{samples}"}) + "\n\n"
+                await asyncio.sleep(0.01)  # yield control
+                
+                b64 = d.get("b64_json")
+                
+                if b64:
+                    # --- FORCE SUPABASE UPLOAD ---
+                    try:
+                        image_bytes = base64.b64decode(b64)
+                        filename = f"streaming/{unique_filename('png')}" # Use a subfolder for streaming
+                        upload_image_to_supabase(image_bytes, filename)
+                        
+                        # Get signed URL
+                        signed = supabase.storage.from_("ai-images").create_signed_url(filename, 60*60)
+                        urls.append(signed["signedURL"])
+                        
+                    except Exception as e:
+                        logger.exception("Supabase upload failed in stream")
+                        yield "data: " + json.dumps({"status": "error", "message": f"Storage failed: {str(e)}"}) + "\n\n"
+                
+            yield "data: " + json.dumps({"status": "done", "images": urls}) + "\n\n"
+            yield "data: [DONE]\n\n"
+        except Exception as e:
+            logger.exception("image_stream exception: %s", str(e))
+            yield "data: " + json.dumps({"status": "exception", "message": str(e)}) + "\n\n"
+            yield "data: [DONE]\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
 # ---------- Streaming chat ----------
 async def chat_stream_helper(user_id: str, prompt: str):
     url = "https://api.groq.com/openai/v1/chat/completions"
