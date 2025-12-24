@@ -103,9 +103,75 @@ CREATOR_INFO = {
     "bio": "Created by GoldBoy (17, England). Projects: MZ, LS, SX, CB. Socials: Discord @nexisphere123_89431 Twitter @NexiSphere."
 }
 
+JUDGE0_LANGUAGES = {
+    "python": 71,
+    "javascript": 63,
+    "cpp": 54,
+    "c": 50,
+    "java": 62,
+    "go": 60,
+    "rust": 73
+}
+
+JUDGE0_URL = "https://judge0-ce.p.rapidapi.com"
+JUDGE0_KEY = os.getenv("JUDGE0_API_KEY")
+
+if not JUDGE0_KEY:
+    logger.warning("⚠️ Judge0 key not set — code execution disabled")
+
+async def run_code_judge0(code: str, language: str) -> dict:
+    if not JUDGE0_KEY:
+        return {"error": "Judge0 not configured"}
+
+    lang_id = JUDGE0_LANGUAGES.get(language.lower())
+    if not lang_id:
+        return {"error": f"Unsupported language: {language}"}
+
+    headers = {
+        "X-RapidAPI-Key": JUDGE0_KEY,
+        "X-RapidAPI-Host": "judge0-ce.p.rapidapi.com",
+        "Content-Type": "application/json"
+    }
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        # 1. Submit code
+        submit = await client.post(
+            f"{JUDGE0_URL}/submissions?wait=false",
+            headers=headers,
+            json={
+                "source_code": code,
+                "language_id": lang_id,
+                "stdin": ""
+            }
+        )
+        submit.raise_for_status()
+        token = submit.json()["token"]
+
+        # 2. Poll result
+        for _ in range(15):
+            await asyncio.sleep(1)
+            r = await client.get(
+                f"{JUDGE0_URL}/submissions/{token}",
+                headers=headers
+            )
+            r.raise_for_status()
+            data = r.json()
+
+            if data["status"]["id"] >= 3:
+                return {
+                    "status": data["status"]["description"],
+                    "stdout": data.get("stdout"),
+                    "stderr": data.get("stderr"),
+                    "compile_output": data.get("compile_output"),
+                    "time": data.get("time"),
+                    "memory": data.get("memory")
+                }
+
+        return {"error": "Execution timed out"}
+
 # ---------- Dynamic, user-focused system prompt ----------
 def get_system_prompt(user_message: Optional[str] = None) -> str:
-    base = "You are Billy AI: helpful, concise, friendly, and focus entirely on what the user asks. Do not reference your creator or yourself unless explicitly asked."
+    base = "You are ZynaraAI1.0: helpful, concise, friendly, and focus entirely on what the user asks. Do not reference your creator or yourself unless explicitly asked."
     if user_message:
         base += f" The user said: \"{user_message}\". Tailor your response to this."
     return base
@@ -117,7 +183,7 @@ def build_contextual_prompt(user_id: str, message: str) -> str:
     rows = cur.fetchall()
     conn.close()
     context = "\n".join(f"{k}: {v}" for k, v in rows)
-    return f"You are ZyNara1 AI: helpful, concise, friendly. Focus on exactly what the user wants.\nUser context:\n{context}\nUser message: {message}"
+    return f"You are ZyNaraAI1.0 : helpful, concise, friendly. Focus on exactly what the user wants.\nUser context:\n{context}\nUser message: {message}"
 
 # ---------- SQLITE helpers ----------
 def ensure_db(path: str, schema_sql: str):
@@ -430,87 +496,6 @@ async def universal_chat_stream(user_id: str, prompt: str):
                 except Exception:
                     continue
             
-# Initialize Docker client
-docker_client = docker.from_env()
-
-LANGUAGE_CONFIG = {
-    "python": {"image": "python:3.11-slim", "cmd": "python {file}"},
-    "javascript": {"image": "node:20-slim", "cmd": "node {file}"},
-    "java": {"image": "openjdk:20-slim", "cmd": "bash -c 'javac {file} && java {classname}'"},
-    "c": {"image": "gcc:12-slim", "cmd": "bash -c 'gcc {file} -o /tmp/a.out && /tmp/a.out'"},
-    "cpp": {"image": "gcc:12-slim", "cmd": "bash -c 'g++ {file} -o /tmp/a.out && /tmp/a.out'"}
-}
-
-try:
-    import docker
-    docker_client = docker.from_env()
-except (ImportError, docker.errors.DockerException, FileNotFoundError, OSError):
-    docker_client = None
-    logger.warning("Docker not available; code execution disabled.")
-
-# Configuration for supported languages
-LANGUAGE_CONFIG = {
-    "python": {"image": "python:3.11-slim", "cmd": "python {file}"},
-    "javascript": {"image": "node:20-slim", "cmd": "node {file}"},
-    "java": {"image": "openjdk:20-slim", "cmd": "bash -c 'javac {file} && java {classname}'"},
-    "c": {"image": "gcc:12-slim", "cmd": "bash -c 'gcc {file} -o /tmp/a.out && /tmp/a.out'"},
-    "cpp": {"image": "gcc:12-slim", "cmd": "bash -c 'g++ {file} -o /tmp/a.out && /tmp/a.out'"}
-}
-
-def run_code_in_docker(code: str, language: str) -> dict:
-    """
-    Executes code in a Docker container safely.
-    Returns a dict: {"output": ..., "error": ...}
-    """
-    if not docker_client:
-        return {"output": "", "error": "Docker not available in this environment."}
-
-    language = language.lower()
-    if language not in LANGUAGE_CONFIG:
-        return {"output": "", "error": f"Execution for {language} is not supported."}
-
-    config = LANGUAGE_CONFIG[language]
-
-    try:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            # Determine file extension
-            ext = language if language not in ["c", "cpp", "java"] else language
-            filename = f"{uuid.uuid4().hex}.{ext}"
-            filepath = f"{tmpdir}/{filename}"
-
-            # Write code to file
-            with open(filepath, "w") as f:
-                f.write(code)
-
-            # Special case for Java: extract class name
-            classname = "Main"
-            if language == "java":
-                import re
-                m = re.search(r"class\s+(\w+)", code)
-                if m:
-                    classname = m.group(1)
-
-            # Run Docker container
-            output = docker_client.containers.run(
-                image=config["image"],
-                command=config["cmd"].format(file=filename, classname=classname),
-                volumes={tmpdir: {"bind": "/tmp", "mode": "rw"}},
-                working_dir="/tmp",
-                stderr=True,
-                stdout=True,
-                remove=True,
-                mem_limit="256m",
-                network_disabled=True,
-                user="nobody",
-                detach=False
-            )
-            return {"output": output.decode("utf-8"), "error": ""}
-
-    except docker.errors.ContainerError as e:
-        return {"output": e.stdout.decode() if e.stdout else "", "error": e.stderr.decode() if e.stderr else str(e)}
-    except Exception as e:
-        return {"output": "", "error": str(e)}
-
 # ---------- Prompt analysis ----------
 def analyze_prompt(prompt: str):
     p = prompt.lower()
@@ -1297,18 +1282,16 @@ async def code_gen(req: Request):
     body = await req.json()
     prompt = body.get("prompt", "")
     language = body.get("language", "python").lower()
+    run_flag = bool(body.get("run", False))
     user_id = body.get("user_id", "anonymous")
-    run_code_flag = bool(body.get("run", False))
 
     if not prompt:
         raise HTTPException(400, "prompt required")
-    if not GROQ_API_KEY:
-        raise HTTPException(400, "no groq key")
 
-    # Build user-focused prompt
+    # Generate code using Groq (unchanged)
     contextual_prompt = build_contextual_prompt(
         user_id,
-        f"Write a complete, well-documented {language} program for the following request:\n\n{prompt}"
+        f"Write a complete {language} program:\n{prompt}"
     )
 
     payload = {
@@ -1316,39 +1299,27 @@ async def code_gen(req: Request):
         "messages": [
             {"role": "system", "content": contextual_prompt},
             {"role": "user", "content": prompt}
-        ],
-        "temperature": 0.1
+        ]
     }
 
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        headers = get_groq_headers()
-        try:
-            r = await client.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers=headers,
-                json=payload
-            )
-            r.raise_for_status()
-            result_json = r.json()
-        except Exception as e:
-            logger.exception("Groq /code request failed")
-            raise HTTPException(500, f"Groq request failed: {str(e)}")
+    async with httpx.AsyncClient(timeout=60) as client:
+        r = await client.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers=get_groq_headers(),
+            json=payload
+        )
+        r.raise_for_status()
+        code = r.json()["choices"][0]["message"]["content"]
 
-    # Extract generated code
-    code_text = ""
-    try:
-        choices = result_json.get("choices", [])
-        if choices:
-            code_text = choices[0]["message"]["content"]
-    except Exception:
-        logger.warning("Failed to extract code from Groq response")
+    response = {
+        "language": language,
+        "generated_code": code
+    }
 
-    response = {"generated_code": code_text, "language": language}
-
-    # Run code in Docker safely if requested
-    if run_code_flag:
-        exec_result = run_code_in_docker(code_text, language)
-        response["execution"] = exec_result
+    # ✅ Run via Judge0
+    if run_flag:
+        execution = await run_code_judge0(code, language)
+        response["execution"] = execution
 
     return response
 
