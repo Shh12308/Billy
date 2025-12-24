@@ -960,7 +960,54 @@ async def ask_universal(request: Request):
     # ---- FALLBACK ----
     request._json = {"prompt": prompt, "user_id": user_id}
     return await chat_endpoint(request)
-    
+
+
+@app.post("/message/{message_id}/edit")
+async def edit_message(
+    message_id: str,
+    req: Request,
+    res: Response
+):
+    user_id = await get_or_create_user(req, res)
+    body = await req.json()
+    new_text = body.get("content")
+
+    if not new_text:
+        raise HTTPException(400, "content required")
+
+    # Get message
+    msg = supabase.table("messages") \
+        .select("id,role,conversation_id,created_at") \
+        .eq("id", message_id) \
+        .single() \
+        .execute()
+
+    if not msg.data:
+        raise HTTPException(404, "message not found")
+
+    if msg.data["role"] != "user":
+        raise HTTPException(403, "only user messages can be edited")
+
+    conversation_id = msg.data["conversation_id"]
+    edited_at = msg.data["created_at"]
+
+    # Update message content
+    supabase.table("messages").update({
+        "content": new_text
+    }).eq("id", message_id).execute()
+
+    # 🔥 DELETE ALL ASSISTANT MESSAGES AFTER THIS MESSAGE
+    supabase.table("messages") \
+        .delete() \
+        .eq("conversation_id", conversation_id) \
+        .gt("created_at", edited_at) \
+        .eq("role", "assistant") \
+        .execute()
+
+    return {
+        "status": "edited",
+        "conversation_id": conversation_id
+    }
     
 # -----------------------------
 # Stop endpoint
