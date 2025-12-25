@@ -11,7 +11,7 @@ from io import BytesIO
 import torch
 from torchvision import models, transforms
 import asyncio
-import base64 as b64lib
+import base64
 import time
 import logging
 import subprocess
@@ -92,6 +92,8 @@ STATIC_DIR = os.getenv("STATIC_DIR", "static")
 IMAGES_DIR = os.path.join(STATIC_DIR, "images")
 os.makedirs(IMAGES_DIR, exist_ok=True)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+active_streams: dict[str, asyncio.Task] = {}
 
 # ---------- Creator info ----------
 CREATOR_INFO = {
@@ -745,6 +747,19 @@ async def chat_stream(req: Request, tts: bool = False, samples: int = 1, user_id
     if not prompt:
         raise HTTPException(400, "prompt required")
 
+async def event_generator(user_id: str):
+    task = asyncio.current_task()
+    active_streams[user_id] = task
+
+    try:
+        async for chunk in llm_stream():
+            yield f"data: {chunk}\n\n"
+    except asyncio.CancelledError:
+        yield "data: [STOPPED]\n\n"
+        raise
+    finally:
+        active_streams.pop(user_id, None)
+
     async def event_generator():
         # --- 1. Image Generation (if prompt implies image) ---
         if any(w in prompt.lower() for w in ("image","draw","illustrate","painting","art","picture")):
@@ -752,7 +767,8 @@ async def chat_stream(req: Request, tts: bool = False, samples: int = 1, user_id
                 yield f"data: {json.dumps({'status':'image_start','message':'Starting image generation'})}\n\n"
                 img_payload = {"prompt": prompt, "samples": samples, "base64": False}
                 async with httpx.AsyncClient(timeout=None) as client:
-                    async with client.stream("POST", str(req.base_url) + "image/stream", json=img_payload) as resp:
+                    async for chunk in image_stream_helper(prompt, samples):
+    yield sse(chunk) json=img_payload) as resp:
                         async for line in resp.aiter_lines():
                             if line.strip():
                                 yield line + "\n\n"
@@ -858,11 +874,19 @@ async def chat_endpoint(req: Request):
 # =========================================================
 
 # ---------- Core Image Logic (Refactored) ----------
-async def _generate_image_core(prompt, samples, "anonymous", return_base64=False)
-    """Shared logic for image generation used by /image and streaming helpers."""
+async def _generate_image_core(
+    prompt: str,
+    samples: int,
+    user_id: str = "anonymous",
+    return_base64: bool = False
+):
     cached = get_cached(prompt)
     if cached:
-        return {"cached": True, **cached}
+        return {
+            "cached": True,
+            "provider": cached["provider"],
+            "images": cached["result"]["images"]
+        }
 
     if not OPENAI_API_KEY:
         raise HTTPException(500, "OPENAI_API_KEY missing")
@@ -872,17 +896,12 @@ async def _generate_image_core(prompt, samples, "anonymous", return_base64=False
 
     async with httpx.AsyncClient(timeout=120.0) as client:
         payload = {
-            "model": "dall-e-3", # Fixed model name
+            "model": "dall-e-3",
             "prompt": prompt,
-            "n": 1, # DALL-E 3 supports n=1
+            "n": 1,
             "size": "1024x1024",
             "response_format": "b64_json"
         }
-        
-        # Adjust samples for DALL-E 3 limitation
-        actual_samples = 1 
-        if samples > 1:
-            logger.warning("DALL-E 3 only supports 1 image per request. Adjusting samples to 1.")
 
         r = await client.post(
             "https://api.openai.com/v1/images/generations",
@@ -897,35 +916,24 @@ async def _generate_image_core(prompt, samples, "anonymous", return_base64=False
 
     for d in jr.get("data", []):
         b64 = d.get("b64_json")
-        
-        if b64:
-            try:
-                image_bytes = base64.b64decode(b64)
-                
-                # Skip NSFW check here for speed in stream, or keep if needed
-                # flagged = await nsfw_check(prompt)
-                # if flagged: ...
+        if not b64:
+            continue
 
-                if base64:
-                    urls.append(b64)
-                else:
-                    filename = f"{user_id}/{unique_filename('png')}"
-                    upload_image_to_supabase(image_bytes, filename)
-                    # flagged = False # Assuming false for stream speed
-                    # save_image_record(user_id, prompt, filename, flagged)
-                    
-                    signed = supabase.storage.from_("ai-images").create_signed_url(filename, 60 * 60)
-                    urls.append(signed["signedURL"])
+        image_bytes = base64.b64decode(b64)
 
-            except Exception:
-                logger.exception("Failed processing OpenAI base64 image")
+        if return_base64:
+            urls.append(b64)
+        else:
+            filename = f"{user_id}/{unique_filename('png')}"
+            upload_image_to_supabase(image_bytes, filename)
+            signed = supabase.storage.from_("ai-images").create_signed_url(filename, 3600)
+            urls.append(signed["signedURL"])
 
     if not urls:
         raise HTTPException(500, "Image generation failed")
 
-    cache_result(prompt, provider_used, urls)
+    cache_result(prompt, provider_used, {"images": urls})
     return {"provider": provider_used, "images": urls}
-
 
 async def image_gen_internal(prompt: str, samples: int = 1):
     """Helper for streaming /ask/universal."""
@@ -1049,6 +1057,8 @@ async def ask_universal(request: Request):
             r.raise_for_status()
             return r.json()
 
+task = asyncio.current_task()
+active_streams[user_id] = task
 
     async def event_generator():
         yield sse({"type": "starting", "intent": intent})
@@ -1089,6 +1099,8 @@ async def ask_universal(request: Request):
         }
     )
 
+finally:
+    active_streams.pop(user_id, None)
 
 @app.post("/message/{message_id}/edit")
 async def edit_message(
@@ -1143,34 +1155,10 @@ async def edit_message(
 @app.post("/stop")
 async def stop_stream(user_id: str):
     task = active_streams.get(user_id)
-    if task and not task.done():
+    if task:
         task.cancel()
-        return {"status": "stopped"}
-    return {"status": "no_active_stream"}
-    
-# -----------------------------
-# Regenerate endpoint
-# -----------------------------
-@app.post("/regenerate")
-async def regenerate(user_id: str, prompt: str, mode: str = "chat", samples: int = 1):
-    """
-    Re-run the same prompt as a fresh request.
-    """
-    # Map to internal logic
-    return await ask_universal_helper(prompt=prompt, user_id=user_id, mode=mode, samples=samples)
-
-# Dummy function for regeneration helper
-async def ask_universal_helper(prompt, user_id, mode, samples):
-    # Simply calls the streaming generator logic but returns final result? 
-    # The code structure suggests this should just trigger a new session.
-    # Since /ask/universal is the main entry, we can mock a request object or just reuse the logic.
-    # For now, let's just return a placeholder or trigger a response.
-    return {"status": "regenerating", "prompt": prompt}
-
-# ---------------- SSE HELPER ----------------
-def sse(obj: dict) -> str:
-    return f"data: {json.dumps(obj)}\n\n"
-
+        return {"stopped": True}
+    return {"stopped": False}
    
 @app.post("/video")
 async def generate_video(request: Request):
