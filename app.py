@@ -1,4 +1,4 @@
-# app.py — ZyNara1 AI full multimodal server: SDXL + TTS/STT + code + vision + search + remove-bg/upscale + caching + metadata
+Is this gd # app.py — ZyNara1 AI full multimodal server: SDXL + TTS/STT + code + vision + search + remove-bg/upscale + caching + metadata
 import os
 import io
 import PIL
@@ -858,7 +858,12 @@ async def chat_endpoint(req: Request):
 # =========================================================
 
 # ---------- Core Image Logic (Refactored) ----------
-async def _generate_image_core(..., return_base64: bool = False):
+async def _generate_image_core(
+    prompt: str,
+    samples: int,
+    user_id: str,
+    return_base64: bool = False
+):
     """Shared logic for image generation used by /image and streaming helpers."""
     cached = get_cached(prompt)
     if cached:
