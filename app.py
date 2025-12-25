@@ -11,7 +11,7 @@ from io import BytesIO
 import torch
 from torchvision import models, transforms
 import asyncio
-import base64
+import base64 as b64lib
 import time
 import logging
 import subprocess
@@ -858,7 +858,7 @@ async def chat_endpoint(req: Request):
 # =========================================================
 
 # ---------- Core Image Logic (Refactored) ----------
-async def _generate_image_core(prompt: str, samples: int, user_id: str, base64: bool = False):
+async def _generate_image_core(..., return_base64: bool = False):
     """Shared logic for image generation used by /image and streaming helpers."""
     cached = get_cached(prompt)
     if cached:
