@@ -858,12 +858,7 @@ async def chat_endpoint(req: Request):
 # =========================================================
 
 # ---------- Core Image Logic (Refactored) ----------
-async def _generate_image_core(
-    prompt: str,
-    samples: int,
-    user_id: str,
-    return_base64: bool = False
-):
+async def _generate_image_core(prompt, samples, "anonymous", return_base64=False)
     """Shared logic for image generation used by /image and streaming helpers."""
     cached = get_cached(prompt)
     if cached:
@@ -935,7 +930,7 @@ async def _generate_image_core(
 async def image_gen_internal(prompt: str, samples: int = 1):
     """Helper for streaming /ask/universal."""
     # Returns dict {"images": [...]}
-    return await _generate_image_core(prompt, samples, "anonymous", base64=False)
+    return await _generate_image_core(prompt, samples, "anonymous", return_base64=False)
 
 async def image_stream_helper(prompt: str, samples: int):
     yield {"type": "image_start"}
@@ -1011,7 +1006,7 @@ async def ask_universal(request: Request):
 
         if intent == "image":
             # Logic from image_gen
-            return await _generate_image_core(prompt, samples, user_id, base64=False)
+            return await _generate_image_core(prompt, samples, "anonymous", return_base64=False)
 
         if intent == "search":
             return await duckduckgo_search(prompt)
