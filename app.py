@@ -138,7 +138,6 @@ async def run_code_judge0(code: str, language: str):
     )
 
     if submit.status_code == 403:
-        logger.error("Judge0 returned 403 Forbidden")
         return {
             "error": "Judge0 execution blocked (403). Check RapidAPI key or plan."
         }
