@@ -150,7 +150,7 @@ try:
     execution = await run_code_judge0(code, language)
 except Exception as e:
     execution = {"error": str(e)}
-        token = submit.json()["token"]
+       
 
         # 2. Poll result
         for _ in range(15):
