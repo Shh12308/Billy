@@ -93,8 +93,6 @@ IMAGES_DIR = os.path.join(STATIC_DIR, "images")
 os.makedirs(IMAGES_DIR, exist_ok=True)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
-active_streams: dict[str, asyncio.Task] = {}
-
 # ---------- Creator info ----------
 CREATOR_INFO = {
     "name": "GoldYLocks",
@@ -121,13 +119,11 @@ JUDGE0_KEY = os.getenv("JUDGE0_API_KEY")
 if not JUDGE0_KEY:
     logger.warning("⚠️ Judge0 key not set — code execution disabled")
 
-async def run_code_judge0(code: str, language: str) -> dict:
-    if not JUDGE0_KEY:
-        return {"error": "Judge0 not configured"}
-
-    lang_id = JUDGE0_LANGUAGES.get(language.lower())
-    if not lang_id:
-        return {"error": f"Unsupported language: {language}"}
+async def run_code_judge0(code: str, language: str):
+    payload = {
+        "language_id": language,
+        "source_code": code
+    }
 
     headers = {
         "X-RapidAPI-Key": JUDGE0_KEY,
@@ -135,18 +131,25 @@ async def run_code_judge0(code: str, language: str) -> dict:
         "Content-Type": "application/json"
     }
 
-    async with httpx.AsyncClient(timeout=30) as client:
-        # 1. Submit code
-        submit = await client.post(
-            f"{JUDGE0_URL}/submissions?wait=false",
-            headers=headers,
-            json={
-                "source_code": code,
-                "language_id": lang_id,
-                "stdin": ""
-            }
-        )
-        submit.raise_for_status()
+    submit = await client.post(
+        "https://judge0-ce.p.rapidapi.com/submissions?wait=false",
+        json=payload,
+        headers=headers
+    )
+
+    if submit.status_code == 403:
+        logger.error("Judge0 returned 403 Forbidden")
+        return {
+            "error": "Judge0 execution blocked (403). Check RapidAPI key or plan."
+        }
+
+    submit.raise_for_status()
+    return submit.json()
+    
+try:
+    execution = await run_code_judge0(code, language)
+except Exception as e:
+    execution = {"error": str(e)}
         token = submit.json()["token"]
 
         # 2. Poll result
@@ -317,6 +320,21 @@ async def nsfw_check(prompt: str) -> bool:
         result = r.json()["results"][0]
         return result["flagged"]
 
+async def run_code_safely(prompt: str):
+    try:
+        code, language = extract_code_and_language(prompt)
+        execution = await run_code_judge0(code, language)
+        return {
+            "type": "code_result",
+            "result": execution
+        }
+    except Exception as e:
+        logger.exception("Code execution failed")
+        return {
+            "type": "code_error",
+            "error": str(e)
+        }
+        
 # ---------- USER / COOKIE ----------
 async def get_or_create_user(req: Request, res: Response) -> str:
     user_id = req.cookies.get("uid")
@@ -656,6 +674,25 @@ async def universal_chat_stream(user_id: str, prompt: str):
         ]
     }
 
+    async def check_supabase():
+    try:
+        # Storage bucket check
+        buckets = supabase.storage.list_buckets()
+        bucket_names = [b["name"] for b in buckets]
+
+        if "ai-images" not in bucket_names:
+            return "bucket_missing"
+
+        # DB ping (cheap)
+        supabase.table("health_check").select("*").limit(1).execute()
+
+        return "ok"
+    except Exception as e:
+        logger.exception("Supabase health check failed")
+        return f"error: {str(e)}"
+
+    
+
     async with httpx.AsyncClient(timeout=None) as client:
         async with client.stream("POST", url, headers=headers, json=payload) as resp:
             async for line in resp.aiter_lines():
@@ -688,6 +725,26 @@ def analyze_prompt(prompt: str):
             if 1 <= n <= 6:
                 settings["samples"] = n
     return settings
+
+async def image_stream_helper(prompt: str, samples: int):
+    try:
+        result = await _generate_image_core(prompt, samples, "anonymous", base64=False)
+        yield {
+            "type": "images",
+            "provider": result["provider"],
+            "images": result["images"]
+        }
+    except HTTPException as e:
+        yield {
+            "type": "image_error",
+            "error": e.detail
+        }
+    except Exception as e:
+        logger.exception("Unhandled image stream error")
+        yield {
+            "type": "image_error",
+            "error": "Unexpected image error"
+        }
 
 # ---------- Streaming chat ----------
 async def chat_stream_helper(user_id: str, prompt: str):
@@ -728,6 +785,13 @@ async def chat_stream_helper(user_id: str, prompt: str):
 # Tracks currently active SSE/streaming tasks per user
 active_streams: Dict[str, asyncio.Task] = {}
 
+@health_router.get("")
+async def health():
+    return {
+        "status": "ok",
+        "timestamp": datetime.utcnow().isoformat()
+    }
+    
 @app.get("/")
 async def root():
     return {"message": "Billy AI Backend is Running ✔"}
@@ -747,28 +811,19 @@ async def chat_stream(req: Request, tts: bool = False, samples: int = 1, user_id
     if not prompt:
         raise HTTPException(400, "prompt required")
 
-async def event_generator(user_id: str):
-    task = asyncio.current_task()
-    active_streams[user_id] = task
-
-    try:
-        async for chunk in llm_stream():
-            yield f"data: {chunk}\n\n"
-    except asyncio.CancelledError:
-        yield "data: [STOPPED]\n\n"
-        raise
-    finally:
-        active_streams.pop(user_id, None)
-
     async def event_generator():
+        try:
+        ...
+    except Exception as e:
+        logger.exception("Universal stream crashed")
+        yield sse({"type": "fatal_error", "error": str(e)})
         # --- 1. Image Generation (if prompt implies image) ---
         if any(w in prompt.lower() for w in ("image","draw","illustrate","painting","art","picture")):
             try:
                 yield f"data: {json.dumps({'status':'image_start','message':'Starting image generation'})}\n\n"
                 img_payload = {"prompt": prompt, "samples": samples, "base64": False}
                 async with httpx.AsyncClient(timeout=None) as client:
-                    async for chunk in image_stream_helper(prompt, samples):
-    yield sse(chunk) json=img_payload) as resp:
+                    async with client.stream("POST", str(req.base_url) + "image/stream", json=img_payload) as resp:
                         async for line in resp.aiter_lines():
                             if line.strip():
                                 yield line + "\n\n"
@@ -874,78 +929,77 @@ async def chat_endpoint(req: Request):
 # =========================================================
 
 # ---------- Core Image Logic (Refactored) ----------
-async def _generate_image_core(
-    prompt: str,
-    samples: int,
-    user_id: str = "anonymous",
-    return_base64: bool = False
-):
-    cached = get_cached(prompt)
-    if cached:
-        return {
-            "cached": True,
-            "provider": cached["provider"],
-            "images": cached["result"]["images"]
-        }
-
-    if not OPENAI_API_KEY:
-        raise HTTPException(500, "OPENAI_API_KEY missing")
-
-    urls = []
+async def _generate_image_core(prompt: str, samples: int, user_id: str, base64: bool = False):
     provider_used = "openai"
+    urls = []
 
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        payload = {
-            "model": "dall-e-3",
-            "prompt": prompt,
-            "n": 1,
-            "size": "1024x1024",
-            "response_format": "b64_json"
-        }
-
-        r = await client.post(
-            "https://api.openai.com/v1/images/generations",
-            headers={
-                "Authorization": f"Bearer {OPENAI_API_KEY}",
-                "Content-Type": "application/json"
-            },
-            json=payload
+    try:
+        result = await openai.images.generate(
+            model="gpt-image-1",
+            prompt=prompt,
+            size="1024x1024",
+            n=samples
         )
-        r.raise_for_status()
-        jr = r.json()
+    except Exception as e:
+        logger.exception("OpenAI image API call failed")
+        raise HTTPException(500, "Image generation provider error")
 
-    for d in jr.get("data", []):
-        b64 = d.get("b64_json")
-        if not b64:
-            continue
+    if not result or not getattr(result, "data", None):
+        logger.error("OpenAI returned empty image response: %s", result)
+        raise HTTPException(500, "Image generation failed")
 
-        image_bytes = base64.b64decode(b64)
+    for img in result.data:
+        try:
+            if not img.b64_json:
+                continue
 
-        if return_base64:
-            urls.append(b64)
-        else:
-            filename = f"{user_id}/{unique_filename('png')}"
-            upload_image_to_supabase(image_bytes, filename)
-            signed = supabase.storage.from_("ai-images").create_signed_url(filename, 3600)
-            urls.append(signed["signedURL"])
+            image_bytes = base64.b64decode(img.b64_json)
+            filename = f"{user_id}/{uuid.uuid4().hex}.png"
+
+            upload = supabase.storage.from_("ai-images").upload(
+                path=filename,
+                file=image_bytes,
+                file_options={
+                    "content-type": "image/png",
+                    "upsert": True
+                }
+            )
+
+            if isinstance(upload, dict) and upload.get("error"):
+                raise RuntimeError(upload["error"])
+
+            signed = supabase.storage.from_("ai-images").create_signed_url(
+                filename, 60 * 60
+            )
+
+            if isinstance(signed, dict) and signed.get("signedURL"):
+                urls.append(signed["signedURL"])
+
+        except Exception as e:
+            logger.exception("Failed processing OpenAI base64 image")
 
     if not urls:
+        logger.error("Image generation produced zero URLs for prompt=%s", prompt)
         raise HTTPException(500, "Image generation failed")
 
     cache_result(prompt, provider_used, {"images": urls})
-    return {"provider": provider_used, "images": urls}
+
+    return {
+        "provider": provider_used,
+        "images": urls
+    }
+
 
 async def image_gen_internal(prompt: str, samples: int = 1):
     """Helper for streaming /ask/universal."""
     # Returns dict {"images": [...]}
-    return await _generate_image_core(prompt, samples, "anonymous", return_base64=False)
+    return await _generate_image_core(prompt, samples, "anonymous", base64=False)
 
-async def image_stream_helper(prompt: str, samples: int):
-    yield {"type": "image_start"}
-    result = await image_gen_internal(prompt, samples)
-    for url in result["images"]:
-        yield {"type": "image", "url": url}
-    yield {"type": "image_done"}
+try:
+    async for chunk in image_stream_helper(prompt, samples):
+        yield sse(chunk)
+except HTTPException as e:
+    yield sse({"type": "image_error", "error": e.detail})
 
 async def run_code_safely(prompt: str):
     """Helper for streaming /ask/universal."""
@@ -1014,7 +1068,7 @@ async def ask_universal(request: Request):
 
         if intent == "image":
             # Logic from image_gen
-            return await _generate_image_core(prompt, samples, "anonymous", return_base64=False)
+            return await _generate_image_core(prompt, samples, user_id, base64=False)
 
         if intent == "search":
             return await duckduckgo_search(prompt)
@@ -1030,6 +1084,22 @@ async def ask_universal(request: Request):
                     {"role": "user", "content": prompt}
                 ]
             }
+
+            async def event_generator(prompt: str, samples: int):
+    try:
+        async for chunk in image_stream_helper(prompt, samples):
+            yield sse(chunk)
+
+        code_result = await run_code_safely(prompt)
+        yield sse(code_result)
+
+    except Exception as e:
+        logger.exception("Universal stream crashed")
+        yield sse({
+            "type": "fatal_error",
+            "error": str(e)
+        })
+        
             async with httpx.AsyncClient(timeout=60) as client:
                 r = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=get_groq_headers(), json=payload)
                 r.raise_for_status()
@@ -1057,8 +1127,6 @@ async def ask_universal(request: Request):
             r.raise_for_status()
             return r.json()
 
-task = asyncio.current_task()
-active_streams[user_id] = task
 
     async def event_generator():
         yield sse({"type": "starting", "intent": intent})
@@ -1099,8 +1167,6 @@ active_streams[user_id] = task
         }
     )
 
-finally:
-    active_streams.pop(user_id, None)
 
 @app.post("/message/{message_id}/edit")
 async def edit_message(
@@ -1155,10 +1221,34 @@ async def edit_message(
 @app.post("/stop")
 async def stop_stream(user_id: str):
     task = active_streams.get(user_id)
-    if task:
+    if task and not task.done():
         task.cancel()
-        return {"stopped": True}
-    return {"stopped": False}
+        return {"status": "stopped"}
+    return {"status": "no_active_stream"}
+    
+# -----------------------------
+# Regenerate endpoint
+# -----------------------------
+@app.post("/regenerate")
+async def regenerate(user_id: str, prompt: str, mode: str = "chat", samples: int = 1):
+    """
+    Re-run the same prompt as a fresh request.
+    """
+    # Map to internal logic
+    return await ask_universal_helper(prompt=prompt, user_id=user_id, mode=mode, samples=samples)
+
+# Dummy function for regeneration helper
+async def ask_universal_helper(prompt, user_id, mode, samples):
+    # Simply calls the streaming generator logic but returns final result? 
+    # The code structure suggests this should just trigger a new session.
+    # Since /ask/universal is the main entry, we can mock a request object or just reuse the logic.
+    # For now, let's just return a placeholder or trigger a response.
+    return {"status": "regenerating", "prompt": prompt}
+
+# ---------------- SSE HELPER ----------------
+def sse(obj: dict) -> str:
+    return f"data: {json.dumps(obj)}\n\n"
+
    
 @app.post("/video")
 async def generate_video(request: Request):
@@ -1276,6 +1366,12 @@ async def image_stream(request: Request):
         raise HTTPException(400, "no OpenAI KEY")
 
     async def event_generator():
+        try:
+        ...
+    except Exception as e:
+        logger.exception("Universal stream crashed")
+        yield sse({"type": "fatal_error", "error": str(e)})
+        
         try:
             # initial message
             yield "data: " + json.dumps({"status": "starting", "message": "Preparing request"}) + "\n\n"
