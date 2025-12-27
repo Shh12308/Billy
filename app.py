@@ -16,12 +16,12 @@ import time
 import logging
 import subprocess
 import tempfile
+from datetime import datetime
 from typing import Optional, Dict, Any, List
-from fastapi import Response
 
 import httpx
 from fastapi import FastAPI, Request, Header, UploadFile, File, HTTPException, Query, Form, Depends
-from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse, FileResponse
+from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse, FileResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
@@ -41,7 +41,7 @@ supabase = create_client(
 
 # ---------- CONFIG & LOGGING ----------
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
-logger = logging.getLogger("billy-server")
+logger = logging.getLogger("zynara-server")
 
 app = FastAPI(
     title="ZyNaraAI1.0 Multimodal Server",
@@ -119,9 +119,12 @@ JUDGE0_KEY = os.getenv("JUDGE0_API_KEY")
 if not JUDGE0_KEY:
     logger.warning("⚠️ Judge0 key not set — code execution disabled")
 
-async def run_code_judge0(code: str, language: str):
+if not JUDGE0_KEY:
+    logger.warning("Code execution disabled (missing Judge0 API key)")
+
+async def run_code_judge0(code: str, language_id: int):
     payload = {
-        "language_id": language,
+        "language_id": language_id,
         "source_code": code
     }
 
@@ -131,47 +134,20 @@ async def run_code_judge0(code: str, language: str):
         "Content-Type": "application/json"
     }
 
-    submit = await client.post(
-        "https://judge0-ce.p.rapidapi.com/submissions?wait=false",
-        json=payload,
-        headers=headers
-    )
+    async with httpx.AsyncClient(timeout=30) as client:
+        submit = await client.post(
+            "https://judge0-ce.p.rapidapi.com/submissions?wait=false",
+            json=payload,
+            headers=headers
+        )
 
-    if submit.status_code == 403:
-        return {
-            "error": "Judge0 execution blocked (403). Check RapidAPI key or plan."
-        }
+        if submit.status_code == 403:
+            return {
+                "error": "Judge0 execution blocked (403). Check RapidAPI key or plan."
+            }
 
-    submit.raise_for_status()
-    return submit.json()
-    
-try:
-    execution = await run_code_judge0(code, language)
-except Exception as e:
-    execution = {"error": str(e)}
-       
-
-        # 2. Poll result
-        for _ in range(15):
-            await asyncio.sleep(1)
-            r = await client.get(
-                f"{JUDGE0_URL}/submissions/{token}",
-                headers=headers
-            )
-            r.raise_for_status()
-            data = r.json()
-
-            if data["status"]["id"] >= 3:
-                return {
-                    "status": data["status"]["description"],
-                    "stdout": data.get("stdout"),
-                    "stderr": data.get("stderr"),
-                    "compile_output": data.get("compile_output"),
-                    "time": data.get("time"),
-                    "memory": data.get("memory")
-                }
-
-        return {"error": "Execution timed out"}
+        submit.raise_for_status()
+        return submit.json()
 
 # ---------- Dynamic, user-focused system prompt ----------
 def get_system_prompt(user_message: Optional[str] = None) -> str:
@@ -285,6 +261,9 @@ def upload_to_supabase(
 def upload_image_to_supabase(image_bytes, filename):
     return upload_to_supabase(image_bytes, filename, bucket="ai-images", content_type="image/png")
 
+if upload.get("error"):
+    raise RuntimeError(upload["error"])
+
 def local_image_url(request: Request, filename: str) -> str:
     # Kept for legacy, but primary path uses Supabase URLs
     return f"{request.base_url}static/images/{filename}"
@@ -298,14 +277,21 @@ def save_base64_image_to_file(b64_str: str, filename: str):
         f.write(img_data)
 
 def save_image_record(user_id, prompt, path, is_nsfw):
-    supabase.table("images").insert({
-        "user_id": user_id,
-        "prompt": prompt,
-        "image_path": path,
-        "is_nsfw": is_nsfw
-    }).execute()
+    try:
+        supabase.table("images").insert({
+            "user_id": user_id,
+            "prompt": prompt,
+            "image_path": path,
+            "is_nsfw": is_nsfw
+        }).execute()
+    except Exception as e:
+        logger.error(f"Failed to save image record: {e}")
+
+async def get_user_id_from_cookie(request: Request, response: Response) -> str:
+    return await get_or_create_user(request, response)
 
 async def nsfw_check(prompt: str) -> bool:
+    if not OPENAI_API_KEY: return False
     async with httpx.AsyncClient(timeout=15) as client:
         r = await client.post(
             "https://api.openai.com/v1/moderations",
@@ -318,21 +304,6 @@ async def nsfw_check(prompt: str) -> bool:
         r.raise_for_status()
         result = r.json()["results"][0]
         return result["flagged"]
-
-async def run_code_safely(prompt: str):
-    try:
-        code, language = extract_code_and_language(prompt)
-        execution = await run_code_judge0(code, language)
-        return {
-            "type": "code_result",
-            "result": execution
-        }
-    except Exception as e:
-        logger.exception("Code execution failed")
-        return {
-            "type": "code_error",
-            "error": str(e)
-        }
         
 # ---------- USER / COOKIE ----------
 async def get_or_create_user(req: Request, res: Response) -> str:
@@ -341,8 +312,11 @@ async def get_or_create_user(req: Request, res: Response) -> str:
     if user_id:
         return user_id
 
-    user_id = str(uuid.uuid4()) # Fixed: uuid4() -> uuid.uuid4()
-    supabase.table("users").insert({"id": user_id}).execute()
+    user_id = str(uuid.uuid4()) 
+    try:
+        supabase.table("users").insert({"id": user_id}).execute()
+    except Exception:
+        pass # Ignore if exists
 
     res.set_cookie(
         key="uid",
@@ -373,7 +347,7 @@ def load_memory(conversation_id: str, limit: int = 20):
 async def new_chat(req: Request, res: Response):
     user_id = await get_or_create_user(req, res)
 
-    convo_id = str(uuid.uuid4()) # Fixed
+    convo_id = str(uuid.uuid4()) 
     supabase.table("conversations").insert({
         "id": convo_id,
         "user_id": user_id,
@@ -400,7 +374,7 @@ async def send_message(
 
     # Save user message
     supabase.table("messages").insert({
-        "id": str(uuid.uuid4()), # Fixed
+        "id": str(uuid.uuid4()), 
         "conversation_id": conversation_id,
         "role": "user",
         "content": text
@@ -409,14 +383,32 @@ async def send_message(
     # LOAD MEMORY FOR AI
     memory = load_memory(conversation_id)
 
-    # ----------------------------------
-    # ⬇️ REPLACE WITH YOUR GROQ CALL ⬇️
-    # ----------------------------------
-    ai_reply = "AI RESPONSE HERE"
-    # ----------------------------------
+    # --- IMPLEMENTED GROQ CALL ---
+    messages = [
+        {"role": "system", "content": get_system_prompt()},
+        {"role": "user", "content": text}
+    ]
+    # Add memory context here if needed
+    
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            payload = {
+                "model": CHAT_MODEL,
+                "messages": messages
+            }
+            r = await client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
+                json=payload
+            )
+            r.raise_for_status()
+            ai_reply = r.json()["choices"][0]["message"]["content"]
+    except Exception as e:
+        logger.error(f"Groq Error: {e}")
+        ai_reply = "I apologize, but I encountered an error connecting to the brain."
 
     supabase.table("messages").insert({
-        "id": str(uuid.uuid4()), # Fixed
+        "id": str(uuid.uuid4()), 
         "conversation_id": conversation_id,
         "role": "assistant",
         "content": ai_reply
@@ -567,7 +559,7 @@ async def tts_stream_helper(text: str):
     }
 
     payload = {
-        "model": "tts-1", # Fixed model name
+        "model": "tts-1", 
         "voice": "alloy",
         "input": text
     }
@@ -618,15 +610,17 @@ async def generate_video_internal(prompt: str, samples: int = 1, user_id: str = 
         filename = f"{user_id}/video-{int(time.time())}-{uuid.uuid4().hex[:8]}.mp4"
 
         # Upload to Supabase
-        supabase.storage.from_("ai-videos").upload(
-            path=filename,
-            file=placeholder_content,
-            file_options={"content-type": "video/mp4"}
-        )
-
-        # Get signed URL
-        signed = supabase.storage.from_("ai-videos").create_signed_url(filename, 60*60)
-        urls.append(signed["signedURL"])
+        try:
+            supabase.storage.from_("ai-videos").upload(
+                path=filename,
+                file=placeholder_content,
+                file_options={"content-type": "video/mp4"}
+            )
+            # Get signed URL
+            signed = supabase.storage.from_("ai-videos").create_signed_url(filename, 60*60)
+            urls.append(signed["signedURL"])
+        except Exception as e:
+            logger.error(f"Video upload failed: {e}")
 
     return {"provider": "stub", "videos": urls}
 
@@ -672,25 +666,6 @@ async def universal_chat_stream(user_id: str, prompt: str):
             {"role": "user", "content": prompt}
         ]
     }
-
-    async def check_supabase():
-    try:
-        # Storage bucket check
-        buckets = supabase.storage.list_buckets()
-        bucket_names = [b["name"] for b in buckets]
-
-        if "ai-images" not in bucket_names:
-            return "bucket_missing"
-
-        # DB ping (cheap)
-        supabase.table("health_check").select("*").limit(1).execute()
-
-        return "ok"
-    except Exception as e:
-        logger.exception("Supabase health check failed")
-        return f"error: {str(e)}"
-
-    
 
     async with httpx.AsyncClient(timeout=None) as client:
         async with client.stream("POST", url, headers=headers, json=payload) as resp:
@@ -784,7 +759,7 @@ async def chat_stream_helper(user_id: str, prompt: str):
 # Tracks currently active SSE/streaming tasks per user
 active_streams: Dict[str, asyncio.Task] = {}
 
-@health_router.get("")
+@app.get("/health")
 async def health():
     return {
         "status": "ok",
@@ -796,103 +771,149 @@ async def root():
     return {"message": "Billy AI Backend is Running ✔"}
     
 @app.post("/chat/stream")
-async def chat_stream(req: Request, tts: bool = False, samples: int = 1, user_id: str = "anonymous"):
+async def chat_stream(req: Request, res: Response, tts: bool = False, samples: int = 1):
     """
     Unified streaming endpoint:
-    - Streams chat responses from Groq
-    - Streams image generation if prompt implies an image
-    - Sends TTS audio (as base64) if tts=True at the end
-    SSE events:
-      chat_progress, image_progress, tts_done, done
+    - Image streaming (if prompt implies image)
+    - Chat streaming (Groq)
+    - Optional TTS
+    Cookie-based identity + safe cancellation
     """
     body = await req.json()
     prompt = body.get("prompt", "")
     if not prompt:
         raise HTTPException(400, "prompt required")
 
+    # ✅ COOKIE USER
+    user_id = await get_or_create_user(req, res)
+
     async def event_generator():
-        try:
-        ...
-    except Exception as e:
-        logger.exception("Universal stream crashed")
-        yield sse({"type": "fatal_error", "error": str(e)})
-        # --- 1. Image Generation (if prompt implies image) ---
-        if any(w in prompt.lower() for w in ("image","draw","illustrate","painting","art","picture")):
-            try:
-                yield f"data: {json.dumps({'status':'image_start','message':'Starting image generation'})}\n\n"
-                img_payload = {"prompt": prompt, "samples": samples, "base64": False}
-                async with httpx.AsyncClient(timeout=None) as client:
-                    async with client.stream("POST", str(req.base_url) + "image/stream", json=img_payload) as resp:
-                        async for line in resp.aiter_lines():
-                            if line.strip():
-                                yield line + "\n\n"
-                yield f"data: {json.dumps({'status':'image_done','message':'Image generation complete'})}\n\n"
-            except Exception:
-                logger.exception("Image streaming failed")
-                yield f"data: {json.dumps({'status':'image_error','message':'Image generation failed'})}\n\n"
+        # ✅ REGISTER STREAM TASK (MUST BE HERE)
+        task = asyncio.current_task()
+        active_streams[user_id] = task
 
-        # --- 2. Chat Streaming ---
         try:
-            payload = {
-                "model": CHAT_MODEL,
-                "stream": True,
-                "messages": [
-                    {"role": "system", "content": build_contextual_prompt(user_id, prompt)},
-                    {"role": "user", "content": prompt}
-                ]
-            }
-            async with httpx.AsyncClient(timeout=None) as client:
-                async with client.stream(
-                    "POST",
-                    "https://api.groq.com/openai/v1/chat/completions",
-                    headers=get_groq_headers(),
-                    json=payload
-                ) as resp:
-                    async for line in resp.aiter_lines():
-                        if line.startswith("data: "):
-                            data = line[len("data: "):]
-                            if data.strip() == "[DONE]":
-                                break
-                            yield f"data: {json.dumps({'status':'chat_progress','message':data})}\n\n"
-        except Exception:
-            logger.exception("Chat streaming failed")
-            yield f"data: {json.dumps({'status':'chat_error','message':'Chat stream failed'})}\n\n"
+            # ---------- 1️⃣ IMAGE STREAM ----------
+            if any(w in prompt.lower() for w in ("image", "draw", "illustrate", "painting", "art", "picture")):
+                try:
+                    yield sse({"status": "image_start", "message": "Starting image generation"})
 
-        # --- 3. TTS (optional) ---
-        if tts:
+                    img_payload = {
+                        "prompt": prompt,
+                        "samples": samples,
+                        "base64": False
+                    }
+
+                    async with httpx.AsyncClient(timeout=None) as client:
+                        async with client.stream(
+                            "POST",
+                            "http://localhost:8000/image/stream",
+                            json=img_payload
+                        ) as resp:
+                            async for line in resp.aiter_lines():
+                                if line.strip():
+                                    yield line + "\n\n"
+
+                    yield sse({"status": "image_done", "message": "Image generation complete"})
+
+                except Exception:
+                    logger.exception("Image streaming failed")
+                    yield sse({"status": "image_error", "message": "Image generation failed"})
+
+            # ---------- 2️⃣ CHAT STREAM ----------
             try:
-                tts_payload = {
-                    "model": "tts-1", # Fixed model name
-                    "voice": "alloy",
-                    "input": prompt,
-                    "format": "mp3",
-                    "stream": True
+                payload = {
+                    "model": CHAT_MODEL,
+                    "stream": True,
+                    "messages": [
+                        {"role": "system", "content": build_contextual_prompt(user_id, prompt)},
+                        {"role": "user", "content": prompt}
+                    ]
                 }
-                headers = {
-                    "Authorization": f"Bearer {OPENAI_API_KEY}",
-                    "Content-Type": "application/json"
-                }
-                audio_buffer = bytearray()
+
                 async with httpx.AsyncClient(timeout=None) as client:
                     async with client.stream(
                         "POST",
-                        "https://api.openai.com/v1/audio/speech",
-                        headers=headers,
-                        json=tts_payload
+                        "https://api.groq.com/openai/v1/chat/completions",
+                        headers=get_groq_headers(),
+                        json=payload
                     ) as resp:
-                        async for chunk in resp.aiter_bytes():
-                            if chunk:
-                                audio_buffer.extend(chunk)
-                # Send final base64-encoded audio
-                b64_audio = base64.b64encode(audio_buffer).decode("utf-8")
-                yield f"data: {json.dumps({'status':'tts_done','audio':b64_audio})}\n\n"
+                        async for line in resp.aiter_lines():
+                            if not line.startswith("data:"):
+                                continue
+
+                            data = line[len("data:"):].strip()
+                            if data == "[DONE]":
+                                break
+
+                            yield sse({
+                                "status": "chat_progress",
+                                "message": data
+                            })
+
             except Exception:
-                logger.exception("TTS streaming failed")
-                yield f"data: {json.dumps({'status':'tts_error','message':'TTS failed'})}\n\n"
+                logger.exception("Chat streaming failed")
+                yield sse({"status": "chat_error", "message": "Chat stream failed"})
 
-        yield f"data: {json.dumps({'status':'done'})}\n\n"
+            # ---------- 3️⃣ TTS ----------
+            if tts:
+                try:
+                    tts_payload = {
+                        "model": "tts-1",
+                        "voice": "alloy",
+                        "input": prompt,
+                        "format": "mp3"
+                    }
 
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
+                    headers = {
+                        "Authorization": f"Bearer {OPENAI_API_KEY}",
+                        "Content-Type": "application/json"
+                    }
+
+                    audio_buffer = bytearray()
+
+                    async with httpx.AsyncClient(timeout=None) as client:
+                        async with client.stream(
+                            "POST",
+                            "https://api.openai.com/v1/audio/speech",
+                            headers=headers,
+                            json=tts_payload
+                        ) as resp:
+                            async for chunk in resp.aiter_bytes():
+                                if chunk:
+                                    audio_buffer.extend(chunk)
+
+                    b64_audio = base64.b64encode(audio_buffer).decode("utf-8")
+                    yield sse({"status": "tts_done", "audio": b64_audio})
+
+                except Exception:
+                    logger.exception("TTS failed")
+                    yield sse({"status": "tts_error", "message": "TTS failed"})
+
+            yield sse({"status": "done"})
+
+        except asyncio.CancelledError:
+            logger.info(f"Chat stream cancelled for user {user_id}")
+            yield sse({"status": "stopped"})
+            raise
+
+        except Exception as e:
+            logger.exception("Universal stream crashed")
+            yield sse({"type": "fatal_error", "error": str(e)})
+
+        finally:
+            # ✅ CLEANUP
+            active_streams.pop(user_id, None)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
     
 # ---------- Chat endpoint ----------
 @app.post("/chat")
@@ -911,12 +932,10 @@ async def chat_endpoint(req: Request):
         try:
             r = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
             if r.status_code != 200:
-                # Log provider response for debugging (trim to avoid huge logs)
                 logger.warning("Groq /chat returned status=%s text=%s", r.status_code, (r.text[:500] + '...') if r.text else "")
                 r.raise_for_status()
             return r.json()
         except httpx.HTTPStatusError as exc:
-            # Provide more helpful error to the caller while logging details
             logger.exception("Groq HTTP error on /chat: %s", getattr(exc.response, "text", "no-response-text"))
             raise HTTPException(status_code=exc.response.status_code if exc.response is not None else 500, detail=f"Groq error: {exc.response.text[:400] if exc.response is not None else str(exc)}")
         except Exception:
@@ -932,27 +951,39 @@ async def _generate_image_core(prompt: str, samples: int, user_id: str, base64: 
     provider_used = "openai"
     urls = []
 
+    # Using httpx instead of openai library for consistency
     try:
-        result = await openai.images.generate(
-            model="gpt-image-1",
-            prompt=prompt,
-            size="1024x1024",
-            n=samples
-        )
+        payload = {
+            "model": "dall-e-3",
+            "prompt": prompt,
+            "n": 1,
+            "size": "1024x1024",
+            "response_format": "b64_json"
+        }
+        headers = {
+            "Authorization": f"Bearer {OPENAI_API_KEY}",
+            "Content-Type": "application/json"
+        }
+
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            r = await client.post("https://api.openai.com/v1/images/generations", json=payload, headers=headers)
+            r.raise_for_status()
+            result = r.json()
     except Exception as e:
         logger.exception("OpenAI image API call failed")
         raise HTTPException(500, "Image generation provider error")
 
-    if not result or not getattr(result, "data", None):
+    if not result or not result.get("data"):
         logger.error("OpenAI returned empty image response: %s", result)
         raise HTTPException(500, "Image generation failed")
 
-    for img in result.data:
+    for img in result.get("data", []):
         try:
-            if not img.b64_json:
+            b64 = img.get("b64_json")
+            if not b64:
                 continue
 
-            image_bytes = base64.b64decode(img.b64_json)
+            image_bytes = base64.b64decode(b64)
             filename = f"{user_id}/{uuid.uuid4().hex}.png"
 
             upload = supabase.storage.from_("ai-images").upload(
@@ -991,14 +1022,14 @@ async def _generate_image_core(prompt: str, samples: int, user_id: str, base64: 
 
 async def image_gen_internal(prompt: str, samples: int = 1):
     """Helper for streaming /ask/universal."""
-    # Returns dict {"images": [...]}
     return await _generate_image_core(prompt, samples, "anonymous", base64=False)
 
-try:
-    async for chunk in image_stream_helper(prompt, samples):
-        yield sse(chunk)
-except HTTPException as e:
-    yield sse({"type": "image_error", "error": e.detail})
+async def stream_images(prompt: str, samples: int):
+    try:
+        async for chunk in image_stream_helper(prompt, samples):
+            yield sse(chunk)
+    except HTTPException as e:
+        yield sse({"type": "image_error", "error": e.detail})
 
 async def run_code_safely(prompt: str):
     """Helper for streaming /ask/universal."""
@@ -1021,7 +1052,8 @@ async def run_code_safely(prompt: str):
         code = r.json()["choices"][0]["message"]["content"]
 
     # 2. Run code
-    execution = await run_code_judge0(code, language)
+    lang_id = JUDGE0_LANGUAGES.get(language, 71)
+    execution = await run_code_judge0(code, lang_id)
     
     return {"code": code, "execution": execution}
 
@@ -1048,14 +1080,10 @@ async def ask_universal(request: Request):
         raise HTTPException(400, "prompt required")
 
     # =========================
-    # NON-STREAM MODE (Moved up to be reachable)
+    # NON-STREAM MODE
     # =========================
     if not stream:
-        # We avoid request._json hacking by calling logic directly or re-invoking endpoints via internal calls if possible.
-        # For simplicity and stability, we implement the logic inline here.
-        
         if intent == "chat":
-            # Inline logic from chat_endpoint
             payload = {"model":CHAT_MODEL,"messages":[{"role":"system","content":build_contextual_prompt(user_id, prompt)},{"role":"user","content":prompt}]}
             async with httpx.AsyncClient(timeout=30.0) as client:
                 try:
@@ -1066,14 +1094,12 @@ async def ask_universal(request: Request):
                     raise HTTPException(500, str(e))
 
         if intent == "image":
-            # Logic from image_gen
             return await _generate_image_core(prompt, samples, user_id, base64=False)
 
         if intent == "search":
             return await duckduckgo_search(prompt)
 
         if intent == "code":
-            # Logic from code_gen
             language = body.get("language", "python").lower()
             code_prompt = f"Write a complete {language} program:\n{prompt}"
             payload = {
@@ -1084,21 +1110,6 @@ async def ask_universal(request: Request):
                 ]
             }
 
-            async def event_generator(prompt: str, samples: int):
-    try:
-        async for chunk in image_stream_helper(prompt, samples):
-            yield sse(chunk)
-
-        code_result = await run_code_safely(prompt)
-        yield sse(code_result)
-
-    except Exception as e:
-        logger.exception("Universal stream crashed")
-        yield sse({
-            "type": "fatal_error",
-            "error": str(e)
-        })
-        
             async with httpx.AsyncClient(timeout=60) as client:
                 r = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=get_groq_headers(), json=payload)
                 r.raise_for_status()
@@ -1106,11 +1117,11 @@ async def ask_universal(request: Request):
             
             response = {"language": language, "generated_code": code}
             if body.get("run", False):
-                response["execution"] = await run_code_judge0(code, language)
+                lang_id = JUDGE0_LANGUAGES.get(language, 71)
+                response["execution"] = await run_code_judge0(code, lang_id)
             return response
 
         if intent == "tts":
-            # Logic from text_to_speech
             if not OPENAI_API_KEY: raise HTTPException(500, "Missing OPENAI_API_KEY")
             tts_payload = {"model": "tts-1", "voice": "alloy", "input": prompt, "format": "mp3"}
             headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
@@ -1218,35 +1229,159 @@ async def edit_message(
 # Stop endpoint
 # -----------------------------
 @app.post("/stop")
-async def stop_stream(user_id: str):
+async def stop_stream(req: Request, res: Response):
+    # ✅ resolve user from cookie
+    user_id = await get_or_create_user(req, res)
+
     task = active_streams.get(user_id)
     if task and not task.done():
         task.cancel()
         return {"status": "stopped"}
+
     return {"status": "no_active_stream"}
     
 # -----------------------------
 # Regenerate endpoint
 # -----------------------------
 @app.post("/regenerate")
-async def regenerate(user_id: str, prompt: str, mode: str = "chat", samples: int = 1):
+async def regenerate(req: Request, res: Response, tts: bool = False, samples: int = 1):
     """
-    Re-run the same prompt as a fresh request.
+    Cancel current stream (if any) and re-run the prompt as a fresh stream.
+    Cookie-based, streaming-safe.
     """
-    # Map to internal logic
-    return await ask_universal_helper(prompt=prompt, user_id=user_id, mode=mode, samples=samples)
+    body = await req.json()
+    prompt = body.get("prompt", "")
 
-# Dummy function for regeneration helper
-async def ask_universal_helper(prompt, user_id, mode, samples):
-    # Simply calls the streaming generator logic but returns final result? 
-    # The code structure suggests this should just trigger a new session.
-    # Since /ask/universal is the main entry, we can mock a request object or just reuse the logic.
-    # For now, let's just return a placeholder or trigger a response.
-    return {"status": "regenerating", "prompt": prompt}
+    if not prompt:
+        raise HTTPException(400, "prompt required")
 
-# ---------------- SSE HELPER ----------------
-def sse(obj: dict) -> str:
-    return f"data: {json.dumps(obj)}\n\n"
+    # ✅ COOKIE USER
+    user_id = await get_or_create_user(req, res)
+
+    # ✅ CANCEL EXISTING STREAM (IF ANY)
+    old_task = active_streams.get(user_id)
+    if old_task and not old_task.done():
+        old_task.cancel()
+
+    async def event_generator():
+        # ✅ REGISTER NEW STREAM
+        task = asyncio.current_task()
+        active_streams[user_id] = task
+
+        try:
+            # --- IMAGE (OPTIONAL) ---
+            if any(w in prompt.lower() for w in ("image", "draw", "illustrate", "painting", "art", "picture")):
+                try:
+                    yield sse({"status": "image_start", "message": "Regenerating image"})
+
+                    img_payload = {
+                        "prompt": prompt,
+                        "samples": samples,
+                        "base64": False
+                    }
+
+                    async with httpx.AsyncClient(timeout=None) as client:
+                        async with client.stream(
+                            "POST",
+                            "http://localhost:8000/image/stream",
+                            json=img_payload
+                        ) as resp:
+                            async for line in resp.aiter_lines():
+                                if line.strip():
+                                    yield line + "\n\n"
+
+                    yield sse({"status": "image_done"})
+
+                except Exception:
+                    logger.exception("Image regenerate failed")
+                    yield sse({"status": "image_error"})
+
+            # --- CHAT ---
+            payload = {
+                "model": CHAT_MODEL,
+                "stream": True,
+                "messages": [
+                    {"role": "system", "content": build_contextual_prompt(user_id, prompt)},
+                    {"role": "user", "content": prompt}
+                ]
+            }
+
+            async with httpx.AsyncClient(timeout=None) as client:
+                async with client.stream(
+                    "POST",
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers=get_groq_headers(),
+                    json=payload
+                ) as resp:
+                    async for line in resp.aiter_lines():
+                        if not line.startswith("data:"):
+                            continue
+
+                        data = line[len("data:"):].strip()
+                        if data == "[DONE]":
+                            break
+
+                        yield sse({
+                            "status": "chat_progress",
+                            "message": data
+                        })
+
+            # --- TTS (OPTIONAL) ---
+            if tts:
+                try:
+                    tts_payload = {
+                        "model": "tts-1",
+                        "voice": "alloy",
+                        "input": prompt
+                    }
+
+                    headers = {
+                        "Authorization": f"Bearer {OPENAI_API_KEY}",
+                        "Content-Type": "application/json"
+                    }
+
+                    audio_buffer = bytearray()
+
+                    async with httpx.AsyncClient(timeout=None) as client:
+                        async with client.stream(
+                            "POST",
+                            "https://api.openai.com/v1/audio/speech",
+                            headers=headers,
+                            json=tts_payload
+                        ) as resp:
+                            async for chunk in resp.aiter_bytes():
+                                if chunk:
+                                    audio_buffer.extend(chunk)
+
+                    yield sse({
+                        "status": "tts_done",
+                        "audio": base64.b64encode(audio_buffer).decode()
+                    })
+
+                except Exception:
+                    logger.exception("TTS regenerate failed")
+                    yield sse({"status": "tts_error"})
+
+            yield sse({"status": "done"})
+
+        except asyncio.CancelledError:
+            logger.info(f"Regenerate cancelled for user {user_id}")
+            yield sse({"status": "stopped"})
+            raise
+
+        finally:
+            # ✅ CLEANUP
+            active_streams.pop(user_id, None)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
 
    
 @app.post("/video")
@@ -1345,18 +1480,19 @@ async def test_stream(request: Request):
     )
     
 @app.post("/image/stream")
-async def image_stream(request: Request):
+async def image_stream(req: Request, res: Response):
     """
     Stream progress to the client while generating images.
-    Sends SSE messages with JSON payloads and final 'done' event.
-    Uses Supabase for permanent storage (Fixed for Railway Ephemeral Storage).
+    Uses cookies for user identity and supports safe cancellation.
     """
-    body = await request.json()
+    body = await req.json()
     prompt = body.get("prompt", "")
+
     try:
         samples = max(1, int(body.get("samples", 1)))
     except Exception:
         samples = 1
+
     return_base64 = bool(body.get("base64", False))
 
     if not prompt:
@@ -1364,31 +1500,32 @@ async def image_stream(request: Request):
     if not OPENAI_API_KEY:
         raise HTTPException(400, "no OpenAI KEY")
 
+    # ✅ COOKIE-BASED USER ID
+    user_id = await get_or_create_user(req, res)
+
     async def event_generator():
+        # ✅ REGISTER STREAM TASK (MUST BE HERE)
+        task = asyncio.current_task()
+        active_streams[user_id] = task
+
         try:
-        ...
-    except Exception as e:
-        logger.exception("Universal stream crashed")
-        yield sse({"type": "fatal_error", "error": str(e)})
-        
-        try:
-            # initial message
-            yield "data: " + json.dumps({"status": "starting", "message": "Preparing request"}) + "\n\n"
-            await asyncio.sleep(0.05)
+            # --- initial message ---
+            yield sse({"status": "starting", "message": "Preparing request"})
+            await asyncio.sleep(0)
 
             payload = {
-                "model": "dall-e-3", # Fixed model name
+                "model": "dall-e-3",
                 "prompt": prompt,
-                "n": 1, # Dalle 3 supports only 1
+                "n": 1,  # DALL·E 3 supports only 1
                 "size": "1024x1024",
                 "response_format": "b64_json"
             }
 
-            yield "data: " + json.dumps({"status": "request", "message": "Sending to OpenAI"}) + "\n\n"
+            yield sse({"status": "request", "message": "Sending to OpenAI"})
 
             async with httpx.AsyncClient(timeout=120.0) as client:
                 r = await client.post(
-                    "https://api.openai.com/v1/images/generations", # Corrected API URL
+                    "https://api.openai.com/v1/images/generations",
                     headers={
                         "Authorization": f"Bearer {OPENAI_API_KEY}",
                         "Content-Type": "application/json",
@@ -1398,8 +1535,11 @@ async def image_stream(request: Request):
 
             if r.status_code != 200:
                 text_snip = (await r.aread()).decode(errors="ignore")[:1000]
-                yield "data: " + json.dumps({"status": "error", "message": "OpenAI error", "detail": text_snip}) + "\n\n"
-                yield "data: [DONE]\n\n"
+                yield sse({
+                    "status": "error",
+                    "message": "OpenAI error",
+                    "detail": text_snip
+                })
                 return
 
             jr = r.json()
@@ -1407,36 +1547,60 @@ async def image_stream(request: Request):
 
             data_list = jr.get("data", [])
             if not data_list:
-                yield "data: " + json.dumps({"status": "warning", "message": "No data returned from provider"}) + "\n\n"
+                yield sse({"status": "warning", "message": "No data returned from provider"})
 
             for i, d in enumerate(data_list, start=1):
-                yield "data: " + json.dumps({"status": "progress", "message": f"Processing {i}/{samples}"}) + "\n\n"
-                await asyncio.sleep(0.01)  # yield control
-                b64 = d.get("b64_json")
-                
-                if b64:
-                    # --- FORCE SUPABASE UPLOAD (REMOVED LOCAL SAVING) ---
-                    try:
-                        image_bytes = base64.b64decode(b64)
-                        filename = f"streaming/{unique_filename('png')}" # Use a subfolder for streaming
-                        upload_image_to_supabase(image_bytes, filename)
-                        
-                        # Get signed URL
-                        signed = supabase.storage.from_("ai-images").create_signed_url(filename, 60*60)
-                        urls.append(signed["signedURL"])
-                        
-                    except Exception as e:
-                        logger.exception("Supabase upload failed in stream")
-                        yield "data: " + json.dumps({"status": "error", "message": f"Storage failed: {str(e)}"}) + "\n\n"
-                
-            yield "data: " + json.dumps({"status": "done", "images": urls}) + "\n\n"
-            yield "data: [DONE]\n\n"
-        except Exception as e:
-            logger.exception("image_stream exception: %s", str(e))
-            yield "data: " + json.dumps({"status": "exception", "message": str(e)}) + "\n\n"
-            yield "data: [DONE]\n\n"
+                yield sse({
+                    "status": "progress",
+                    "message": f"Processing {i}/{samples}"
+                })
+                await asyncio.sleep(0)
 
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
+                b64 = d.get("b64_json")
+                if not b64:
+                    continue
+
+                try:
+                    image_bytes = base64.b64decode(b64)
+                    filename = f"streaming/{unique_filename('png')}"
+                    upload_image_to_supabase(image_bytes, filename)
+
+                    signed = supabase.storage.from_("ai-images").create_signed_url(
+                        filename, 60 * 60
+                    )
+                    urls.append(signed["signedURL"])
+
+                except Exception as e:
+                    logger.exception("Supabase upload failed in stream")
+                    yield sse({
+                        "status": "error",
+                        "message": f"Storage failed: {str(e)}"
+                    })
+
+            yield sse({"status": "done", "images": urls})
+
+        except asyncio.CancelledError:
+            logger.info(f"Image stream cancelled for user {user_id}")
+            yield sse({"status": "stopped"})
+            raise
+
+        except Exception as e:
+            logger.exception("image_stream exception")
+            yield sse({"status": "exception", "message": str(e)})
+
+        finally:
+            # ✅ CLEANUP
+            active_streams.pop(user_id, None)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
     
 # ---------- Img2Img (DALL·E edits) ----------
 @app.post("/img2img")
@@ -1501,7 +1665,7 @@ async def text_to_speech(request: Request):
         raise HTTPException(400, "Missing 'text' in request")
 
     payload = {
-        "model": "tts-1", # Fixed model name
+        "model": "tts-1", 
         "voice": "alloy",  # default voice
         "input": text.strip(),
         "format": "mp3"
@@ -1538,8 +1702,8 @@ async def text_to_speech(request: Request):
         )
         
 @app.post("/tts/stream")
-async def tts_stream(request: Request):
-    data = await request.json()
+async def tts_stream(req: Request, res: Response):
+    data = await req.json()
     text = data.get("text", "")
 
     if not text:
@@ -1555,26 +1719,52 @@ async def tts_stream(request: Request):
     }
 
     payload = {
-        "model": "tts-1", # Fixed model name
+        "model": "tts-1",
         "voice": "alloy",
-        "input": text,
-        "stream": True
+        "input": text
     }
 
+    # ✅ COOKIE USER
+    user_id = await get_or_create_user(req, res)
+
     async def audio_streamer():
-        async with httpx.AsyncClient(timeout=None) as client:
-            async with client.stream(
-                "POST",
-                "https://api.openai.com/v1/audio/speech",
-                json=payload,
-                headers=headers
-            ) as resp:
+        # ✅ REGISTER STREAM TASK
+        task = asyncio.current_task()
+        active_streams[user_id] = task
 
-                async for chunk in resp.aiter_bytes():
-                    if chunk:
-                        yield chunk
+        try:
+            async with httpx.AsyncClient(timeout=None) as client:
+                async with client.stream(
+                    "POST",
+                    "https://api.openai.com/v1/audio/speech",
+                    json=payload,
+                    headers=headers
+                ) as resp:
+                    async for chunk in resp.aiter_bytes():
+                        if chunk:
+                            yield chunk
 
-    return StreamingResponse(audio_streamer(), media_type="audio/mpeg")
+        except asyncio.CancelledError:
+            logger.info(f"TTS stream cancelled for user {user_id}")
+            raise
+
+        except Exception as e:
+            logger.exception("TTS streaming failed")
+            # Audio streams cannot emit JSON errors safely mid-stream
+
+        finally:
+            # ✅ CLEANUP
+            active_streams.pop(user_id, None)
+
+    return StreamingResponse(
+        audio_streamer(),
+        media_type="audio/mpeg",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
 
 
 # ---------- Vision analyze ----------
@@ -1685,7 +1875,8 @@ async def code_gen(req: Request):
 
     # ✅ Run via Judge0
     if run_flag:
-        execution = await run_code_judge0(code, language)
+        lang_id = JUDGE0_LANGUAGES.get(language, 71)
+        execution = await run_code_judge0(code, lang_id)
         response["execution"] = execution
 
     return response
