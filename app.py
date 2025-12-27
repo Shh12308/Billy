@@ -346,6 +346,11 @@ def load_memory(conversation_id: str, limit: int = 20):
 
     return res.data or []
 
+
+def sse(obj: dict) -> str:
+    return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
+    
+
 # ----------------------------------
 # NEW CHAT
 # ----------------------------------
