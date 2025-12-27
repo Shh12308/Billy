@@ -258,11 +258,17 @@ def upload_to_supabase(
     return filename
 
 # Helper wrappers for missing functions
-def upload_image_to_supabase(image_bytes, filename):
-    return upload_to_supabase(image_bytes, filename, bucket="ai-images", content_type="image/png")
+def upload_image_to_supabase(image_bytes: bytes, filename: str):
+    upload = supabase.storage.from_("ai-images").upload(
+        filename,
+        image_bytes,
+        {"content-type": "image/png"}
+    )
 
-if upload.get("error"):
-    raise RuntimeError(upload["error"])
+    if upload.get("error"):
+        raise Exception(upload["error"]["message"])
+
+    return upload
 
 def local_image_url(request: Request, filename: str) -> str:
     # Kept for legacy, but primary path uses Supabase URLs
