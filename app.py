@@ -56,6 +56,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ---------------- SSE HELPER ----------------
+def sse(obj: dict) -> str:
+    """
+    Formats a dict as a Server-Sent Event (SSE) message.
+    """
+    return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
+
 # ---------- ENV KEYS ----------
 # strip GROQ API key in case it contains whitespace/newlines
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
@@ -86,12 +93,6 @@ CHAT_MODEL = os.getenv("CHAT_MODEL", "llama-3.1-8b-instant")
 # TTS/STT are handled via ElevenLabs now
 TTS_MODEL = None
 STT_MODEL = None
-
-# Image hosting dirs (Kept for legacy/local testing, but logic forces Supabase)
-STATIC_DIR = os.getenv("STATIC_DIR", "static")
-IMAGES_DIR = os.path.join(STATIC_DIR, "images")
-os.makedirs(IMAGES_DIR, exist_ok=True)
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 # ---------- Creator info ----------
 CREATOR_INFO = {
@@ -270,18 +271,6 @@ def upload_image_to_supabase(image_bytes: bytes, filename: str):
 
     return upload
 
-def local_image_url(request: Request, filename: str) -> str:
-    # Kept for legacy, but primary path uses Supabase URLs
-    return f"{request.base_url}static/images/{filename}"
-
-def save_base64_image_to_file(b64_str: str, filename: str):
-    if "," in b64_str:
-        b64_str = b64_str.split(",")[1]
-    img_data = base64.b64decode(b64_str)
-    path = os.path.join(IMAGES_DIR, filename)
-    with open(path, "wb") as f:
-        f.write(img_data)
-
 def save_image_record(user_id, prompt, path, is_nsfw):
     try:
         supabase.table("images").insert({
@@ -345,11 +334,6 @@ def load_memory(conversation_id: str, limit: int = 20):
         .execute()
 
     return res.data or []
-
-
-def sse(obj: dict) -> str:
-    return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
-    
 
 # ----------------------------------
 # NEW CHAT
@@ -1640,8 +1624,8 @@ async def img2img(request: Request, file: UploadFile = File(...), prompt: str = 
                     # Note: Edit API still returns B64 or URL. If B64, we MUST upload to Supabase.
                     # If we use local_image_url for edits, we will hit the same 404 error on Railway.
                     # Let's upload to Supabase here too for consistency.
-                    save_base64_image_to_file(b64, fname) 
-                    image_bytes = base64.b64decode(b64)
+                    
+                    
                     supabase_fname = f"{user_id}/edits/{fname}"
                     upload_image_to_supabase(image_bytes, supabase_fname)
                     signed = supabase.storage.from_("ai-images").create_signed_url(supabase_fname, 60*60)
