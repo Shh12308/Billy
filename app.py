@@ -18,6 +18,9 @@ import subprocess
 import tempfile
 from datetime import datetime
 from typing import Optional, Dict, Any, List
+from ultralytics.nn.tasks import DetectionModel
+
+torch.serialization.add_safe_globals([DetectionModel])
 from ultralytics import YOLO
 import cv2
 
