@@ -1,5 +1,5 @@
-# Use slim Python 3.11
-FROM python:3.11-slim
+# Use slim Python 3.10
+FROM python:3.10-slim
 
 # Environment variables
 ENV PYTHONDONTWRITEBYTECODE=1
