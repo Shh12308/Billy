@@ -18,6 +18,15 @@ import subprocess
 import tempfile
 from datetime import datetime
 from typing import Optional, Dict, Any, List
+from ultralytics import YOLO
+import cv2
+
+YOLO_OBJECTS = YOLO("yolov8n.pt")
+YOLO_FACES = YOLO("yolov8n-face.pt")  # auto-downloads
+
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+YOLO_OBJECTS.to(DEVICE)
+YOLO_FACES.to(DEVICE)
 
 import httpx
 from fastapi import FastAPI, Request, Header, UploadFile, File, HTTPException, Query, Form, Depends
@@ -88,7 +97,7 @@ CACHE_DB_PATH = os.getenv("CACHE_DB_PATH", "./cache.db")
 # -------------------
 # Models
 # -------------------
-CHAT_MODEL = os.getenv("CHAT_MODEL", "llama-3.1-8b-instant")
+CHAT_MODEL = os.getenv("CHAT_MODEL", "llama-3.1-70b-versatile")
 
 # TTS/STT are handled via ElevenLabs now
 TTS_MODEL = None
@@ -99,7 +108,7 @@ CREATOR_INFO = {
     "name": "GoldYLocks",
     "age": 17,
     "country": "England",
-    "projects": ["MintZa", "LuxStream", "SwapX", "CryptoBean"],
+    "projects": ["MZ", "LS", "SX", "CB"],
     "socials": { "discord":"@nexisphere123_89431", "twitter":"@NexiSphere"},
     "bio": "Created by GoldBoy (17, England). Projects: MZ, LS, SX, CB. Socials: Discord @nexisphere123_89431 Twitter @NexiSphere."
 }
@@ -130,7 +139,7 @@ async def run_code_judge0(code: str, language_id: int):
     }
 
     headers = {
-        "X-RapidAPI-Key": JUDGE0_KEY,
+        "X-RapidAPI-Key": "JUDGE0_KEY",
         "X-RapidAPI-Host": "judge0-ce.p.rapidapi.com",
         "Content-Type": "application/json"
     }
@@ -257,6 +266,8 @@ def upload_to_supabase(
         file_options={"content-type": content_type}
     )
     return filename
+
+image_bytes = base64.b64decode(b64)
 
 # Helper wrappers for missing functions
 def upload_image_to_supabase(image_bytes: bytes, filename: str):
@@ -942,7 +953,7 @@ async def chat_endpoint(req: Request):
 # =========================================================
 
 # ---------- Core Image Logic (Refactored) ----------
-async def _generate_image_core(prompt: str, samples: int, user_id: str, base64: bool = False):
+async def _generate_image_core(prompt: str, samples: int, user_id: str, return_base64: bool = False):
     provider_used = "openai"
     urls = []
 
@@ -1764,70 +1775,145 @@ async def tts_stream(req: Request, res: Response):
 
 # ---------- Vision analyze ----------
 @app.post("/vision/analyze")
-async def vision_analyze(file: UploadFile = File(...)):
+async def vision_analyze(
+    req: Request,
+    res: Response,
+    file: UploadFile = File(...)
+):
+    user_id = await get_or_create_user(req, res)
     content = await file.read()
+
     if not content:
         raise HTTPException(400, "empty file")
-    
-    # Load image
-    try:
-        img = Image.open(BytesIO(content)).convert("RGB")
-    except Exception:
-        raise HTTPException(400, "invalid image")
 
-    # ----- 1. Dominant colors using k-means -----
+    # Load image
+    img = Image.open(BytesIO(content)).convert("RGB")
+    np_img = np.array(img)
+    annotated = np_img.copy()
+
+    # =========================
+    # 1️⃣ YOLO OBJECT DETECTION
+    # =========================
+    obj_results = YOLO_OBJECTS(np_img, conf=0.25)
+    detections = []
+
+    for r in obj_results:
+        for box in r.boxes:
+            label = YOLO_OBJECTS.names[int(box.cls)]
+            conf = float(box.conf)
+            x1, y1, x2, y2 = map(int, box.xyxy[0])
+
+            detections.append({
+                "label": label,
+                "confidence": conf,
+                "bbox": [x1, y1, x2, y2]
+            })
+
+            # Draw box
+            cv2.rectangle(annotated, (x1,y1), (x2,y2), (0,255,0), 2)
+            cv2.putText(
+                annotated,
+                f"{label} {conf:.2f}",
+                (x1, y1-5),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (0,255,0),
+                2
+            )
+
+    # =========================
+    # 2️⃣ FACE DETECTION
+    # =========================
+    face_results = YOLO_FACES(np_img)
+    face_count = 0
+
+    for r in face_results:
+        for box in r.boxes:
+            face_count += 1
+            x1, y1, x2, y2 = map(int, box.xyxy[0])
+            cv2.rectangle(annotated, (x1,y1), (x2,y2), (255,0,0), 2)
+            cv2.putText(
+                annotated,
+                "face",
+                (x1, y1-5),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (255,0,0),
+                2
+            )
+
+    # =========================
+    # 3️⃣ DOMINANT COLORS
+    # =========================
     hex_colors = []
     try:
-        # sklearn import protection
         from sklearn.cluster import KMeans
-        np_img = np.array(img).reshape(-1, 3)
-        kmeans = KMeans(n_clusters=5, random_state=0).fit(np_img)
-        colors = [tuple(map(int, c)) for c in kmeans.cluster_centers_]
-        hex_colors = ['#%02x%02x%02x' % c for c in colors]
-    except ImportError:
-        logger.warning("scikit-learn not installed, skipping color analysis")
-    except Exception as e:
-        logger.warning(f"Color analysis failed: {e}")
+        pixels = np_img.reshape(-1, 3)
+        kmeans = KMeans(n_clusters=5, random_state=0).fit(pixels)
+        hex_colors = [
+            '#%02x%02x%02x' % tuple(map(int, c))
+            for c in kmeans.cluster_centers_
+        ]
+    except Exception:
+        pass
 
-    # ----- 2. Object detection (pretrained ResNet) -----
-    object_label = None
-    try:
-        model = models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
-        model.eval()
-        preprocess = transforms.Compose([
-            transforms.Resize(256),
-            transforms.CenterCrop(224),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                 std=[0.229, 0.224, 0.225])
-        ])
-        input_tensor = preprocess(img).unsqueeze(0)
-        with torch.no_grad():
-            outputs = model(input_tensor)
-        _, predicted = outputs.max(1)
-        idx_to_label = models.ResNet50_Weights.DEFAULT.meta["categories"]
-        object_label = idx_to_label[predicted.item()]
-    except Exception as e:
-        logger.warning(f"Vision object detection failed: {e}")
+    # =========================
+    # 4️⃣ UPLOAD TO SUPABASE
+    # =========================
+    raw_path = f"{user_id}/raw/{uuid.uuid4().hex}.png"
+    ann_path = f"{user_id}/annotated/{uuid.uuid4().hex}.png"
 
-    # ----- 3. Suggested tags -----
-    tags = []
-    if object_label:
-        tags.append(object_label.lower())
-    tags += [f"color_{c[1:]}" for c in hex_colors[:3]]  # top 3 colors
+    _, ann_buf = cv2.imencode(".png", annotated)
 
-    # ----- 4. Short description -----
-    description = f"A {object_label} image with dominant colors {', '.join(hex_colors[:3])}" if object_label else "Image analysis available."
+    supabase.storage.from_("ai-images").upload(
+        raw_path,
+        content,
+        {"content-type": "image/png", "upsert": True}
+    )
+
+    supabase.storage.from_("ai-images").upload(
+        ann_path,
+        ann_buf.tobytes(),
+        {"content-type": "image/png", "upsert": True}
+    )
+
+    raw_url = supabase.storage.from_("ai-images").create_signed_url(raw_path, 3600)["signedURL"]
+    ann_url = supabase.storage.from_("ai-images").create_signed_url(ann_path, 3600)["signedURL"]
+
+    # =========================
+    # 5️⃣ SAVE HISTORY
+    # =========================
+    supabase.table("vision_history").insert({
+        "user_id": user_id,
+        "image_path": raw_path,
+        "annotated_path": ann_path,
+        "detections": detections,
+        "faces": face_count
+    }).execute()
 
     return {
-        "filename": file.filename,
-        "size_bytes": len(content),
+        "objects": detections,
+        "faces_detected": face_count,
         "dominant_colors": hex_colors,
-        "objects": object_label,
-        "tags": tags,
-        "description": description
+        "image_url": raw_url,
+        "annotated_image_url": ann_url
     }
 
+@app.get("/vision/history")
+async def vision_history(req: Request, res: Response):
+    user_id = await get_or_create_user(req, res)
+
+    data = supabase.table("vision_history") \
+        .select("*") \
+        .eq("user_id", user_id) \
+        .order("created_at", desc=True) \
+        .limit(50) \
+        .execute()
+
+    return data.data or []
+
+
+    
 # ---------- Code generation ----------
 @app.post("/code")
 async def code_gen(req: Request):
