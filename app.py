@@ -815,7 +815,7 @@ async def universal_chat_stream(user_id: str, prompt: str):
             {"role": "system", "content": build_contextual_prompt(user_id, prompt)},
             {"role": "user", "content": prompt}
            ],
-            {"max_tokens": 1024}
+            "max_tokens": 1024
         
     }
 
