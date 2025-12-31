@@ -1003,7 +1003,7 @@ async def chat_stream(req: Request, res: Response, tts: bool = False, samples: i
 
                             delta = json.loads(data)["choices"][0]["delta"].get("content")
                             if delta:
-                            yield f"data:{delta}\n\n"
+                                yield f"data:{delta}\n\n"
 
             except Exception:
                 logger.exception("Chat streaming failed")
