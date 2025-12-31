@@ -2146,8 +2146,3 @@ async def speech_to_text(file: UploadFile = File(...)):
 
     data = r.json()
     return {"transcription": data.get("text", "")}
-
-# ---------- Run ----------
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("app:app", host="0.0.0.0", port=int(os.getenv("PORT","8080")), log_level="info"
