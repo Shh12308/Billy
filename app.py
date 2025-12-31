@@ -972,8 +972,10 @@ async def chat_stream(req: Request, res: Response, tts: bool = False, samples: i
                     "messages": [
                         {"role": "system", "content": build_contextual_prompt(user_id, prompt)},
                         {"role": "user", "content": prompt}
-                    ]
-                }
+                      ],
+    "temperature": 0.7,
+    "max_tokens": 1024
+}
 
                 async with httpx.AsyncClient(timeout=None) as client:
                     async with client.stream(
