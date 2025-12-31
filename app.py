@@ -1101,49 +1101,64 @@ async def chat_endpoint(req: Request):
 # =========================================================
 
 # ---------- Core Image Logic (Refactored) ----------
-async def _generate_image_core(prompt: str, samples: int, user_id: str, return_base64: bool = False):
+async def _generate_image_core(
+    prompt: str,
+    samples: int,
+    user_id: str,
+    return_base64: bool = False
+):
+    if not OPENAI_API_KEY:
+        raise HTTPException(500, "Missing OPENAI_API_KEY")
+
     provider_used = "openai"
     urls = []
 
-    # Using httpx instead of openai library for consistency
-    try:
-        payload = {
-            "model": "dall-e-3",
-            "prompt": prompt,
-            "n": 1,
-            "size": "1024x1024",
-            "response_format": "b64_json"
-        }
-        headers = {
-            "Authorization": f"Bearer {OPENAI_API_KEY}",
-            "Content-Type": "application/json"
-        }
+    payload = {
+        "model": "dall-e-3",
+        "prompt": prompt,
+        "n": 1,  # DALL·E 3 supports only 1 image
+        "size": "1024x1024",
+        "response_format": "b64_json"
+    }
 
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    # ---------- CALL OPENAI ----------
+    try:
         async with httpx.AsyncClient(timeout=120.0) as client:
-            r = await client.post("https://api.openai.com/v1/images/generations", json=payload, headers=headers)
+            r = await client.post(
+                "https://api.openai.com/v1/images/generations",
+                json=payload,
+                headers=headers
+            )
             r.raise_for_status()
             result = r.json()
-    except Exception as e:
+
+    except Exception:
         logger.exception("OpenAI image API call failed")
         raise HTTPException(500, "Image generation provider error")
 
+    # ---------- VALIDATE ----------
     if not result or not result.get("data"):
         logger.error("OpenAI returned empty image response: %s", result)
         raise HTTPException(500, "Image generation failed")
 
-    for img in result.get("data", []):
+    # ---------- PROCESS IMAGES ----------
+    for img in result["data"]:
         try:
             b64 = img.get("b64_json")
             if not b64:
                 continue
 
-
             image_bytes = base64.b64decode(b64)
-filename = f"{user_id}/{uuid.uuid4().hex}.png"
+            filename = f"{user_id}/{uuid.uuid4().hex}.png"
 
-upload = supabase.storage.from_("ai-images").upload(
-    path=filename,
-    file=image_bytes,
+            upload = supabase.storage.from_("ai-images").upload(
+                path=filename,
+                file=image_bytes,
                 file_options={
                     "content-type": "image/png",
                     "upsert": True
@@ -1157,15 +1172,15 @@ upload = supabase.storage.from_("ai-images").upload(
                 filename, 60 * 60
             )
 
-            if isinstance(signed, dict) and signed.get("signedURL"):
+            if signed and signed.get("signedURL"):
                 urls.append(signed["signedURL"])
 
-        except Exception as e:
-            logger.exception("Failed processing OpenAI base64 image")
+        except Exception:
+            logger.exception("Failed processing or uploading image")
+            continue
 
     if not urls:
-        logger.error("Image generation produced zero URLs for prompt=%s", prompt)
-        raise HTTPException(500, "Image generation failed")
+        raise HTTPException(500, "No images generated")
 
     cache_result(prompt, provider_used, {"images": urls})
 
