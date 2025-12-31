@@ -814,8 +814,9 @@ async def universal_chat_stream(user_id: str, prompt: str):
         "messages": [
             {"role": "system", "content": build_contextual_prompt(user_id, prompt)},
             {"role": "user", "content": prompt}
+           ],
             {"max_tokens": 1024}
-        ]
+        
     }
 
     async with httpx.AsyncClient(timeout=None) as client:
@@ -853,7 +854,7 @@ def analyze_prompt(prompt: str):
 
 async def image_stream_helper(prompt: str, samples: int):
     try:
-        result = await _generate_image_core(prompt, samples, "anonymous", base64=False)
+        result = await _generate_image_core(prompt, samples, "anonymous", return_base64=False)
         yield {
             "type": "images",
             "provider": result["provider"],
@@ -881,8 +882,8 @@ async def chat_stream_helper(user_id: str, prompt: str):
         "messages": [
             {"role": "system", "content": build_contextual_prompt(user_id, prompt)},
             {"role": "user", "content": prompt}
+        ],
             {"max_tokens": 1024}
-        ]
     }
 
     async with httpx.AsyncClient(timeout=None) as client:
@@ -1002,7 +1003,7 @@ async def chat_stream(req: Request, res: Response, tts: bool = False, samples: i
 
                             delta = json.loads(data)["choices"][0]["delta"].get("content")
                             if delta:
-                            yield f"data:{delta}\n\n"
+    yield f"data:{delta}\n\n"
 
             except Exception:
                 logger.exception("Chat streaming failed")
@@ -1137,11 +1138,12 @@ async def _generate_image_core(prompt: str, samples: int, user_id: str, return_b
                 continue
 
 
-            filename = f"{user_id}/{uuid.uuid4().hex}.png"
+            image_bytes = base64.b64decode(b64)
+filename = f"{user_id}/{uuid.uuid4().hex}.png"
 
-            upload = supabase.storage.from_("ai-images").upload(
-                path=filename,
-                file=image_bytes,
+upload = supabase.storage.from_("ai-images").upload(
+    path=filename,
+    file=image_bytes,
                 file_options={
                     "content-type": "image/png",
                     "upsert": True
@@ -1175,7 +1177,7 @@ async def _generate_image_core(prompt: str, samples: int, user_id: str, return_b
 
 async def image_gen_internal(prompt: str, samples: int = 1):
     """Helper for streaming /ask/universal."""
-    return await _generate_image_core(prompt, samples, "anonymous", base64=False)
+    result = await _generate_image_core(prompt, samples, "anonymous", return_base64=False)
 
 async def stream_images(prompt: str, samples: int):
     try:
