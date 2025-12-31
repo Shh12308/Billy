@@ -877,14 +877,14 @@ async def chat_stream_helper(user_id: str, prompt: str):
     url = "https://api.groq.com/openai/v1/chat/completions"
 
     payload = {
-        "model": CHAT_MODEL,
-        "stream": True,
-        "messages": [
-            {"role": "system", "content": build_contextual_prompt(user_id, prompt)},
-            {"role": "user", "content": prompt}
-        ],
-            {"max_tokens": 1024}
-    }
+    "model": CHAT_MODEL,
+    "stream": True,
+    "messages": [
+        {"role": "system", "content": build_contextual_prompt(user_id, prompt)},
+        {"role": "user", "content": prompt}
+    ],
+    "max_tokens": 1024
+}
 
     async with httpx.AsyncClient(timeout=None) as client:
         async with client.stream(
