@@ -543,7 +543,7 @@ async def send_message(
         async with httpx.AsyncClient(timeout=30) as client:
             payload = {
                 "model": CHAT_MODEL,
-                "messages": messages
+                "messages": messages,
                 "max_tokens": 1024
             }
             r = await client.post(
@@ -814,6 +814,7 @@ async def universal_chat_stream(user_id: str, prompt: str):
         "messages": [
             {"role": "system", "content": build_contextual_prompt(user_id, prompt)},
             {"role": "user", "content": prompt}
+            {"max_tokens": 1024}
         ]
     }
 
@@ -880,6 +881,7 @@ async def chat_stream_helper(user_id: str, prompt: str):
         "messages": [
             {"role": "system", "content": build_contextual_prompt(user_id, prompt)},
             {"role": "user", "content": prompt}
+            {"max_tokens": 1024}
         ]
     }
 
@@ -978,10 +980,10 @@ async def chat_stream(req: Request, res: Response, tts: bool = False, samples: i
                     "messages": [
                         {"role": "system", "content": build_contextual_prompt(user_id, prompt)},
                         {"role": "user", "content": prompt}
-                      ],
-    "temperature": 0.7,
-    "max_tokens": 1024
-}
+                       ],
+                 "temperature": 0.7,
+                 "max_tokens": 1024
+                 }
 
                 async with httpx.AsyncClient(timeout=None) as client:
                     async with client.stream(
@@ -999,8 +1001,8 @@ async def chat_stream(req: Request, res: Response, tts: bool = False, samples: i
                                 break
 
                             delta = json.loads(data)["choices"][0]["delta"].get("content")
-if delta:
-    yield f"data:{delta}\n\n"
+                            if delta:
+                            yield f"data:{delta}\n\n"
 
             except Exception:
                 logger.exception("Chat streaming failed")
@@ -1114,7 +1116,6 @@ async def _generate_image_core(prompt: str, samples: int, user_id: str, return_b
         headers = {
             "Authorization": f"Bearer {OPENAI_API_KEY}",
             "Content-Type": "application/json"
-            "max_tokens": 1024
         }
 
         async with httpx.AsyncClient(timeout=120.0) as client:
@@ -1191,10 +1192,10 @@ async def run_code_safely(prompt: str):
     # 1. Generate code
     code_prompt = f"Write a complete {language} program to: {prompt}"
     payload = {
-        "model": CHAT_MODEL,
-        "messages": [{"role": "user", "content": code_prompt}]
-        "max_tokens": 2048
-    }
+    "model": CHAT_MODEL,
+    "messages": [{"role": "user", "content": code_prompt}],
+    "max_tokens": 2048
+}
     async with httpx.AsyncClient(timeout=60) as client:
         r = await client.post(
             "https://api.groq.com/openai/v1/chat/completions",
@@ -1256,13 +1257,13 @@ async def ask_universal(request: Request):
             language = body.get("language", "python").lower()
             code_prompt = f"Write a complete {language} program:\n{prompt}"
             payload = {
-                "model": CHAT_MODEL,
-                "messages": [
-                    {"role": "system", "content": build_contextual_prompt(user_id, code_prompt)},
-                    {"role": "user", "content": prompt}
-                    {"max_tokens": 1024}
-                ]
-            }
+    "model": CHAT_MODEL,
+    "messages": [
+        {"role": "system", "content": build_contextual_prompt(user_id, code_prompt)},
+        {"role": "user", "content": prompt}
+    ],
+    "max_tokens": 1024
+}
 
             async with httpx.AsyncClient(timeout=60) as client:
                 r = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=get_groq_headers(), json=payload)
