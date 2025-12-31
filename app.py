@@ -21,12 +21,23 @@ from typing import Optional, Dict, Any, List
 from ultralytics import YOLO
 import cv2
 
-YOLO_OBJECTS = YOLO("yolov8n.pt")
-YOLO_FACES = YOLO("yolov8n-face.pt")  # auto-downloads
+YOLO_OBJECTS = None
+YOLO_FACES = None
+YOLO_DEVICE = "cpu"
 
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-YOLO_OBJECTS.to(DEVICE)
-YOLO_FACES.to(DEVICE)
+def get_yolo_objects():
+    global YOLO_OBJECTS
+    if YOLO_OBJECTS is None:
+        YOLO_OBJECTS = YOLO("yolov8n.pt")
+        YOLO_OBJECTS.to(YOLO_DEVICE)
+    return YOLO_OBJECTS
+
+def get_yolo_faces():
+    global YOLO_FACES
+    if YOLO_FACES is None:
+        YOLO_FACES = YOLO("yolov8n-face.pt")
+        YOLO_FACES.to(YOLO_DEVICE)
+    return YOLO_FACES
 
 import httpx
 from fastapi import FastAPI, Request, Header, UploadFile, File, HTTPException, Query, Form, Depends
@@ -90,9 +101,9 @@ logger.info(f"GROQ key present: {bool(GROQ_API_KEY)}")
 # -------------------
 # Database Paths (Local fallback)
 # -------------------
-KG_DB_PATH = os.getenv("KG_DB_PATH", "./kg.db")
-MEMORY_DB = os.getenv("MEMORY_DB", "./memory.db")
-CACHE_DB_PATH = os.getenv("CACHE_DB_PATH", "./cache.db")
+KG_DB_PATH = os.getenv("KG_DB_PATH", "/tmp/kg.db")
+MEMORY_DB = os.getenv("MEMORY_DB", "/tmp/memory.db")
+CACHE_DB_PATH = os.getenv("CACHE_DB_PATH", "/tmp/cache.db")
 
 # -------------------
 # Models
@@ -114,13 +125,142 @@ CREATOR_INFO = {
 }
 
 JUDGE0_LANGUAGES = {
-    "python": 71,
-    "javascript": 63,
-    "cpp": 54,
+    # --- C / C++ ---
     "c": 50,
+    "c_clang": 49,
+    "cpp": 54,
+    "cpp_clang": 53,
+
+    # --- Java ---
     "java": 62,
+
+    # --- Python ---
+    "python": 71,
+    "python2": 70,
+    "micropython": 79,
+
+    # --- JavaScript / TS ---
+    "javascript": 63,
+    "nodejs": 63,
+    "typescript": 74,
+
+    # --- Go ---
     "go": 60,
-    "rust": 73
+
+    # --- Rust ---
+    "rust": 73,
+
+    # --- C# / .NET ---
+    "csharp": 51,
+    "fsharp": 87,
+    "dotnet": 51,
+
+    # --- PHP ---
+    "php": 68,
+
+    # --- Ruby ---
+    "ruby": 72,
+
+    # --- Swift ---
+    "swift": 83,
+
+    # --- Kotlin ---
+    "kotlin": 78,
+
+    # --- Scala ---
+    "scala": 81,
+
+    # --- Objective-C ---
+    "objective_c": 52,
+
+    # --- Bash / Shell ---
+    "bash": 46,
+    "sh": 46,
+
+    # --- PowerShell ---
+    "powershell": 88,
+
+    # --- Perl ---
+    "perl": 85,
+
+    # --- Lua ---
+    "lua": 64,
+
+    # --- R ---
+    "r": 80,
+
+    # --- Dart ---
+    "dart": 75,
+
+    # --- Julia ---
+    "julia": 84,
+
+    # --- Haskell ---
+    "haskell": 61,
+
+    # --- Elixir ---
+    "elixir": 57,
+
+    # --- Erlang ---
+    "erlang": 58,
+
+    # --- OCaml ---
+    "ocaml": 65,
+
+    # --- Crystal ---
+    "crystal": 76,
+
+    # --- Nim ---
+    "nim": 77,
+
+    # --- Zig ---
+    "zig": 86,
+
+    # --- Assembly ---
+    "assembly": 45,
+
+    # --- COBOL ---
+    "cobol": 55,
+
+    # --- Fortran ---
+    "fortran": 59,
+
+    # --- Prolog ---
+    "prolog": 69,
+
+    # --- Scheme ---
+    "scheme": 82,
+
+    # --- Common Lisp ---
+    "lisp": 66,
+
+    # --- Brainf*ck ---
+    "brainfuck": 47,
+
+    # --- V ---
+    "vlang": 91,
+
+    # --- Groovy ---
+    "groovy": 56,
+
+    # --- Hack ---
+    "hack": 67,
+
+    # --- Pascal ---
+    "pascal": 67,
+
+    # --- Scratch ---
+    "scratch": 92,
+
+    # --- Solidity ---
+    "solidity": 94,
+
+    # --- SQL ---
+    "sql": 82,
+
+    # --- Text / Plain ---
+    "plain_text": 43,
+    "text": 43,
 }
 
 JUDGE0_URL = "https://judge0-ce.p.rapidapi.com"
@@ -139,7 +279,7 @@ async def run_code_judge0(code: str, language_id: int):
     }
 
     headers = {
-        "X-RapidAPI-Key": "JUDGE0_KEY",
+        "X-RapidAPI-Key": JUDGE0_KEY,
         "X-RapidAPI-Host": "judge0-ce.p.rapidapi.com",
         "Content-Type": "application/json"
     }
@@ -266,8 +406,6 @@ def upload_to_supabase(
         file_options={"content-type": content_type}
     )
     return filename
-
-image_bytes = base64.b64decode(b64)
 
 # Helper wrappers for missing functions
 def upload_image_to_supabase(image_bytes: bytes, filename: str):
@@ -813,7 +951,7 @@ async def chat_stream(req: Request, res: Response, tts: bool = False, samples: i
                     async with httpx.AsyncClient(timeout=None) as client:
                         async with client.stream(
                             "POST",
-                            "http://localhost:8000/image/stream",
+                            "http://127.0.0.1:8000/image/stream",
                             json=img_payload
                         ) as resp:
                             async for line in resp.aiter_lines():
@@ -1794,7 +1932,7 @@ async def vision_analyze(
     # =========================
     # 1️⃣ YOLO OBJECT DETECTION
     # =========================
-    obj_results = YOLO_OBJECTS(np_img, conf=0.25)
+    obj_results = get_yolo_objects()(np_img, conf=0.25)
     detections = []
 
     for r in obj_results:
@@ -1824,7 +1962,7 @@ async def vision_analyze(
     # =========================
     # 2️⃣ FACE DETECTION
     # =========================
-    face_results = YOLO_FACES(np_img)
+    face_results = get_yolo_faces()(np_img)
     face_count = 0
 
     for r in face_results:
@@ -2012,4 +2150,4 @@ async def speech_to_text(file: UploadFile = File(...)):
 # ---------- Run ----------
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("app:app", host="0.0.0.0", port=int(os.getenv("PORT","8080")), log_level="info")
+    uvicorn.run("app:app", host="0.0.0.0", port=int(os.getenv("PORT","8080")), log_level="info"
