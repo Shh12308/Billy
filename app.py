@@ -1,6 +1,7 @@
 # app.py — ZyNara1 AI full multimodal server: SDXL + TTS/STT + code + vision + search + remove-bg/upscale + caching + metadata
 import os
 import io
+import utils
 import PIL
 import json
 from utils import safe_system_prompt  # adjust path as needed
