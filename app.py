@@ -534,7 +534,9 @@ async def send_message(
 
     # --- IMPLEMENTED GROQ CALL ---
     messages = [
-        {"role": "system", "content": get_system_prompt()},
+        {"role": "system", "content": safe_system_prompt(
+    build_contextual_prompt(user_id, prompt)
+)},
         {"role": "user", "content": text}
     ]
     # Add memory context here if needed
@@ -812,7 +814,9 @@ async def universal_chat_stream(user_id: str, prompt: str):
         "model": CHAT_MODEL,
         "stream": True,
         "messages": [
-            {"role": "system", "content": build_contextual_prompt(user_id, prompt)},
+            {"role": "system", "content": safe_system_prompt(
+    build_contextual_prompt(user_id, prompt)
+)},
             {"role": "user", "content": prompt}
            ],
             "max_tokens": 1024
@@ -880,7 +884,9 @@ async def chat_stream_helper(user_id: str, prompt: str):
     "model": CHAT_MODEL,
     "stream": True,
     "messages": [
-        {"role": "system", "content": build_contextual_prompt(user_id, prompt)},
+        {"role": "system", "content": safe_system_prompt(
+    build_contextual_prompt(user_id, prompt)
+)},
         {"role": "user", "content": prompt}
     ],
     "max_tokens": 1024
@@ -979,7 +985,9 @@ async def chat_stream(req: Request, res: Response, tts: bool = False, samples: i
                     "model": CHAT_MODEL,
                     "stream": True,
                     "messages": [
-                        {"role": "system", "content": build_contextual_prompt(user_id, prompt)},
+                        {"role": "system", "content": safe_system_prompt(
+    build_contextual_prompt(user_id, prompt)
+)},
                         {"role": "user", "content": prompt}
                        ],
                  "temperature": 0.7,
@@ -1276,7 +1284,9 @@ async def ask_universal(request: Request):
             payload = {
     "model": CHAT_MODEL,
     "messages": [
-        {"role": "system", "content": build_contextual_prompt(user_id, code_prompt)},
+        {"role": "system", "content": safe_system_prompt(
+    build_contextual_prompt(user_id, prompt)
+)},
         {"role": "user", "content": prompt}
     ],
     "max_tokens": 1024
@@ -1455,7 +1465,7 @@ async def regenerate(req: Request, res: Response, tts: bool = False, samples: in
                     async with httpx.AsyncClient(timeout=None) as client:
                         async with client.stream(
                             "POST",
-                            "http://localhost:8000/image/stream",
+                            "http://127.0.0.1:8000/image/stream",
                             json=img_payload
                         ) as resp:
                             async for line in resp.aiter_lines():
@@ -1473,7 +1483,9 @@ async def regenerate(req: Request, res: Response, tts: bool = False, samples: in
                 "model": CHAT_MODEL,
                 "stream": True,
                 "messages": [
-                    {"role": "system", "content": build_contextual_prompt(user_id, prompt)},
+                    {"role": "system", "content": safe_system_prompt(
+    build_contextual_prompt(user_id, prompt)
+)},
                     {"role": "user", "content": prompt}
                 ]
             }
