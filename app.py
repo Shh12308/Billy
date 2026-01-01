@@ -115,7 +115,7 @@ CACHE_DB_PATH = os.getenv("CACHE_DB_PATH", "/tmp/cache.db")
 # -------------------
 # Models
 # -------------------
-CHAT_MODEL = os.getenv("CHAT_MODEL", "llama-3.1-70b-8192")
+CHAT_MODEL = os.getenv("CHAT_MODEL", "llama-3.1-8b-instant")
 
 # TTS/STT are handled via ElevenLabs now
 TTS_MODEL = None
