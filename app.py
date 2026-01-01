@@ -115,7 +115,7 @@ CACHE_DB_PATH = os.getenv("CACHE_DB_PATH", "/tmp/cache.db")
 # -------------------
 # Models
 # -------------------
-CHAT_MODEL = os.getenv("CHAT_MODEL", "llama-3.1-70b-versatile")
+CHAT_MODEL = os.getenv("CHAT_MODEL", "llama-3.1-70b-8192")
 
 # TTS/STT are handled via ElevenLabs now
 TTS_MODEL = None
@@ -1242,6 +1242,9 @@ async def run_code_safely(prompt: str):
 @app.post("/ask/universal")
 async def ask_universal(request: Request):
 
+    # -------------------------
+    # Parse JSON
+    # -------------------------
     try:
         body = await request.json()
     except Exception:
@@ -1253,111 +1256,101 @@ async def ask_universal(request: Request):
     prompt = body.get("prompt", "").strip()
     user_id = body.get("user_id", "anonymous")
     stream = bool(body.get("stream", False))
-    tts = bool(body.get("tts", False))
-    samples = int(body.get("samples", 1))
-    intent = body.get("mode") or detect_intent(prompt)
 
     if not prompt:
-        raise HTTPException(400, "prompt required")
+        raise HTTPException(status_code=400, detail="prompt required")
+
+    intent = body.get("mode") or detect_intent(prompt)
 
     # =========================
     # NON-STREAM MODE
     # =========================
     if not stream:
-        if intent == "chat":
-            payload = {"model":CHAT_MODEL,"messages":[{"role":"system","content":build_contextual_prompt(user_id, prompt)},{"role":"user","content":prompt}]}
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                try:
-                    r = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=get_groq_headers(), json=payload)
-                    r.raise_for_status()
-                    return r.json()
-                except Exception as e:
-                    raise HTTPException(500, str(e))
+        payload = {
+            "model": CHAT_MODEL,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": safe_system_prompt(
+                        build_contextual_prompt(user_id, prompt)
+                    )
+                },
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            "temperature": 0.7,
+            "max_tokens": 1024
+        }
 
-        if intent == "image":
-            return await _generate_image_core(prompt, samples, user_id, base64=False)
-
-        if intent == "search":
-            return await duckduckgo_search(prompt)
-
-        if intent == "code":
-            language = body.get("language", "python").lower()
-            code_prompt = f"Write a complete {language} program:\n{prompt}"
-            payload = {
-    "model": CHAT_MODEL,
-    "messages": [
-        {"role": "system", "content": safe_system_prompt(
-    build_contextual_prompt(user_id, prompt)
-)},
-        {"role": "user", "content": prompt}
-    ],
-    "max_tokens": 1024
-}
-
-            async with httpx.AsyncClient(timeout=60) as client:
-                r = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=get_groq_headers(), json=payload)
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            try:
+                r = await client.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers=get_groq_headers(),
+                    json=payload
+                )
                 r.raise_for_status()
-                code = r.json()["choices"][0]["message"]["content"]
-            
-            response = {"language": language, "generated_code": code}
-            if body.get("run", False):
-                lang_id = JUDGE0_LANGUAGES.get(language, 71)
-                response["execution"] = await run_code_judge0(code, lang_id)
-            return response
 
-        if intent == "tts":
-            if not OPENAI_API_KEY: raise HTTPException(500, "Missing OPENAI_API_KEY")
-            tts_payload = {"model": "tts-1", "voice": "alloy", "input": prompt, "format": "mp3"}
-            headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                r = await client.post("https://api.openai.com/v1/audio/speech", headers=headers, json=tts_payload)
-                r.raise_for_status()
-                return Response(content=r.content, media_type="audio/mpeg")
+                data = r.json()
+                if not data.get("choices"):
+                    raise HTTPException(500, "No choices returned from Groq")
 
-        # Fallback
-        payload = {"model":CHAT_MODEL,"messages":[{"role":"system","content":build_contextual_prompt(user_id, prompt)},{"role":"user","content":prompt}]}
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            r = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=get_groq_headers(), json=payload)
-            r.raise_for_status()
-            return r.json()
+                return data
 
+            except httpx.HTTPStatusError as e:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Groq error: {e.response.text}"
+                )
 
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=str(e))
+
+    # =========================
+    # STREAM MODE (OPTIONAL)
+    # =========================
     async def event_generator():
-        yield sse({"type": "starting", "intent": intent})
+        yield f"data: {{\"type\": \"starting\"}}\n\n"
 
-        if intent == "chat":
-            async for chunk in chat_stream_helper(user_id, prompt):
-                yield sse(chunk)
+        payload = {
+            "model": CHAT_MODEL,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": safe_system_prompt(
+                        build_contextual_prompt(user_id, prompt)
+                    )
+                },
+                {"role": "user", "content": prompt}
+            ],
+            "stream": True
+        }
 
-        elif intent == "image":
-            async for chunk in image_stream_helper(prompt, samples):
-                yield sse(chunk)
+        async with httpx.AsyncClient(timeout=None) as client:
+            async with client.stream(
+                "POST",
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers=get_groq_headers(),
+                json=payload
+            ) as r:
 
-        elif intent == "video":
-            result = await generate_video_internal(prompt, samples, user_id)
-            yield sse({"type": "video_result", "data": result})
+                async for line in r.aiter_lines():
+                    if not line or not line.startswith("data:"):
+                        continue
+                    if line.strip() == "data: [DONE]":
+                        break
+                    yield f"{line}\n\n"
 
-        elif intent == "search":
-            result = await duckduckgo_search(prompt)
-            yield sse({"type": "search_result", "data": result})
-
-        elif intent == "code":
-            result = await run_code_safely(prompt)
-            yield sse({"type": "code_result", "data": result})
-
-        if tts:
-            async for chunk in tts_stream_helper(prompt):
-                yield sse(chunk)
-
-        yield sse({"type": "done"})
+        yield f"data: {{\"type\": \"done\"}}\n\n"
 
     return StreamingResponse(
         event_generator(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"
+            "Connection": "keep-alive"
         }
     )
 
