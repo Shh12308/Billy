@@ -3,6 +3,7 @@ import os
 import io
 import PIL
 import json
+from utils import safe_system_prompt  # adjust path as needed
 import uuid
 import sqlite3
 import numpy as np
