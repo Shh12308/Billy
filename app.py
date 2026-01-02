@@ -401,25 +401,25 @@ async def get_or_create_user(req: Request, res: Response) -> str:
     return user_id
 
 async def save_message(user_id: str, role: str, content: str):
-    await supabase.table("conversations").insert({
+    supabase.table("conversations").insert({
         "user_id": user_id,
         "role": role,
         "content": content
     }).execute()
 
 
-async def load_history(user_id: str, limit: int = 20):
-    resp = await supabase.table("conversations") \
-        .select("*") \
-        .eq("user_id", user_id) \
-        .order("created_at", desc=True) \
-        .limit(limit) \
+async def load_history(user_id: str, limit: int = 10):
+    resp = (
+        supabase.table("conversations")
+        .select("role, content")
+        .eq("user_id", user_id)
+        .order("created_at", desc=True)
+        .limit(limit)
         .execute()
-    
-    messages = [
-        {"role": row["role"], "content": row["content"]}
-        for row in reversed(resp.data)
-    ]
+    )
+
+    messages = resp.data or []
+    messages.reverse()  # oldest → newest
     return messages
 
 
