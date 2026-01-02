@@ -1283,41 +1283,38 @@ async def ask_universal(request: Request):
 
     intent = body.get("mode") or detect_intent(prompt)
 
-    # =========================
-    # NON-STREAM MODE
-    # =========================
-    if not stream:
-        payload = {
-            "model": CHAT_MODEL,
-            history = load_history(user_id)
+   # =========================
+# NON-STREAM MODE
+# =========================
+if not stream:
+    history = load_history(user_id)
 
-messages = history + [
-    {"role": "user", "content": prompt}
-],
-            "temperature": 0.7,
-            "max_tokens": 1024
-        }
+    messages = history + [
+        {"role": "user", "content": prompt}
+    ]
 
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            try:
-                r = await client.post(
-                    "https://api.groq.com/openai/v1/chat/completions",
-                    headers=get_groq_headers(),
-                    json=payload
-                )
-                r.raise_for_status()
+    payload = {
+        "model": CHAT_MODEL,
+        "messages": messages,
+        "temperature": 0.7,
+        "max_tokens": 1024
+    }
 
-                data = r.json()
-                if not data.get("choices"):
-                    raise HTTPException(500, "No choices returned from Groq")
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        try:
+            r = await client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers=get_groq_headers(),
+                json=payload
+            )
+            r.raise_for_status()
+            return r.json()
 
-                return data
-
-            except httpx.HTTPStatusError as e:
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Groq error: {e.response.text}"
-                )
+        except httpx.HTTPStatusError as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Groq error: {e.response.text}"
+            )
 
             except Exception as e:
                 raise HTTPException(status_code=500, detail=str(e))
@@ -1326,34 +1323,35 @@ messages = history + [
     # STREAM MODE (OPTIONAL)
     # =========================
     async def event_generator():
-        yield f"data: {{\"type\": \"starting\"}}\n\n"
+    yield f"data: {{\"type\": \"starting\"}}\n\n"
 
-        payload = {
-            "model": CHAT_MODEL,
-            history = load_history(user_id)
+    history = load_history(user_id)
 
-messages = history + [
-    {"role": "user", "content": prompt}
-],
-            "stream": True
-        }
+    messages = history + [
+        {"role": "user", "content": prompt}
+    ]
 
-        async with httpx.AsyncClient(timeout=None) as client:
-            async with client.stream(
-                "POST",
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers=get_groq_headers(),
-                json=payload
-            ) as r:
+    payload = {
+        "model": CHAT_MODEL,
+        "messages": messages,
+        "stream": True
+    }
 
-                async for line in r.aiter_lines():
-                    if not line or not line.startswith("data:"):
-                        continue
-                    if line.strip() == "data: [DONE]":
-                        break
-                    yield f"{line}\n\n"
+    async with httpx.AsyncClient(timeout=None) as client:
+        async with client.stream(
+            "POST",
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers=get_groq_headers(),
+            json=payload
+        ) as r:
+            async for line in r.aiter_lines():
+                if not line or not line.startswith("data:"):
+                    continue
+                if line.strip() == "data: [DONE]":
+                    break
+                yield f"{line}\n\n"
 
-        yield f"data: {{\"type\": \"done\"}}\n\n"
+    yield f"data: {{\"type\": \"done\"}}\n\n"
 
     return StreamingResponse(
         event_generator(),
