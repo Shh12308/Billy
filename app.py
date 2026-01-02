@@ -478,6 +478,27 @@ async def get_or_create_user(req: Request, res: Response) -> str:
     )
     return user_id
 
+def load_history(user_id: str, limit: int = 10):
+    res = (
+        supabase
+        .table("chat_messages")
+        .select("role,content")
+        .eq("user_id", user_id)
+        .order("created_at", desc=False)
+        .limit(limit)
+        .execute()
+    )
+
+    return res.data or []
+
+def save_message(user_id: str, role: str, content: str):
+    supabase.table("chat_messages").insert({
+        "user_id": user_id,
+        "role": role,
+        "content": content
+    }).execute()
+
+
 # ----------------------------------
 # MEMORY LOADER
 # ----------------------------------
@@ -1268,18 +1289,11 @@ async def ask_universal(request: Request):
     if not stream:
         payload = {
             "model": CHAT_MODEL,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": safe_system_prompt(
-                        build_contextual_prompt(user_id, prompt)
-                    )
-                },
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ],
+            history = load_history(user_id)
+
+messages = history + [
+    {"role": "user", "content": prompt}
+],
             "temperature": 0.7,
             "max_tokens": 1024
         }
@@ -1316,15 +1330,11 @@ async def ask_universal(request: Request):
 
         payload = {
             "model": CHAT_MODEL,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": safe_system_prompt(
-                        build_contextual_prompt(user_id, prompt)
-                    )
-                },
-                {"role": "user", "content": prompt}
-            ],
+            history = load_history(user_id)
+
+messages = history + [
+    {"role": "user", "content": prompt}
+],
             "stream": True
         }
 
