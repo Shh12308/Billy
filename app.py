@@ -515,28 +515,22 @@ def load_memory(conversation_id: str, limit: int = 20):
 # ----------------------------------
 # NEW CHAT
 # ----------------------------------
+
 @app.post("/chat/new")
 async def new_chat(req: Request, res: Response):
     user_id = await get_or_create_user(req, res)
+    cid = str(uuid.uuid4())
 
-    convo_id = str(uuid.uuid4()) 
     supabase.table("conversations").insert({
-        "id": convo_id,
+        "id": cid,
         "user_id": user_id,
         "title": "New Chat"
     }).execute()
 
-    return {"conversation_id": convo_id}
+    return {"conversation_id": cid}
 
-# ----------------------------------
-# SEND MESSAGE (MEMORY AWARE)
-# ----------------------------------
-@app.post("/chat/{conversation_id}/message")
-async def send_message(
-    conversation_id: str,
-    req: Request,
-    res: Response
-):
+@app.post("/chat/{conversation_id}")
+async def send_message(conversation_id: str, req: Request, res: Response):
     user_id = await get_or_create_user(req, res)
     body = await req.json()
     text = body.get("message")
@@ -544,52 +538,45 @@ async def send_message(
     if not text:
         raise HTTPException(400, "message required")
 
-    # Save user message
     supabase.table("messages").insert({
-        "id": str(uuid.uuid4()), 
+        "id": str(uuid.uuid4()),
         "conversation_id": conversation_id,
         "role": "user",
         "content": text
     }).execute()
 
-    # LOAD MEMORY FOR AI
-    memory = load_memory(conversation_id)
+    messages = (
+        supabase.table("messages")
+        .select("role,content")
+        .eq("conversation_id", conversation_id)
+        .order("created_at")
+        .execute()
+        .data
+    )
 
-    # --- IMPLEMENTED GROQ CALL ---
-    messages = [
-        {"role": "system", "content": safe_system_prompt(
-    build_contextual_prompt(user_id, prompt)
-)},
-        {"role": "user", "content": text}
-    ]
-    # Add memory context here if needed
-    
-    try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            payload = {
-                "model": CHAT_MODEL,
-                "messages": messages,
-                "max_tokens": 1024
-            }
-            r = await client.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
-                json=payload
-            )
-            r.raise_for_status()
-            ai_reply = r.json()["choices"][0]["message"]["content"]
-    except Exception as e:
-        logger.error(f"Groq Error: {e}")
-        ai_reply = "I apologize, but I encountered an error connecting to the brain."
+    payload = {
+        "model": CHAT_MODEL,
+        "messages": messages,
+        "max_tokens": 1024
+    }
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers=groq_headers(),
+            json=payload
+        )
+        r.raise_for_status()
+        reply = r.json()["choices"][0]["message"]["content"]
 
     supabase.table("messages").insert({
-        "id": str(uuid.uuid4()), 
+        "id": str(uuid.uuid4()),
         "conversation_id": conversation_id,
         "role": "assistant",
-        "content": ai_reply
+        "content": reply
     }).execute()
 
-    return {"reply": ai_reply}
+    return {"reply": reply}
 
 # ----------------------------------
 # LIST CHATS
@@ -970,9 +957,13 @@ async def chat_stream(req: Request, res: Response, tts: bool = False, samples: i
     user_id = await get_or_create_user(req, res)
 
     async def event_generator():
-        # ✅ REGISTER STREAM TASK (MUST BE HERE)
-        task = asyncio.current_task()
-        active_streams[user_id] = task
+        # ✅ REGISTER STREAM IN SUPABASE
+        stream_id = str(uuid.uuid4())
+        supabase.table("active_streams").upsert({
+            "user_id": user_id,
+            "stream_id": stream_id,
+            "started_at": datetime.utcnow().isoformat()
+        }).execute()
 
         try:
             # ---------- 1️⃣ IMAGE STREAM ----------
@@ -980,11 +971,7 @@ async def chat_stream(req: Request, res: Response, tts: bool = False, samples: i
                 try:
                     yield sse({"status": "image_start", "message": "Starting image generation"})
 
-                    img_payload = {
-                        "prompt": prompt,
-                        "samples": samples,
-                        "base64": False
-                    }
+                    img_payload = {"prompt": prompt, "samples": samples, "base64": False}
 
                     async with httpx.AsyncClient(timeout=None) as client:
                         async with client.stream(
@@ -1004,18 +991,18 @@ async def chat_stream(req: Request, res: Response, tts: bool = False, samples: i
 
             # ---------- 2️⃣ CHAT STREAM ----------
             try:
+                messages = [
+                    {"role": "system", "content": safe_system_prompt(build_contextual_prompt(user_id, prompt))},
+                    {"role": "user", "content": prompt}
+                ]
+
                 payload = {
                     "model": CHAT_MODEL,
                     "stream": True,
-                    "messages": [
-                        {"role": "system", "content": safe_system_prompt(
-    build_contextual_prompt(user_id, prompt)
-)},
-                        {"role": "user", "content": prompt}
-                       ],
-                 "temperature": 0.7,
-                 "max_tokens": 1024
-                 }
+                    "messages": messages,
+                    "temperature": 0.7,
+                    "max_tokens": 1024
+                }
 
                 async with httpx.AsyncClient(timeout=None) as client:
                     async with client.stream(
@@ -1028,13 +1015,19 @@ async def chat_stream(req: Request, res: Response, tts: bool = False, samples: i
                             if not line.startswith("data:"):
                                 continue
 
+                            # Check if stream was cancelled
+                            active = supabase.table("active_streams").select("stream_id").eq("user_id", user_id).execute().data
+                            if not active:
+                                logger.info(f"Stream cancelled by user {user_id}")
+                                break
+
                             data = line[len("data:"):].strip()
                             if data == "[DONE]":
                                 break
 
                             delta = json.loads(data)["choices"][0]["delta"].get("content")
                             if delta:
-                                yield f"data:{delta}\n\n"
+                                yield sse({"token": delta})
 
             except Exception:
                 logger.exception("Chat streaming failed")
@@ -1056,7 +1049,6 @@ async def chat_stream(req: Request, res: Response, tts: bool = False, samples: i
                     }
 
                     audio_buffer = bytearray()
-
                     async with httpx.AsyncClient(timeout=None) as client:
                         async with client.stream(
                             "POST",
@@ -1084,11 +1076,11 @@ async def chat_stream(req: Request, res: Response, tts: bool = False, samples: i
 
         except Exception as e:
             logger.exception("Universal stream crashed")
-            yield sse({"type": "fatal_error", "error": str(e)})
+            yield sse({"status": "fatal_error", "error": str(e)})
 
         finally:
-            # ✅ CLEANUP
-            active_streams.pop(user_id, None)
+            # ✅ CLEANUP ACTIVE STREAM IN SUPABASE
+            supabase.table("active_streams").delete().eq("user_id", user_id).execute()
 
     return StreamingResponse(
         event_generator(),
