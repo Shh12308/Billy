@@ -478,25 +478,27 @@ async def get_or_create_user(req: Request, res: Response) -> str:
     )
     return user_id
 
-def load_history(user_id: str, limit: int = 10):
-    res = (
-        supabase
-        .table("chat_messages")
-        .select("role,content")
-        .eq("user_id", user_id)
-        .order("created_at", desc=False)
-        .limit(limit)
-        .execute()
-    )
-
-    return res.data or []
-
-def save_message(user_id: str, role: str, content: str):
-    supabase.table("chat_messages").insert({
+async def save_message(user_id: str, role: str, content: str):
+    await supabase.table("conversations").insert({
         "user_id": user_id,
         "role": role,
         "content": content
     }).execute()
+
+
+async def load_history(user_id: str, limit: int = 20):
+    resp = await supabase.table("conversations") \
+        .select("*") \
+        .eq("user_id", user_id) \
+        .order("created_at", desc=True) \
+        .limit(limit) \
+        .execute()
+    
+    messages = [
+        {"role": row["role"], "content": row["content"]}
+        for row in reversed(resp.data)
+    ]
+    return messages
 
 
 # ----------------------------------
@@ -1266,7 +1268,8 @@ async def ask_universal(request: Request):
     if not prompt:
         raise HTTPException(400, "prompt required")
 
-    history = load_history(user_id)
+    # ✅ Load previous conversation
+    history = await load_history(user_id)
     messages = history + [{"role": "user", "content": prompt}]
 
     # =========================
@@ -1288,7 +1291,13 @@ async def ask_universal(request: Request):
                     json=payload
                 )
                 r.raise_for_status()
-                return r.json()
+                result = r.json()
+
+            # ✅ Save assistant reply
+            assistant_content = result["choices"][0]["message"]["content"]
+            await save_message(user_id, "assistant", assistant_content)
+
+            return result
 
         except httpx.HTTPStatusError as e:
             raise HTTPException(500, f"Groq error: {e.response.text}")
@@ -1308,6 +1317,8 @@ async def ask_universal(request: Request):
             "messages": messages,
             "max_tokens": 1024
         }
+
+        assistant_reply = ""
 
         try:
             async with httpx.AsyncClient(timeout=None) as client:
@@ -1329,9 +1340,13 @@ async def ask_universal(request: Request):
                             chunk = json.loads(data)
                             delta = chunk["choices"][0]["delta"].get("content")
                             if delta:
+                                assistant_reply += delta
                                 yield sse({"type": "token", "text": delta})
                         except Exception:
                             continue
+
+            # ✅ Save assistant reply after streaming
+            await save_message(user_id, "assistant", assistant_reply)
 
         except Exception as e:
             yield sse({"type": "error", "error": str(e)})
