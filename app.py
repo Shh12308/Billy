@@ -1300,24 +1300,27 @@ if not stream:
         "max_tokens": 1024
     }
 
+  try:
     async with httpx.AsyncClient(timeout=60.0) as client:
-        try:
-            r = await client.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers=get_groq_headers(),
-                json=payload
-            )
-            r.raise_for_status()
-            return r.json()
+        r = await client.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers=get_groq_headers(),
+            json=payload
+        )
+        r.raise_for_status()
+        return r.json()
 
-        except httpx.HTTPStatusError as e:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Groq error: {e.response.text}"
-            )
+except httpx.HTTPStatusError as e:
+    raise HTTPException(
+        status_code=500,
+        detail=f"Groq error: {e.response.text}"
+    )
 
-            except Exception as e:
-                raise HTTPException(status_code=500, detail=str(e))
+except Exception as e:
+    raise HTTPException(
+        status_code=500,
+        detail=str(e)
+    )
 
     # =========================
     # STREAM MODE (OPTIONAL)
