@@ -48,7 +48,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
 from supabase import create_client
-await save_message(user_id, "user", prompt)
 
 # ---------- ENV KEYS ----------
 SUPABASE_URL = os.getenv("SUPABASE_URL")
