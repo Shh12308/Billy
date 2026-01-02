@@ -1262,109 +1262,99 @@ async def run_code_safely(prompt: str):
 
 @app.post("/ask/universal")
 async def ask_universal(request: Request):
-
-    # -------------------------
-    # Parse JSON
-    # -------------------------
     try:
         body = await request.json()
     except Exception:
-        return JSONResponse(
-            status_code=400,
-            content={"error": "Invalid or missing JSON body"}
-        )
+        raise HTTPException(400, "Invalid JSON")
 
     prompt = body.get("prompt", "").strip()
     user_id = body.get("user_id", "anonymous")
     stream = bool(body.get("stream", False))
 
     if not prompt:
-        raise HTTPException(status_code=400, detail="prompt required")
+        raise HTTPException(400, "prompt required")
 
-    intent = body.get("mode") or detect_intent(prompt)
-
-   # =========================
-# NON-STREAM MODE
-# =========================
-if not stream:
     history = load_history(user_id)
-
-    messages = history + [
-        {"role": "user", "content": prompt}
-    ]
-
-    payload = {
-        "model": CHAT_MODEL,
-        "messages": messages,
-        "temperature": 0.7,
-        "max_tokens": 1024
-    }
-
-  try:
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        r = await client.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers=get_groq_headers(),
-            json=payload
-        )
-        r.raise_for_status()
-        return r.json()
-
-except httpx.HTTPStatusError as e:
-    raise HTTPException(
-        status_code=500,
-        detail=f"Groq error: {e.response.text}"
-    )
-
-except Exception as e:
-    raise HTTPException(
-        status_code=500,
-        detail=str(e)
-    )
+    messages = history + [{"role": "user", "content": prompt}]
 
     # =========================
-    # STREAM MODE (OPTIONAL)
+    # NON-STREAM MODE
+    # =========================
+    if not stream:
+        payload = {
+            "model": CHAT_MODEL,
+            "messages": messages,
+            "temperature": 0.7,
+            "max_tokens": 1024
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=60) as client:
+                r = await client.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers=get_groq_headers(),
+                    json=payload
+                )
+                r.raise_for_status()
+                return r.json()
+
+        except httpx.HTTPStatusError as e:
+            raise HTTPException(500, f"Groq error: {e.response.text}")
+
+        except Exception as e:
+            raise HTTPException(500, str(e))
+
+    # =========================
+    # STREAM MODE
     # =========================
     async def event_generator():
-    yield f"data: {{\"type\": \"starting\"}}\n\n"
+        yield sse({"type": "starting"})
 
-    history = load_history(user_id)
+        payload = {
+            "model": CHAT_MODEL,
+            "stream": True,
+            "messages": messages,
+            "max_tokens": 1024
+        }
 
-    messages = history + [
-        {"role": "user", "content": prompt}
-    ]
+        try:
+            async with httpx.AsyncClient(timeout=None) as client:
+                async with client.stream(
+                    "POST",
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers=get_groq_headers(),
+                    json=payload
+                ) as resp:
+                    async for line in resp.aiter_lines():
+                        if not line.startswith("data:"):
+                            continue
 
-    payload = {
-        "model": CHAT_MODEL,
-        "messages": messages,
-        "stream": True
-    }
+                        data = line[len("data:"):].strip()
+                        if data == "[DONE]":
+                            break
 
-    async with httpx.AsyncClient(timeout=None) as client:
-        async with client.stream(
-            "POST",
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers=get_groq_headers(),
-            json=payload
-        ) as r:
-            async for line in r.aiter_lines():
-                if not line or not line.startswith("data:"):
-                    continue
-                if line.strip() == "data: [DONE]":
-                    break
-                yield f"{line}\n\n"
+                        try:
+                            chunk = json.loads(data)
+                            delta = chunk["choices"][0]["delta"].get("content")
+                            if delta:
+                                yield sse({"type": "token", "text": delta})
+                        except Exception:
+                            continue
 
-    yield f"data: {{\"type\": \"done\"}}\n\n"
+        except Exception as e:
+            yield sse({"type": "error", "error": str(e)})
+
+        yield sse({"type": "done"})
 
     return StreamingResponse(
         event_generator(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
-            "Connection": "keep-alive"
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
         }
     )
-
 
 @app.post("/message/{message_id}/edit")
 async def edit_message(
