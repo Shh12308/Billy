@@ -48,6 +48,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
 from supabase import create_client
+await save_message(user_id, "user", prompt)
 
 # ---------- ENV KEYS ----------
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -104,13 +105,6 @@ USE_FREE_IMAGE_PROVIDER = os.getenv("USE_FREE_IMAGE_PROVIDER", "false").lower() 
 
 # Quick log so you can confirm key presence without printing the key itself
 logger.info(f"GROQ key present: {bool(GROQ_API_KEY)}")
-
-# -------------------
-# Database Paths (Local fallback)
-# -------------------
-KG_DB_PATH = os.getenv("KG_DB_PATH", "/tmp/kg.db")
-MEMORY_DB = os.getenv("MEMORY_DB", "/tmp/memory.db")
-CACHE_DB_PATH = os.getenv("CACHE_DB_PATH", "/tmp/cache.db")
 
 # -------------------
 # Models
@@ -322,77 +316,6 @@ def build_contextual_prompt(user_id: str, message: str) -> str:
     context = "\n".join(f"{k}: {v}" for k, v in rows)
     return f"You are ZyNaraAI1.0 : helpful, concise, friendly. Focus on exactly what the user wants.\nUser context:\n{context}\nUser message: {message}"
 
-# ---------- SQLITE helpers ----------
-def ensure_db(path: str, schema_sql: str):
-    conn = sqlite3.connect(path)
-    cur = conn.cursor()
-    cur.executescript(schema_sql)
-    conn.commit()
-    conn.close()
-
-# Knowledge Graph
-ensure_db(KG_DB_PATH, """
-CREATE TABLE IF NOT EXISTS nodes (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  title TEXT,
-  content TEXT,
-  created_at REAL
-);
-""")
-
-# Memory
-ensure_db(MEMORY_DB, """
-CREATE TABLE IF NOT EXISTS memory (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  user_id TEXT,
-  key TEXT,
-  value TEXT,
-  updated_at REAL
-);
-""")
-
-# Cache for images/prompts
-ensure_db(CACHE_DB_PATH, """
-CREATE TABLE IF NOT EXISTS cache (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  prompt TEXT,
-  provider TEXT,
-  result TEXT,
-  created_at REAL
-);
-""")
-
-def add_kg_node(title: str, content: str):
-    conn = sqlite3.connect(KG_DB_PATH)
-    cur = conn.cursor()
-    cur.execute("INSERT INTO nodes (title, content, created_at) VALUES (?, ?, ?)", (title, content, time.time()))
-    conn.commit()
-    conn.close()
-
-def query_kg(q: str, limit: int = 5):
-    conn = sqlite3.connect(KG_DB_PATH)
-    cur = conn.cursor()
-    cur.execute("SELECT title, content FROM nodes WHERE title LIKE ? OR content LIKE ? ORDER BY created_at DESC LIMIT ?", (f"%{q}%", f"%{q}%", limit))
-    rows = cur.fetchall()
-    conn.close()
-    return [{"title": r[0], "content": r[1]} for r in rows]
-
-def cache_result(prompt: str, provider: str, result: Any):
-    conn = sqlite3.connect(CACHE_DB_PATH)
-    cur = conn.cursor()
-    cur.execute("INSERT INTO cache (prompt, provider, result, created_at) VALUES (?, ?, ?, ?)", (prompt, provider, json.dumps(result), time.time()))
-    conn.commit()
-    conn.close()
-
-def get_cached(prompt: str) -> Optional[Dict[str, Any]]:
-    conn = sqlite3.connect(CACHE_DB_PATH)
-    cur = conn.cursor()
-    cur.execute("SELECT provider,result FROM cache WHERE prompt=? ORDER BY created_at DESC LIMIT 1", (prompt,))
-    row = cur.fetchone()
-    conn.close()
-    if row:
-        return {"provider": row[0], "result": json.loads(row[1])}
-    return None
 
 # ---------- Image helpers ----------
 def unique_filename(ext="png"):
