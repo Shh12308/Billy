@@ -474,19 +474,27 @@ def detect_artifact(text: str):
     return None
 
 
-async def load_history(user_id: str, limit: int = 10):
-    resp = (
-        supabase.table("conversations")
-        .select("role, content")
-        .eq("user_id", user_id)
-        .order("created_at", desc=True)
-        .limit(limit)
+async def load_history(user_id: str, limit: int = 20):
+    convo = supabase.table("conversations") \
+        .select("id") \
+        .eq("user_id", user_id) \
+        .order("created_at", desc=True) \
+        .limit(1) \
         .execute()
-    )
 
-    messages = resp.data or []
-    messages.reverse()  # oldest → newest
-    return messages
+    if not convo.data:
+        return []
+
+    conversation_id = convo.data[0]["id"]
+
+    msgs = supabase.table("messages") \
+        .select("role,content") \
+        .eq("conversation_id", conversation_id) \
+        .order("created_at") \
+        .limit(limit) \
+        .execute()
+
+    return msgs.data or []
 
 # ----------------------------------
 # MEMORY LOADER
