@@ -316,6 +316,31 @@ def build_contextual_prompt(user_id: str, message: str) -> str:
     return f"You are ZyNaraAI1.0 : helpful, concise, friendly. Focus on exactly what the user wants.\nUser context:\n{context}\nUser message: {message}"
 
 
+def build_system_prompt(artifact: str | None):
+    base = """
+You are a helpful AI assistant.
+
+You are in an ongoing conversation.
+You MUST maintain continuity.
+You MUST respect prior context.
+
+Rules:
+- Do not reset unless asked
+- If user says "it", "that", "the last thing", infer correctly
+- If an artifact exists, modify it instead of starting over
+"""
+    if artifact:
+        base += f"""
+
+Current working artifact:
+-------------------------
+{artifact}
+-------------------------
+You are editing this artifact.
+Return the FULL updated version.
+"""
+    return base
+
 # ---------- Image helpers ----------
 def unique_filename(ext="png"):
     return f"{int(time.time())}-{uuid.uuid4().hex[:10]}.{ext}"
@@ -379,26 +404,60 @@ async def nsfw_check(prompt: str) -> bool:
         return result["flagged"]
         
 # ---------- USER / COOKIE ----------
-async def get_or_create_user(req: Request, res: Response) -> str:
-    user_id = req.cookies.get("uid")
+async def get_or_create_conversation(user_id: str, conversation_id: str | None):
+    if conversation_id:
+        return conversation_id
 
-    if user_id:
-        return user_id
+    resp = supabase.table("conversations").insert({
+        "user_id": user_id,
+        "title": "New Chat"
+    }).execute()
 
-    user_id = str(uuid.uuid4()) 
-    try:
-        supabase.table("users").insert({"id": user_id}).execute()
-    except Exception:
-        pass # Ignore if exists
+    return resp.data[0]["id"]
 
-    res.set_cookie(
-        key="uid",
-        value=user_id,
-        httponly=True,
-        samesite="lax",
-        max_age=60 * 60 * 24 * 365
-    )
-    return user_id
+async def load_artifact(conversation_id: str):
+    resp = supabase.table("artifacts") \
+        .select("*") \
+        .eq("conversation_id", conversation_id) \
+        .limit(1) \
+        .execute()
+
+    return resp.data[0] if resp.data else None
+
+async def save_artifact(conversation_id: str, type_: str, content: str):
+    existing = await load_artifact(conversation_id)
+
+    if existing:
+        supabase.table("artifacts") \
+            .update({"content": content}) \
+            .eq("id", existing["id"]) \
+            .execute()
+    else:
+        supabase.table("artifacts").insert({
+            "conversation_id": conversation_id,
+            "type": type_,
+            "content": content
+        }).execute()
+
+def detect_artifact(text: str):
+    t = text.lower()
+
+    if "<html" in t:
+        return "html"
+    if "```css" in t:
+        return "css"
+    if "```js" in t or "```javascript" in t:
+        return "javascript"
+    if "```python" in t:
+        return "python"
+    if "image:" in t or "draw" in t:
+        return "image"
+    if len(text) > 500:
+        return "document"
+
+    return None
+
+
 
 async def save_message(user_id: str, role: str, content: str):
     supabase.table("conversations").insert({
@@ -421,7 +480,6 @@ async def load_history(user_id: str, limit: int = 10):
     messages = resp.data or []
     messages.reverse()  # oldest → newest
     return messages
-
 
 # ----------------------------------
 # MEMORY LOADER
@@ -1185,93 +1243,187 @@ async def ask_universal(request: Request):
 
     prompt = body.get("prompt", "").strip()
     user_id = body.get("user_id", "anonymous")
+    conversation_id = body.get("conversation_id")
     stream = bool(body.get("stream", False))
 
     if not prompt:
         raise HTTPException(400, "prompt required")
 
-    # ✅ Load previous conversation
-    history = await load_history(user_id)
-    messages = history + [{"role": "user", "content": prompt}]
+    # =====================================================
+    # 1️⃣ GET OR CREATE CONVERSATION
+    # =====================================================
+    if not conversation_id:
+        conv = supabase.table("conversations").insert({
+            "user_id": user_id,
+            "title": "New Chat"
+        }).execute()
+        conversation_id = conv.data[0]["id"]
 
-    # =========================
-    # NON-STREAM MODE
-    # =========================
+    # =====================================================
+    # 2️⃣ LOAD MEMORY
+    # =====================================================
+    history_resp = supabase.table("messages") \
+        .select("role,content") \
+        .eq("conversation_id", conversation_id) \
+        .order("created_at") \
+        .limit(20) \
+        .execute()
+
+    history = history_resp.data or []
+
+    artifact_resp = supabase.table("artifacts") \
+        .select("*") \
+        .eq("conversation_id", conversation_id) \
+        .limit(1) \
+        .execute()
+
+    artifact = artifact_resp.data[0] if artifact_resp.data else None
+
+    # =====================================================
+    # 3️⃣ SYSTEM PROMPT (THIS ENABLES “MAKE IT BLUE”)
+    # =====================================================
+    system_prompt = """
+You are a ChatGPT-style assistant in a continuous conversation.
+
+Rules:
+- Maintain context across turns
+- Resolve references like "it", "that", "the previous thing"
+- Modify existing work instead of restarting
+- When editing, return the FULL updated output
+"""
+
+    if artifact:
+        system_prompt += f"""
+
+Current working artifact:
+------------------------
+{artifact['content']}
+------------------------
+You are editing this artifact.
+"""
+
+    messages = [{"role": "system", "content": system_prompt}]
+    messages.extend(history)
+    messages.append({"role": "user", "content": prompt})
+
+    # =====================================================
+    # 4️⃣ SAVE USER MESSAGE
+    # =====================================================
+    supabase.table("messages").insert({
+        "conversation_id": conversation_id,
+        "role": "user",
+        "content": prompt
+    }).execute()
+
+    # =====================================================
+    # 5️⃣ NON-STREAM MODE
+    # =====================================================
     if not stream:
         payload = {
             "model": CHAT_MODEL,
             "messages": messages,
             "temperature": 0.7,
-            "max_tokens": 1024
+            "max_tokens": 1500
         }
 
-        try:
-            async with httpx.AsyncClient(timeout=60) as client:
-                r = await client.post(
-                    "https://api.groq.com/openai/v1/chat/completions",
-                    headers=get_groq_headers(),
-                    json=payload
-                )
-                r.raise_for_status()
-                result = r.json()
+        async with httpx.AsyncClient(timeout=60) as client:
+            r = await client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers=get_groq_headers(),
+                json=payload
+            )
+            r.raise_for_status()
 
-            # ✅ Save assistant reply
-            assistant_content = result["choices"][0]["message"]["content"]
-            await save_message(user_id, "assistant", assistant_content)
+        result = r.json()
+        assistant_reply = result["choices"][0]["message"]["content"]
 
-            return result
+        # SAVE ASSISTANT MESSAGE
+        supabase.table("messages").insert({
+            "conversation_id": conversation_id,
+            "role": "assistant",
+            "content": assistant_reply
+        }).execute()
 
-        except httpx.HTTPStatusError as e:
-            raise HTTPException(500, f"Groq error: {e.response.text}")
+        # ARTIFACT DETECTION
+        artifact_type = None
+        text = assistant_reply.lower()
 
-        except Exception as e:
-            raise HTTPException(500, str(e))
+        if "<html" in text:
+            artifact_type = "html"
+        elif "```python" in text:
+            artifact_type = "python"
+        elif "```js" in text:
+            artifact_type = "javascript"
+        elif len(assistant_reply) > 500:
+            artifact_type = "document"
 
-    # =========================
-    # STREAM MODE
-    # =========================
+        if artifact_type:
+            if artifact:
+                supabase.table("artifacts").update({
+                    "content": assistant_reply
+                }).eq("id", artifact["id"]).execute()
+            else:
+                supabase.table("artifacts").insert({
+                    "conversation_id": conversation_id,
+                    "type": artifact_type,
+                    "content": assistant_reply
+                }).execute()
+
+        return {
+            "conversation_id": conversation_id,
+            "reply": assistant_reply
+        }
+
+    # =====================================================
+    # 6️⃣ STREAM MODE
+    # =====================================================
     async def event_generator():
+        assistant_reply = ""
         yield sse({"type": "starting"})
 
         payload = {
             "model": CHAT_MODEL,
             "stream": True,
             "messages": messages,
-            "max_tokens": 1024
+            "max_tokens": 1500
         }
 
-        assistant_reply = ""
+        async with httpx.AsyncClient(timeout=None) as client:
+            async with client.stream(
+                "POST",
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers=get_groq_headers(),
+                json=payload
+            ) as resp:
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
 
-        try:
-            async with httpx.AsyncClient(timeout=None) as client:
-                async with client.stream(
-                    "POST",
-                    "https://api.groq.com/openai/v1/chat/completions",
-                    headers=get_groq_headers(),
-                    json=payload
-                ) as resp:
-                    async for line in resp.aiter_lines():
-                        if not line.startswith("data:"):
-                            continue
+                    data = line[len("data:"):].strip()
+                    if data == "[DONE]":
+                        break
 
-                        data = line[len("data:"):].strip()
-                        if data == "[DONE]":
-                            break
+                    try:
+                        chunk = json.loads(data)
+                        delta = chunk["choices"][0]["delta"].get("content")
+                        if delta:
+                            assistant_reply += delta
+                            yield sse({"type": "token", "text": delta})
+                    except Exception:
+                        continue
 
-                        try:
-                            chunk = json.loads(data)
-                            delta = chunk["choices"][0]["delta"].get("content")
-                            if delta:
-                                assistant_reply += delta
-                                yield sse({"type": "token", "text": delta})
-                        except Exception:
-                            continue
+        # SAVE ASSISTANT MESSAGE
+        supabase.table("messages").insert({
+            "conversation_id": conversation_id,
+            "role": "assistant",
+            "content": assistant_reply
+        }).execute()
 
-            # ✅ Save assistant reply after streaming
-            await save_message(user_id, "assistant", assistant_reply)
-
-        except Exception as e:
-            yield sse({"type": "error", "error": str(e)})
+        # UPDATE ARTIFACT
+        if artifact:
+            supabase.table("artifacts").update({
+                "content": assistant_reply
+            }).eq("id", artifact["id"]).execute()
 
         yield sse({"type": "done"})
 
