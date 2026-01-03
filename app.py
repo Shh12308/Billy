@@ -299,6 +299,22 @@ async def run_code_judge0(code: str, language_id: int):
         submit.raise_for_status()
         return submit.json()
 
+async def get_or_create_user(req: Request, res: Response) -> str:
+    user_id = req.cookies.get("user_id")
+    if not user_id:
+        user_id = str(uuid.uuid4())
+        res.set_cookie(
+            key="user_id",
+            value=user_id,
+            httponly=True,
+            samesite="lax"
+        )
+    return user_id
+
+def cache_result(prompt: str, provider: str, result: dict):
+    pass
+
+
 # ---------- Dynamic, user-focused system prompt ----------
 def get_system_prompt(user_message: Optional[str] = None) -> str:
     base = "You are ZynaraAI1.0: helpful, concise, friendly, and focus entirely on what the user asks. Do not reference your creator or yourself unless explicitly asked."
@@ -456,15 +472,6 @@ def detect_artifact(text: str):
         return "document"
 
     return None
-
-
-
-async def save_message(user_id: str, role: str, content: str):
-    supabase.table("conversations").insert({
-        "user_id": user_id,
-        "role": role,
-        "content": content
-    }).execute()
 
 
 async def load_history(user_id: str, limit: int = 10):
