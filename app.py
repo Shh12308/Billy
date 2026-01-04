@@ -1395,37 +1395,30 @@ You are editing this artifact.
 async def event_generator():
     assistant_reply = ""
 
-    # Tell frontend what we are doing
-    yield sse({
-        "type": "starting",
-        "intent": intent
-    })
+    yield sse({"type": "starting", "intent": intent})
 
-    # ================= IMAGE =================
+    # IMAGE
     if intent == "image":
         async for evt in stream_images(prompt, samples=1):
             yield evt
         yield sse({"type": "done"})
-        return
+        return  # ✅ plain return only
 
-    # ================= VIDEO =================
+    # VIDEO
     if intent == "video":
         result = await generate_video_internal(prompt, user_id=user_id)
-        yield sse({
-            "type": "video",
-            "videos": result["videos"]
-        })
+        yield sse({"type": "video", "videos": result["videos"]})
         yield sse({"type": "done"})
         return
 
-    # ================= TTS =================
+    # TTS
     if intent == "tts":
         async for evt in tts_stream_helper(prompt):
             yield sse(evt)
         yield sse({"type": "done"})
         return
 
-    # ================= CODE =================
+    # CODE
     if intent == "code":
         result = await run_code_safely(prompt)
         yield sse({
@@ -1436,22 +1429,18 @@ async def event_generator():
         yield sse({"type": "done"})
         return
 
-    # ================= SEARCH =================
+    # SEARCH
     if intent == "search":
         result = await duckduckgo_search(prompt)
-        yield sse({
-            "type": "search",
-            "result": result
-        })
+        yield sse({"type": "search", "result": result})
         yield sse({"type": "done"})
         return
 
-    # ================= CHAT (DEFAULT) =================
+    # DEFAULT CHAT
     payload = {
         "model": CHAT_MODEL,
         "stream": True,
         "messages": messages,
-        "temperature": 0.7,
         "max_tokens": 1500
     }
 
@@ -1465,35 +1454,22 @@ async def event_generator():
             async for line in resp.aiter_lines():
                 if not line.startswith("data:"):
                     continue
-
-                data = line[len("data:"):].strip()
+                data = line[5:].strip()
                 if data == "[DONE]":
                     break
-
                 try:
-                    chunk = json.loads(data)
-                    delta = chunk["choices"][0]["delta"].get("content")
+                    delta = json.loads(data)["choices"][0]["delta"].get("content")
                     if delta:
                         assistant_reply += delta
-                        yield sse({
-                            "type": "token",
-                            "text": delta
-                        })
+                        yield sse({"type": "token", "text": delta})
                 except Exception:
-                    continue
+                    pass
 
-    # SAVE ASSISTANT MESSAGE
     supabase.table("messages").insert({
         "conversation_id": conversation_id,
         "role": "assistant",
         "content": assistant_reply
     }).execute()
-
-    # UPDATE ARTIFACT (if exists)
-    if artifact:
-        supabase.table("artifacts").update({
-            "content": assistant_reply
-        }).eq("id", artifact["id"]).execute()
 
     yield sse({"type": "done"})
     
