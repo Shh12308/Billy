@@ -1388,60 +1388,115 @@ You are editing this artifact.
             "conversation_id": conversation_id,
             "reply": assistant_reply
         }
+        
+# =====================================================
+# 6️⃣ STREAM MODE — TRUE UNIVERSAL
+# =====================================================
+async def event_generator():
+    assistant_reply = ""
 
-    # =====================================================
-    # 6️⃣ STREAM MODE
-    # =====================================================
-    async def event_generator():
-        assistant_reply = ""
-        yield sse({"type": "starting"})
+    # Tell frontend what we are doing
+    yield sse({
+        "type": "starting",
+        "intent": intent
+    })
 
-        payload = {
-            "model": CHAT_MODEL,
-            "stream": True,
-            "messages": messages,
-            "max_tokens": 1500
-        }
-
-        async with httpx.AsyncClient(timeout=None) as client:
-            async with client.stream(
-                "POST",
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers=get_groq_headers(),
-                json=payload
-            ) as resp:
-                async for line in resp.aiter_lines():
-                    if not line.startswith("data:"):
-                        continue
-
-                    data = line[len("data:"):].strip()
-                    if data == "[DONE]":
-                        break
-
-                    try:
-                        chunk = json.loads(data)
-                        delta = chunk["choices"][0]["delta"].get("content")
-                        if delta:
-                            assistant_reply += delta
-                            yield sse({"type": "token", "text": delta})
-                    except Exception:
-                        continue
-
-        # SAVE ASSISTANT MESSAGE
-        supabase.table("messages").insert({
-            "conversation_id": conversation_id,
-            "role": "assistant",
-            "content": assistant_reply
-        }).execute()
-
-        # UPDATE ARTIFACT
-        if artifact:
-            supabase.table("artifacts").update({
-                "content": assistant_reply
-            }).eq("id", artifact["id"]).execute()
-
+    # ================= IMAGE =================
+    if intent == "image":
+        async for evt in stream_images(prompt, samples=1):
+            yield evt
         yield sse({"type": "done"})
+        return
 
+    # ================= VIDEO =================
+    if intent == "video":
+        result = await generate_video_internal(prompt, user_id=user_id)
+        yield sse({
+            "type": "video",
+            "videos": result["videos"]
+        })
+        yield sse({"type": "done"})
+        return
+
+    # ================= TTS =================
+    if intent == "tts":
+        async for evt in tts_stream_helper(prompt):
+            yield sse(evt)
+        yield sse({"type": "done"})
+        return
+
+    # ================= CODE =================
+    if intent == "code":
+        result = await run_code_safely(prompt)
+        yield sse({
+            "type": "code",
+            "code": result["code"],
+            "execution": result["execution"]
+        })
+        yield sse({"type": "done"})
+        return
+
+    # ================= SEARCH =================
+    if intent == "search":
+        result = await duckduckgo_search(prompt)
+        yield sse({
+            "type": "search",
+            "result": result
+        })
+        yield sse({"type": "done"})
+        return
+
+    # ================= CHAT (DEFAULT) =================
+    payload = {
+        "model": CHAT_MODEL,
+        "stream": True,
+        "messages": messages,
+        "temperature": 0.7,
+        "max_tokens": 1500
+    }
+
+    async with httpx.AsyncClient(timeout=None) as client:
+        async with client.stream(
+            "POST",
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers=get_groq_headers(),
+            json=payload
+        ) as resp:
+            async for line in resp.aiter_lines():
+                if not line.startswith("data:"):
+                    continue
+
+                data = line[len("data:"):].strip()
+                if data == "[DONE]":
+                    break
+
+                try:
+                    chunk = json.loads(data)
+                    delta = chunk["choices"][0]["delta"].get("content")
+                    if delta:
+                        assistant_reply += delta
+                        yield sse({
+                            "type": "token",
+                            "text": delta
+                        })
+                except Exception:
+                    continue
+
+    # SAVE ASSISTANT MESSAGE
+    supabase.table("messages").insert({
+        "conversation_id": conversation_id,
+        "role": "assistant",
+        "content": assistant_reply
+    }).execute()
+
+    # UPDATE ARTIFACT (if exists)
+    if artifact:
+        supabase.table("artifacts").update({
+            "content": assistant_reply
+        }).eq("id", artifact["id"]).execute()
+
+    yield sse({"type": "done"})
+    
     return StreamingResponse(
         event_generator(),
         media_type="text/event-stream",
