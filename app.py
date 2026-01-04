@@ -1302,7 +1302,7 @@ async def ask_universal(request: Request):
     # =====================================================
     # 2️⃣ MEMORY
     # =====================================================
-    history = supabase.table("messages") \
+history = supabase.table("messages") \
     .select("role,content") \
     .eq("conversation_id", conversation_id) \
     .order("created_at") \
@@ -1311,32 +1311,43 @@ async def ask_universal(request: Request):
 
 user_memory = load_user_memory(user_id)
 
-    artifact_resp = supabase.table("artifacts") \
-        .select("*") \
+artifact_resp = supabase.table("artifacts") \
+    .select("*") \
+    .eq("conversation_id", conversation_id) \
+    .limit(1) \
+    .execute()
+
+async def update_conversation_summary(conversation_id: str):
+    msgs = supabase.table("messages") \
+        .select("role,content") \
         .eq("conversation_id", conversation_id) \
-        .limit(1) \
+        .order("created_at") \
+        .limit(40) \
+        .execute().data
+
+    text = "\n".join(f"{m['role']}: {m['content']}" for m in msgs)
+
+    payload = {
+        "model": CHAT_MODEL,
+        "messages": [
+            {"role": "system", "content": "Summarize this conversation briefly for long-term memory."},
+            {"role": "user", "content": text}
+        ],
+        "max_tokens": 200
+    }
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers=get_groq_headers(),
+            json=payload
+        )
+        summary = r.json()["choices"][0]["message"]["content"]
+
+    supabase.table("conversations") \
+        .update({"summary": summary}) \
+        .eq("id", conversation_id) \
         .execute()
-
-    artifact = artifact_resp.data[0] if artifact_resp.data else None
-
-    # =====================================================
-    # 3️⃣ INTENT DETECTION
-    # =====================================================
-    def detect_intent(prompt: str):
-        p = prompt.lower()
-        if "image" in p or "draw" in p:
-            return "image"
-        if "video" in p:
-            return "video"
-        if "read aloud" in p or "tts" in p:
-            return "tts"
-        if "search" in p or "look up" in p:
-            return "search"
-        if "code" in p or "python" in p or "html" in p:
-            return "code"
-        return "chat"
-
-    intent = detect_intent(prompt)
 
     # =====================================================
     # 4️⃣ SYSTEM PROMPT
@@ -1423,6 +1434,8 @@ if memory:
     # =====================================================
     # 7️⃣ STREAM MODE — UNIVERSAL
     # =====================================================
+    await update_conversation_summary(conversation_id)
+    
     async def event_generator():
         assistant_reply = ""
 
