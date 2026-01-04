@@ -1181,7 +1181,7 @@ async def _generate_image_core(
                 file=image_bytes,
                 file_options={
                     "content-type": "image/png",
-                    "upsert": True
+                    "upsert": "true"
                 }
             )
 
@@ -2152,13 +2152,13 @@ async def vision_analyze(
     supabase.storage.from_("ai-images").upload(
         raw_path,
         content,
-        {"content-type": "image/png", "upsert": True}
+        {"content-type": "image/png", "upsert": "true"}
     )
 
     supabase.storage.from_("ai-images").upload(
         ann_path,
         ann_buf.tobytes(),
-        {"content-type": "image/png", "upsert": True}
+        {"content-type": "image/png", "upsert": "true"}
     )
 
     raw_url = supabase.storage.from_("ai-images").create_signed_url(raw_path, 3600)["signedURL"]
