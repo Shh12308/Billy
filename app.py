@@ -810,6 +810,31 @@ def detect_intent(prompt: str) -> str:
     # Default → Chat model
     return "chat"
 
+def extract_memory_from_prompt(prompt: str):
+    p = prompt.lower()
+
+    if "my name is" in p:
+        name = prompt.split("my name is", 1)[1].strip().split()[0]
+        return ("name", name)
+
+    if "i live in" in p:
+        location = prompt.split("i live in", 1)[1].strip()
+        return ("location", location)
+
+    if "i like" in p:
+        pref = prompt.split("i like", 1)[1].strip()
+        return ("preference", pref)
+
+    return None
+
+def load_user_memory(user_id: str):
+    res = supabase.table("memories") \
+        .select("key,value") \
+        .eq("user_id", user_id) \
+        .execute()
+    return res.data or []
+
+
 # =========================
 # STREAM HELPERS FOR UNIVERSAL ENDPOINT
 # =========================
@@ -1278,11 +1303,13 @@ async def ask_universal(request: Request):
     # 2️⃣ MEMORY
     # =====================================================
     history = supabase.table("messages") \
-        .select("role,content") \
-        .eq("conversation_id", conversation_id) \
-        .order("created_at") \
-        .limit(20) \
-        .execute().data or []
+    .select("role,content") \
+    .eq("conversation_id", conversation_id) \
+    .order("created_at") \
+    .limit(20) \
+    .execute().data or []
+
+user_memory = load_user_memory(user_id)
 
     artifact_resp = supabase.table("artifacts") \
         .select("*") \
@@ -1314,17 +1341,24 @@ async def ask_universal(request: Request):
     # =====================================================
     # 4️⃣ SYSTEM PROMPT
     # =====================================================
-    system_prompt = """
+system_prompt = """
 You are a ChatGPT-style assistant.
 
+Rules:
 - Maintain context across turns
 - Resolve references like "it", "that"
+- Use user memory when relevant
 - Modify existing work instead of restarting
 - When editing, return the FULL updated output
 """
 
-    if artifact:
-        system_prompt += f"\nCurrent artifact:\n{artifact['content']}"
+if user_memory:
+    system_prompt += "\n\nUser memory:\n"
+    for m in user_memory:
+        system_prompt += f"- {m['key']}: {m['value']}\n"
+
+if artifact:
+    system_prompt += f"\n\nCurrent artifact:\n{artifact['content']}"
 
     messages = [{"role": "system", "content": system_prompt}]
     messages.extend(history)
@@ -1338,6 +1372,20 @@ You are a ChatGPT-style assistant.
         "role": "user",
         "content": prompt
     }).execute()
+
+     # =========================
+# 🧠 MEMORY EXTRACTION
+# =========================
+memory = extract_memory_from_prompt(prompt)
+if memory:
+    key, value = memory
+    supabase.table("memories").insert({
+        "user_id": user_id,
+        "key": key,
+        "value": value
+    }).execute()
+
+    
 
     # =====================================================
     # 6️⃣ NON-STREAM
