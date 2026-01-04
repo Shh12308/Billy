@@ -1265,7 +1265,7 @@ async def ask_universal(request: Request):
         raise HTTPException(400, "prompt required")
 
     # =====================================================
-    # 1️⃣ GET OR CREATE CONVERSATION
+    # 1️⃣ CONVERSATION
     # =====================================================
     if not conversation_id:
         conv = supabase.table("conversations").insert({
@@ -1275,16 +1275,14 @@ async def ask_universal(request: Request):
         conversation_id = conv.data[0]["id"]
 
     # =====================================================
-    # 2️⃣ LOAD MEMORY
+    # 2️⃣ MEMORY
     # =====================================================
-    history_resp = supabase.table("messages") \
+    history = supabase.table("messages") \
         .select("role,content") \
         .eq("conversation_id", conversation_id) \
         .order("created_at") \
         .limit(20) \
-        .execute()
-
-    history = history_resp.data or []
+        .execute().data or []
 
     artifact_resp = supabase.table("artifacts") \
         .select("*") \
@@ -1295,34 +1293,45 @@ async def ask_universal(request: Request):
     artifact = artifact_resp.data[0] if artifact_resp.data else None
 
     # =====================================================
-    # 3️⃣ SYSTEM PROMPT (THIS ENABLES “MAKE IT BLUE”)
+    # 3️⃣ INTENT DETECTION
+    # =====================================================
+    def detect_intent(prompt: str):
+        p = prompt.lower()
+        if "image" in p or "draw" in p:
+            return "image"
+        if "video" in p:
+            return "video"
+        if "read aloud" in p or "tts" in p:
+            return "tts"
+        if "search" in p or "look up" in p:
+            return "search"
+        if "code" in p or "python" in p or "html" in p:
+            return "code"
+        return "chat"
+
+    intent = detect_intent(prompt)
+
+    # =====================================================
+    # 4️⃣ SYSTEM PROMPT
     # =====================================================
     system_prompt = """
-You are a ChatGPT-style assistant in a continuous conversation.
+You are a ChatGPT-style assistant.
 
-Rules:
 - Maintain context across turns
-- Resolve references like "it", "that", "the previous thing"
+- Resolve references like "it", "that"
 - Modify existing work instead of restarting
 - When editing, return the FULL updated output
 """
 
     if artifact:
-        system_prompt += f"""
-
-Current working artifact:
-------------------------
-{artifact['content']}
-------------------------
-You are editing this artifact.
-"""
+        system_prompt += f"\nCurrent artifact:\n{artifact['content']}"
 
     messages = [{"role": "system", "content": system_prompt}]
     messages.extend(history)
     messages.append({"role": "user", "content": prompt})
 
     # =====================================================
-    # 4️⃣ SAVE USER MESSAGE
+    # 5️⃣ SAVE USER MESSAGE
     # =====================================================
     supabase.table("messages").insert({
         "conversation_id": conversation_id,
@@ -1331,7 +1340,7 @@ You are editing this artifact.
     }).execute()
 
     # =====================================================
-    # 5️⃣ NON-STREAM MODE
+    # 6️⃣ NON-STREAM
     # =====================================================
     if not stream:
         payload = {
@@ -1349,130 +1358,104 @@ You are editing this artifact.
             )
             r.raise_for_status()
 
-        result = r.json()
-        assistant_reply = result["choices"][0]["message"]["content"]
+        assistant_reply = r.json()["choices"][0]["message"]["content"]
 
-        # SAVE ASSISTANT MESSAGE
         supabase.table("messages").insert({
             "conversation_id": conversation_id,
             "role": "assistant",
             "content": assistant_reply
         }).execute()
 
-        # ARTIFACT DETECTION
-        artifact_type = None
-        text = assistant_reply.lower()
-
-        if "<html" in text:
-            artifact_type = "html"
-        elif "```python" in text:
-            artifact_type = "python"
-        elif "```js" in text:
-            artifact_type = "javascript"
-        elif len(assistant_reply) > 500:
-            artifact_type = "document"
-
-        if artifact_type:
-            if artifact:
-                supabase.table("artifacts").update({
-                    "content": assistant_reply
-                }).eq("id", artifact["id"]).execute()
-            else:
-                supabase.table("artifacts").insert({
-                    "conversation_id": conversation_id,
-                    "type": artifact_type,
-                    "content": assistant_reply
-                }).execute()
-
         return {
             "conversation_id": conversation_id,
+            "intent": intent,
             "reply": assistant_reply
         }
-        
-# =====================================================
-# 6️⃣ STREAM MODE — TRUE UNIVERSAL
-# =====================================================
-async def event_generator():
-    assistant_reply = ""
 
-    yield sse({"type": "starting", "intent": intent})
+    # =====================================================
+    # 7️⃣ STREAM MODE — UNIVERSAL
+    # =====================================================
+    async def event_generator():
+        assistant_reply = ""
 
-    # IMAGE
-    if intent == "image":
-        async for evt in stream_images(prompt, samples=1):
-            yield evt
+        yield sse({"type": "starting", "intent": intent})
+
+        # IMAGE
+        if intent == "image":
+            async for evt in stream_images(prompt, samples=1):
+                yield evt
+            yield sse({"type": "done"})
+            return
+
+        # VIDEO
+        if intent == "video":
+            result = await generate_video_internal(prompt, user_id=user_id)
+            yield sse({"type": "video", "videos": result["videos"]})
+            yield sse({"type": "done"})
+            return
+
+        # TTS
+        if intent == "tts":
+            async for evt in tts_stream_helper(prompt):
+                yield sse(evt)
+            yield sse({"type": "done"})
+            return
+
+        # CODE
+        if intent == "code":
+            result = await run_code_safely(prompt)
+            yield sse({
+                "type": "code",
+                "code": result["code"],
+                "execution": result["execution"]
+            })
+            yield sse({"type": "done"})
+            return
+
+        # SEARCH
+        if intent == "search":
+            result = await duckduckgo_search(prompt)
+            yield sse({"type": "search", "result": result})
+            yield sse({"type": "done"})
+            return
+
+        # CHAT (DEFAULT)
+        payload = {
+            "model": CHAT_MODEL,
+            "stream": True,
+            "messages": messages,
+            "max_tokens": 1500
+        }
+
+        async with httpx.AsyncClient(timeout=None) as client:
+            async with client.stream(
+                "POST",
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers=get_groq_headers(),
+                json=payload
+            ) as resp:
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        delta = json.loads(data)["choices"][0]["delta"].get("content")
+                        if delta:
+                            assistant_reply += delta
+                            yield sse({"type": "token", "text": delta})
+                    except Exception:
+                        pass
+
+        supabase.table("messages").insert({
+            "conversation_id": conversation_id,
+            "role": "assistant",
+            "content": assistant_reply
+        }).execute()
+
         yield sse({"type": "done"})
-        return  # ✅ plain return only
 
-    # VIDEO
-    if intent == "video":
-        result = await generate_video_internal(prompt, user_id=user_id)
-        yield sse({"type": "video", "videos": result["videos"]})
-        yield sse({"type": "done"})
-        return
-
-    # TTS
-    if intent == "tts":
-        async for evt in tts_stream_helper(prompt):
-            yield sse(evt)
-        yield sse({"type": "done"})
-        return
-
-    # CODE
-    if intent == "code":
-        result = await run_code_safely(prompt)
-        yield sse({
-            "type": "code",
-            "code": result["code"],
-            "execution": result["execution"]
-        })
-        yield sse({"type": "done"})
-        return
-
-    # SEARCH
-    if intent == "search":
-        result = await duckduckgo_search(prompt)
-        yield sse({"type": "search", "result": result})
-        yield sse({"type": "done"})
-        return
-
-    # DEFAULT CHAT
-    payload = {
-        "model": CHAT_MODEL,
-        "stream": True,
-        "messages": messages,
-        "max_tokens": 1500
-    }
-
-    async with httpx.AsyncClient(timeout=None) as client:
-        async with client.stream(
-            "POST",
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers=get_groq_headers(),
-            json=payload
-        ) as resp:
-            async for line in resp.aiter_lines():
-                if not line.startswith("data:"):
-                    continue
-                data = line[5:].strip()
-                if data == "[DONE]":
-                    break
-                try:
-                    delta = json.loads(data)["choices"][0]["delta"].get("content")
-                    if delta:
-                        assistant_reply += delta
-                        yield sse({"type": "token", "text": delta})
-                except Exception:
-                    pass
-
-    supabase.table("messages").insert({
-        "conversation_id": conversation_id,
-        "role": "assistant",
-        "content": assistant_reply
-    }).execute()
-
-    yield sse({"type": "done"})
-    
     return StreamingResponse(
         event_generator(),
         media_type="text/event-stream",
