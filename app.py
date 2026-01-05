@@ -1298,15 +1298,15 @@ async def ask_universal(request: Request):
         }).execute()
         conversation_id = conv.data[0]["id"]
 
-    # =====================================================
+        # =====================================================
     # 2️⃣ MEMORY
     # =====================================================
-history = supabase.table("messages") \
-    .select("role,content") \
-    .eq("conversation_id", conversation_id) \
-    .order("created_at") \
-    .limit(20) \
-    .execute().data or []
+    history = supabase.table("messages") \
+        .select("role,content") \
+        .eq("conversation_id", conversation_id) \
+        .order("created_at") \
+        .limit(20) \
+        .execute().data or []
 
 user_memory = load_user_memory(user_id)
 
@@ -1371,9 +1371,15 @@ if user_memory:
     for m in user_memory:
         system_prompt += f"- {m['key']}: {m['value']}\n"
 
-    messages = [{"role": "system", "content": system_prompt}]
-messages.extend(history)
-messages.append({"role": "user", "content": prompt})
+    system_prompt = """You are a ChatGPT-style assistant.
+Maintain context.
+Use memory.
+"""
+
+if user_memory:
+    system_prompt += "\nUser memory:\n"
+    for m in user_memory:
+        system_prompt += f"- {m['key']}: {m['value']}\n"
 
     # =====================================================
     # 5️⃣ SAVE USER MESSAGE
@@ -1384,9 +1390,9 @@ messages.append({"role": "user", "content": prompt})
         "content": prompt
     }).execute()
 
-     # =========================
-# 🧠 MEMORY EXTRACTION
-# =========================
+   # =========================
+   # 🧠 MEMORY EXTRACTION
+   # =========================
 memory = extract_memory_from_prompt(prompt)
 if memory:
     key, value = memory
