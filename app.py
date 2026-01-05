@@ -1206,7 +1206,6 @@ async def _generate_image_core(
                 file=image_bytes,
                 file_options={
                     "content-type": "image/png",
-                    "upsert": "true"
                 }
             )
 
@@ -1317,6 +1316,8 @@ artifact_resp = supabase.table("artifacts") \
     .limit(1) \
     .execute()
 
+ artifact = artifact_resp.data[0] if artifact_resp.data else None
+
 async def update_conversation_summary(conversation_id: str):
     msgs = supabase.table("messages") \
         .select("role,content") \
@@ -1363,17 +1364,16 @@ Rules:
 - When editing, return the FULL updated output
 """
 
+intent = detect_intent(prompt)
+
 if user_memory:
     system_prompt += "\n\nUser memory:\n"
     for m in user_memory:
         system_prompt += f"- {m['key']}: {m['value']}\n"
 
-if artifact:
-    system_prompt += f"\n\nCurrent artifact:\n{artifact['content']}"
-
     messages = [{"role": "system", "content": system_prompt}]
-    messages.extend(history)
-    messages.append({"role": "user", "content": prompt})
+messages.extend(history)
+messages.append({"role": "user", "content": prompt})
 
     # =====================================================
     # 5️⃣ SAVE USER MESSAGE
@@ -2213,13 +2213,13 @@ async def vision_analyze(
     supabase.storage.from_("ai-images").upload(
         raw_path,
         content,
-        {"content-type": "image/png", "upsert": "true"}
+        {"content-type": "image/png"}
     )
 
     supabase.storage.from_("ai-images").upload(
         ann_path,
         ann_buf.tobytes(),
-        {"content-type": "image/png", "upsert": "true"}
+        {"content-type": "image/png"}
     )
 
     raw_url = supabase.storage.from_("ai-images").create_signed_url(raw_path, 3600)["signedURL"]
