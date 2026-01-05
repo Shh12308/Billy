@@ -1316,7 +1316,7 @@ artifact_resp = supabase.table("artifacts") \
     .limit(1) \
     .execute()
 
- artifact = artifact_resp.data[0] if artifact_resp.data else None
+artifact = artifact_resp.data[0] if artifact_resp.data else None
 
 async def update_conversation_summary(conversation_id: str):
     msgs = supabase.table("messages") \
