@@ -440,6 +440,49 @@ async def load_artifact(conversation_id: str):
 
     return resp.data[0] if resp.data else None
 
+async def summarize_conversation(conversation_id: str):
+    msgs = supabase.table("messages") \
+        .select("role,content") \
+        .eq("conversation_id", conversation_id) \
+        .order("created_at") \
+        .limit(40) \
+        .execute().data
+
+    if not msgs:
+        return
+
+    text = "\n".join(f"{m['role']}: {m['content']}" for m in msgs)
+
+    payload = {
+        "model": CHAT_MODEL,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "Summarize this conversation briefly. "
+                    "Capture important facts, preferences, and ongoing work."
+                )
+            },
+            {"role": "user", "content": text}
+        ],
+        "max_tokens": 200
+    }
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers=get_groq_headers(),
+            json=payload
+        )
+        r.raise_for_status()
+        summary = r.json()["choices"][0]["message"]["content"]
+
+    supabase.table("conversations") \
+        .update({"summary": summary}) \
+        .eq("id", conversation_id) \
+        .execute()
+
+
 async def save_artifact(conversation_id: str, type_: str, content: str):
     existing = await load_artifact(conversation_id)
 
@@ -1288,9 +1331,9 @@ async def ask_universal(request: Request):
     if not prompt:
         raise HTTPException(400, "prompt required")
 
-    # =====================================================
+    # =========================
     # 1️⃣ CONVERSATION
-    # =====================================================
+    # =========================
     if not conversation_id:
         conv = supabase.table("conversations").insert({
             "user_id": user_id,
@@ -1298,9 +1341,9 @@ async def ask_universal(request: Request):
         }).execute()
         conversation_id = conv.data[0]["id"]
 
-        # =====================================================
-    # 2️⃣ MEMORY
-    # =====================================================
+    # =========================
+    # 2️⃣ LOAD HISTORY + MEMORY
+    # =========================
     history = supabase.table("messages") \
         .select("role,content") \
         .eq("conversation_id", conversation_id) \
@@ -1308,105 +1351,64 @@ async def ask_universal(request: Request):
         .limit(20) \
         .execute().data or []
 
-user_memory = load_user_memory(user_id)
+    user_memory = load_user_memory(user_id)
 
-artifact_resp = supabase.table("artifacts") \
-    .select("*") \
-    .eq("conversation_id", conversation_id) \
-    .limit(1) \
-    .execute()
-
-artifact = artifact_resp.data[0] if artifact_resp.data else None
-
-async def update_conversation_summary(conversation_id: str):
-    msgs = supabase.table("messages") \
-        .select("role,content") \
-        .eq("conversation_id", conversation_id) \
-        .order("created_at") \
-        .limit(40) \
-        .execute().data
-
-    text = "\n".join(f"{m['role']}: {m['content']}" for m in msgs)
-
-    payload = {
-        "model": CHAT_MODEL,
-        "messages": [
-            {"role": "system", "content": "Summarize this conversation briefly for long-term memory."},
-            {"role": "user", "content": text}
-        ],
-        "max_tokens": 200
-    }
-
-    async with httpx.AsyncClient(timeout=30) as client:
-        r = await client.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers=get_groq_headers(),
-            json=payload
-        )
-        summary = r.json()["choices"][0]["message"]["content"]
-
-    supabase.table("conversations") \
-        .update({"summary": summary}) \
+    conv = supabase.table("conversations") \
+        .select("summary") \
         .eq("id", conversation_id) \
+        .single() \
         .execute()
 
-    # =====================================================
-    # 4️⃣ SYSTEM PROMPT
-    # =====================================================
-system_prompt = """
-You are a ChatGPT-style assistant.
+    conversation_summary = conv.data.get("summary")
 
-Rules:
-- Maintain context across turns
-- Resolve references like "it", "that"
-- Use user memory when relevant
-- Modify existing work instead of restarting
-- When editing, return the FULL updated output
-"""
+    # =========================
+    # 3️⃣ SYSTEM PROMPT
+    # =========================
+    system_prompt = (
+        "You are a ChatGPT-style assistant.\n"
+        "Maintain context across turns.\n"
+        "Use memory when relevant.\n"
+        "Modify existing work instead of restarting.\n"
+    )
 
-intent = detect_intent(prompt)
+    if conversation_summary:
+        system_prompt += f"\nConversation summary:\n{conversation_summary}\n"
 
-if user_memory:
-    system_prompt += "\n\nUser memory:\n"
-    for m in user_memory:
-        system_prompt += f"- {m['key']}: {m['value']}\n"
+    if user_memory:
+        system_prompt += "\nUser memory:\n"
+        for m in user_memory:
+            system_prompt += f"- {m['key']}: {m['value']}\n"
 
-    system_prompt = """You are a ChatGPT-style assistant.
-Maintain context.
-Use memory.
-"""
+    messages = [{"role": "system", "content": system_prompt}]
+    messages.extend(history)
+    messages.append({"role": "user", "content": prompt})
 
-if user_memory:
-    system_prompt += "\nUser memory:\n"
-    for m in user_memory:
-        system_prompt += f"- {m['key']}: {m['value']}\n"
+    intent = detect_intent(prompt)
 
-    # =====================================================
-    # 5️⃣ SAVE USER MESSAGE
-    # =====================================================
+    # =========================
+    # 4️⃣ SAVE USER MESSAGE
+    # =========================
     supabase.table("messages").insert({
         "conversation_id": conversation_id,
         "role": "user",
         "content": prompt
     }).execute()
 
-   # =========================
-   # 🧠 MEMORY EXTRACTION
-   # =========================
-memory = extract_memory_from_prompt(prompt)
-if memory:
-    key, value = memory
-    supabase.table("memories").insert({
-        "user_id": user_id,
-        "key": key,
-        "value": value
-    }).execute()
+    # =========================
+    # 🧠 MEMORY EXTRACTION
+    # =========================
+    memory = extract_memory_from_prompt(prompt)
+    if memory:
+        key, value = memory
+        supabase.table("memories").insert({
+            "user_id": user_id,
+            "key": key,
+            "value": value
+        }).execute()
 
-    
-
-    # =====================================================
-    # 6️⃣ NON-STREAM
-    # =====================================================
+    # =========================
+    # 5️⃣ NON-STREAM MODE
+    # =========================
     if not stream:
         payload = {
             "model": CHAT_MODEL,
@@ -1431,44 +1433,40 @@ if memory:
             "content": assistant_reply
         }).execute()
 
+        await summarize_conversation(conversation_id)
+
         return {
             "conversation_id": conversation_id,
             "intent": intent,
             "reply": assistant_reply
         }
 
-    # =====================================================
-    # 7️⃣ STREAM MODE — UNIVERSAL
-    # =====================================================
-    await update_conversation_summary(conversation_id)
-    
+    # =========================
+    # 6️⃣ STREAM MODE
+    # =========================
     async def event_generator():
         assistant_reply = ""
 
         yield sse({"type": "starting", "intent": intent})
 
-        # IMAGE
         if intent == "image":
             async for evt in stream_images(prompt, samples=1):
                 yield evt
             yield sse({"type": "done"})
             return
 
-        # VIDEO
         if intent == "video":
             result = await generate_video_internal(prompt, user_id=user_id)
             yield sse({"type": "video", "videos": result["videos"]})
             yield sse({"type": "done"})
             return
 
-        # TTS
         if intent == "tts":
             async for evt in tts_stream_helper(prompt):
                 yield sse(evt)
             yield sse({"type": "done"})
             return
 
-        # CODE
         if intent == "code":
             result = await run_code_safely(prompt)
             yield sse({
@@ -1479,14 +1477,12 @@ if memory:
             yield sse({"type": "done"})
             return
 
-        # SEARCH
         if intent == "search":
             result = await duckduckgo_search(prompt)
             yield sse({"type": "search", "result": result})
             yield sse({"type": "done"})
             return
 
-        # CHAT (DEFAULT)
         payload = {
             "model": CHAT_MODEL,
             "stream": True,
@@ -1520,6 +1516,8 @@ if memory:
             "role": "assistant",
             "content": assistant_reply
         }).execute()
+
+        await summarize_conversation(conversation_id)
 
         yield sse({"type": "done"})
 
