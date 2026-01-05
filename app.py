@@ -1449,50 +1449,46 @@ async def ask_universal(request: Request):
 
         yield sse({"type": "starting", "intent": intent})
 
+                # ---------- INTENT HANDLING ----------
+
         if intent == "image":
             async for evt in stream_images(prompt, samples=1):
                 yield evt
             yield sse({"type": "done"})
             return
 
-        if intent == "video":
+        elif intent == "video":
             result = await generate_video_internal(prompt, user_id=user_id)
             yield sse({"type": "video", "videos": result["videos"]})
             yield sse({"type": "done"})
             return
 
-        if intent == "tts":
+        elif intent == "tts":
             async for evt in tts_stream_helper(prompt):
                 yield sse(evt)
             yield sse({"type": "done"})
             return
 
-       # CODE
-if intent == "code":
-    try:
-        result = await run_code_safely(prompt)
+        elif intent == "code":
+            try:
+                result = await run_code_safely(prompt)
+                yield sse({
+                    "type": "code",
+                    "code": result.get("code"),
+                    "execution": result.get("execution"),
+                    "status": "ok"
+                })
+            except Exception:
+                yield sse({
+                    "type": "code",
+                    "status": "execution_disabled",
+                    "error": "Code execution unavailable"
+                })
 
-        yield sse({
-            "type": "code",
-            "code": result.get("code"),
-            "execution": result.get("execution"),
-            "status": "ok"
-        })
+            yield sse({"type": "done"})
+            return
 
-    except Exception as e:
-        # Graceful fallback when Judge0 / execution fails
-        yield sse({
-            "type": "code",
-            "code": extract_code_only(prompt),
-            "execution": None,
-            "status": "execution_disabled",
-            "error": "Code execution is currently unavailable"
-        })
-
-    yield sse({"type": "done"})
-    return
-
-        if intent == "search":
+        elif intent == "search":
             result = await duckduckgo_search(prompt)
             yield sse({"type": "search", "result": result})
             yield sse({"type": "done"})
