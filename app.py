@@ -1467,15 +1467,30 @@ async def ask_universal(request: Request):
             yield sse({"type": "done"})
             return
 
-        if intent == "code":
-            result = await run_code_safely(prompt)
-            yield sse({
-                "type": "code",
-                "code": result["code"],
-                "execution": result["execution"]
-            })
-            yield sse({"type": "done"})
-            return
+       # CODE
+if intent == "code":
+    try:
+        result = await run_code_safely(prompt)
+
+        yield sse({
+            "type": "code",
+            "code": result.get("code"),
+            "execution": result.get("execution"),
+            "status": "ok"
+        })
+
+    except Exception as e:
+        # Graceful fallback when Judge0 / execution fails
+        yield sse({
+            "type": "code",
+            "code": extract_code_only(prompt),
+            "execution": None,
+            "status": "execution_disabled",
+            "error": "Code execution is currently unavailable"
+        })
+
+    yield sse({"type": "done"})
+    return
 
         if intent == "search":
             result = await duckduckgo_search(prompt)
