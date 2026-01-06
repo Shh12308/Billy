@@ -481,7 +481,26 @@ async def summarize_conversation(conversation_id: str):
         .update({"summary": summary}) \
         .eq("id", conversation_id) \
         .execute()
+def get_user_from_request(request: Request) -> dict:
+    auth = request.headers.get("authorization")
 
+    if not auth or not auth.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing auth token")
+
+    token = auth.split(" ")[1]
+
+    res = requests.get(
+        f"{SUPABASE_URL}/auth/v1/user",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "apikey": SUPABASE_SERVICE_ROLE_KEY
+        }
+    )
+
+    if res.status_code != 200:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    return res.json()
 
 async def save_artifact(conversation_id: str, type_: str, content: str):
     existing = await load_artifact(conversation_id)
@@ -1279,7 +1298,7 @@ async def _generate_image_core(
 
 async def image_gen_internal(prompt: str, samples: int = 1):
     """Helper for streaming /ask/universal."""
-    result = await _generate_image_core(prompt, samples, "anonymous", return_base64=False)
+    result = await _generate_image_core(prompt, samples, user_id, return_base64=False)
 
 async def stream_images(prompt: str, samples: int):
     try:
@@ -1809,7 +1828,7 @@ async def generate_video(request: Request):
 async def image_gen(request: Request):
     body = await request.json()
     prompt = body.get("prompt", "")
-    user_id = body.get("user_id", "anonymous")
+    user_id = body.get("user_id", user_id)
 
     try:
         samples = max(1, int(body.get("samples", 1)))
