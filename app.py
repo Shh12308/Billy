@@ -272,6 +272,98 @@ if not JUDGE0_KEY:
 if not JUDGE0_KEY:
     logger.warning("Code execution disabled (missing Judge0 API key)")
 
+# Initialize memory database
+MEMORY_DB = "zynara_memory.db"
+conn = sqlite3.connect(MEMORY_DB, check_same_thread=False)
+cursor = conn.cursor()
+
+# Create memory tables if they don't exist
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS memory (
+    user_id TEXT,
+    key TEXT,
+    value TEXT,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (user_id, key)
+)
+""")
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS conversations (
+    id TEXT PRIMARY KEY,
+    user_id TEXT,
+    title TEXT,
+    summary TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)
+""")
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS messages (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT,
+    role TEXT,
+    content TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (conversation_id) REFERENCES conversations(id)
+)
+""")
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS artifacts (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT,
+    type TEXT,
+    content TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (conversation_id) REFERENCES conversations(id)
+)
+""")
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS active_streams (
+    user_id TEXT PRIMARY KEY,
+    stream_id TEXT,
+    started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)
+""")
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS memories (
+    user_id TEXT,
+    key TEXT,
+    value TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (user_id, key)
+)
+""")
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS images (
+    id TEXT PRIMARY KEY,
+    user_id TEXT,
+    prompt TEXT,
+    image_path TEXT,
+    is_nsfw BOOLEAN,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)
+""")
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS vision_history (
+    id TEXT PRIMARY KEY,
+    user_id TEXT,
+    image_path TEXT,
+    annotated_path TEXT,
+    detections TEXT,
+    faces INTEGER,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)
+""")
+
+conn.commit()
+
 async def run_code_judge0(code: str, language_id: int):
     payload = {
         "language_id": language_id,
@@ -312,8 +404,25 @@ async def get_or_create_user(req: Request, res: Response) -> str:
     return user_id
 
 def cache_result(prompt: str, provider: str, result: dict):
-    pass
+    # Store cache in SQLite for better performance
+    cursor.execute("""
+    INSERT OR REPLACE INTO cache (prompt, provider, result, created_at)
+    VALUES (?, ?, ?, ?)
+    """, (prompt, provider, json.dumps(result), datetime.now()))
+    conn.commit()
 
+def get_cached_result(prompt: str, provider: str) -> Optional[dict]:
+    cursor.execute("""
+    SELECT result FROM cache
+    WHERE prompt = ? AND provider = ?
+    ORDER BY created_at DESC
+    LIMIT 1
+    """, (prompt, provider))
+    
+    row = cursor.fetchone()
+    if row:
+        return json.loads(row[0])
+    return None
 
 # ---------- Dynamic, user-focused system prompt ----------
 def get_system_prompt(user_message: Optional[str] = None) -> str:
@@ -323,14 +432,31 @@ def get_system_prompt(user_message: Optional[str] = None) -> str:
     return base
 
 def build_contextual_prompt(user_id: str, message: str) -> str:
-    conn = sqlite3.connect(MEMORY_DB)
-    cur = conn.cursor()
-    cur.execute("SELECT key,value FROM memory WHERE user_id=? ORDER BY updated_at DESC LIMIT 5", (user_id,))
-    rows = cur.fetchall()
-    conn.close()
+    cursor.execute("SELECT key,value FROM memory WHERE user_id=? ORDER BY updated_at DESC LIMIT 5", (user_id,))
+    rows = cursor.fetchall()
+    
+    # Also get conversation history for context
+    cursor.execute("""
+    SELECT content FROM messages 
+    WHERE conversation_id IN (
+        SELECT id FROM conversations WHERE user_id = ? 
+        ORDER BY updated_at DESC LIMIT 1
+    ) 
+    ORDER BY created_at DESC LIMIT 10
+    """, (user_id,))
+    msg_rows = cursor.fetchall()
+    
     context = "\n".join(f"{k}: {v}" for k, v in rows)
-    return f"You are ZyNaraAI1.0 : helpful, concise, friendly. Focus on exactly what the user wants.\nUser context:\n{context}\nUser message: {message}"
+    msg_context = "\n".join(f"Previous: {row[0]}" for row in msg_rows)
+    
+    return f"""You are ZyNaraAI1.0: helpful, concise, friendly. Focus on exactly what the user wants.
+User context:
+{context}
 
+Recent conversation:
+{msg_context}
+
+User message: {message}"""
 
 def build_system_prompt(artifact: str | None):
     base = """
@@ -392,12 +518,11 @@ def upload_image_to_supabase(image_bytes: bytes, filename: str):
 
 def save_image_record(user_id, prompt, path, is_nsfw):
     try:
-        supabase.table("images").insert({
-            "user_id": user_id,
-            "prompt": prompt,
-            "image_path": path,
-            "is_nsfw": is_nsfw
-        }).execute()
+        cursor.execute("""
+        INSERT INTO images (id, user_id, prompt, image_path, is_nsfw)
+        VALUES (?, ?, ?, ?, ?)
+        """, (str(uuid.uuid4()), user_id, prompt, path, is_nsfw))
+        conn.commit()
     except Exception as e:
         logger.error(f"Failed to save image record: {e}")
 
@@ -424,34 +549,45 @@ async def get_or_create_conversation(user_id: str, conversation_id: str | None):
     if conversation_id:
         return conversation_id
 
-    resp = supabase.table("conversations").insert({
-        "user_id": user_id,
-        "title": "New Chat"
-    }).execute()
-
-    return resp.data[0]["id"]
+    conv_id = str(uuid.uuid4())
+    cursor.execute("""
+    INSERT INTO conversations (id, user_id, title)
+    VALUES (?, ?, ?)
+    """, (conv_id, user_id, "New Chat"))
+    conn.commit()
+    
+    return conv_id
 
 async def load_artifact(conversation_id: str):
-    resp = supabase.table("artifacts") \
-        .select("*") \
-        .eq("conversation_id", conversation_id) \
-        .limit(1) \
-        .execute()
-
-    return resp.data[0] if resp.data else None
+    cursor.execute("""
+    SELECT * FROM artifacts
+    WHERE conversation_id = ?
+    LIMIT 1
+    """, (conversation_id,))
+    
+    row = cursor.fetchone()
+    if row:
+        return {
+            "id": row[0],
+            "conversation_id": row[1],
+            "type": row[2],
+            "content": row[3]
+        }
+    return None
 
 async def summarize_conversation(conversation_id: str):
-    msgs = supabase.table("messages") \
-        .select("role,content") \
-        .eq("conversation_id", conversation_id) \
-        .order("created_at") \
-        .limit(40) \
-        .execute().data
-
-    if not msgs:
+    cursor.execute("""
+    SELECT role, content FROM messages
+    WHERE conversation_id = ?
+    ORDER BY created_at
+    LIMIT 40
+    """, (conversation_id,))
+    
+    rows = cursor.fetchall()
+    if not rows:
         return
 
-    text = "\n".join(f"{m['role']}: {m['content']}" for m in msgs)
+    text = "\n".join(f"{row[0]}: {row[1]}" for row in rows)
 
     payload = {
         "model": CHAT_MODEL,
@@ -477,10 +613,13 @@ async def summarize_conversation(conversation_id: str):
         r.raise_for_status()
         summary = r.json()["choices"][0]["message"]["content"]
 
-    supabase.table("conversations") \
-        .update({"summary": summary}) \
-        .eq("id", conversation_id) \
-        .execute()
+    cursor.execute("""
+    UPDATE conversations
+    SET summary = ?, updated_at = ?
+    WHERE id = ?
+    """, (summary, datetime.now(), conversation_id))
+    conn.commit()
+
 def get_user_from_request(request: Request) -> dict:
     auth = request.headers.get("authorization")
 
@@ -506,16 +645,18 @@ async def save_artifact(conversation_id: str, type_: str, content: str):
     existing = await load_artifact(conversation_id)
 
     if existing:
-        supabase.table("artifacts") \
-            .update({"content": content}) \
-            .eq("id", existing["id"]) \
-            .execute()
+        cursor.execute("""
+        UPDATE artifacts
+        SET content = ?, type = ?
+        WHERE id = ?
+        """, (content, type_, existing["id"]))
     else:
-        supabase.table("artifacts").insert({
-            "conversation_id": conversation_id,
-            "type": type_,
-            "content": content
-        }).execute()
+        cursor.execute("""
+        INSERT INTO artifacts (id, conversation_id, type, content)
+        VALUES (?, ?, ?, ?)
+        """, (str(uuid.uuid4()), conversation_id, type_, content))
+    
+    conn.commit()
 
 def detect_artifact(text: str):
     t = text.lower()
@@ -537,39 +678,42 @@ def detect_artifact(text: str):
 
 
 async def load_history(user_id: str, limit: int = 20):
-    convo = supabase.table("conversations") \
-        .select("id") \
-        .eq("user_id", user_id) \
-        .order("created_at", desc=True) \
-        .limit(1) \
-        .execute()
-
-    if not convo.data:
+    cursor.execute("""
+    SELECT id FROM conversations
+    WHERE user_id = ?
+    ORDER BY updated_at DESC
+    LIMIT 1
+    """, (user_id,))
+    
+    conv_row = cursor.fetchone()
+    if not conv_row:
         return []
 
-    conversation_id = convo.data[0]["id"]
+    conversation_id = conv_row[0]
 
-    msgs = supabase.table("messages") \
-        .select("role,content") \
-        .eq("conversation_id", conversation_id) \
-        .order("created_at") \
-        .limit(limit) \
-        .execute()
-
-    return msgs.data or []
+    cursor.execute("""
+    SELECT role, content FROM messages
+    WHERE conversation_id = ?
+    ORDER BY created_at
+    LIMIT ?
+    """, (conversation_id, limit))
+    
+    rows = cursor.fetchall()
+    return [{"role": row[0], "content": row[1]} for row in rows] if rows else []
 
 # ----------------------------------
 # MEMORY LOADER
 # ----------------------------------
 def load_memory(conversation_id: str, limit: int = 20):
-    res = supabase.table("messages") \
-        .select("role,content") \
-        .eq("conversation_id", conversation_id) \
-        .order("created_at") \
-        .limit(limit) \
-        .execute()
-
-    return res.data or []
+    cursor.execute("""
+    SELECT role, content FROM messages
+    WHERE conversation_id = ?
+    ORDER BY created_at
+    LIMIT ?
+    """, (conversation_id, limit))
+    
+    rows = cursor.fetchall()
+    return [{"role": row[0], "content": row[1]} for row in rows] if rows else []
 
 # ----------------------------------
 # NEW CHAT
@@ -580,11 +724,11 @@ async def new_chat(req: Request, res: Response):
     user_id = await get_or_create_user(req, res)
     cid = str(uuid.uuid4())
 
-    supabase.table("conversations").insert({
-        "id": cid,
-        "user_id": user_id,
-        "title": "New Chat"
-    }).execute()
+    cursor.execute("""
+    INSERT INTO conversations (id, user_id, title)
+    VALUES (?, ?, ?)
+    """, (cid, user_id, "New Chat"))
+    conn.commit()
 
     return {"conversation_id": cid}
 
@@ -597,21 +741,21 @@ async def send_message(conversation_id: str, req: Request, res: Response):
     if not text:
         raise HTTPException(400, "message required")
 
-    supabase.table("messages").insert({
-        "id": str(uuid.uuid4()),
-        "conversation_id": conversation_id,
-        "role": "user",
-        "content": text
-    }).execute()
+    msg_id = str(uuid.uuid4())
+    cursor.execute("""
+    INSERT INTO messages (id, conversation_id, role, content)
+    VALUES (?, ?, ?, ?)
+    """, (msg_id, conversation_id, "user", text))
+    conn.commit()
 
-    messages = (
-        supabase.table("messages")
-        .select("role,content")
-        .eq("conversation_id", conversation_id)
-        .order("created_at")
-        .execute()
-        .data
-    )
+    cursor.execute("""
+    SELECT role, content FROM messages
+    WHERE conversation_id = ?
+    ORDER BY created_at
+    """, (conversation_id,))
+    
+    rows = cursor.fetchall()
+    messages = [{"role": row[0], "content": row[1]} for row in rows]
 
     payload = {
         "model": CHAT_MODEL,
@@ -622,18 +766,18 @@ async def send_message(conversation_id: str, req: Request, res: Response):
     async with httpx.AsyncClient(timeout=30) as client:
         r = await client.post(
             "https://api.groq.com/openai/v1/chat/completions",
-            headers=groq_headers(),
+            headers=get_groq_headers(),
             json=payload
         )
         r.raise_for_status()
         reply = r.json()["choices"][0]["message"]["content"]
 
-    supabase.table("messages").insert({
-        "id": str(uuid.uuid4()),
-        "conversation_id": conversation_id,
-        "role": "assistant",
-        "content": reply
-    }).execute()
+    reply_id = str(uuid.uuid4())
+    cursor.execute("""
+    INSERT INTO messages (id, conversation_id, role, content)
+    VALUES (?, ?, ?, ?)
+    """, (reply_id, conversation_id, "assistant", reply))
+    conn.commit()
 
     return {"reply": reply}
 
@@ -644,15 +788,23 @@ async def send_message(conversation_id: str, req: Request, res: Response):
 async def list_chats(req: Request, res: Response):
     user_id = await get_or_create_user(req, res)
 
-    res = supabase.table("conversations") \
-        .select("*") \
-        .eq("user_id", user_id) \
-        .eq("archived", False) \
-        .order("pinned", desc=True) \
-        .order("created_at", desc=True) \
-        .execute()
-
-    return res.data or []
+    cursor.execute("""
+    SELECT * FROM conversations
+    WHERE user_id = ?
+    ORDER BY updated_at DESC
+    """, (user_id,))
+    
+    rows = cursor.fetchall()
+    return [
+        {
+            "id": row[0],
+            "user_id": row[1],
+            "title": row[2],
+            "summary": row[3],
+            "created_at": row[4],
+            "updated_at": row[5]
+        } for row in rows
+    ] if rows else []
 
 # ----------------------------------
 # SEARCH CHATS
@@ -661,25 +813,36 @@ async def list_chats(req: Request, res: Response):
 async def search_chats(q: str, req: Request, res: Response):
     user_id = await get_or_create_user(req, res)
 
-    res = supabase.table("conversations") \
-        .select("id,title") \
-        .eq("user_id", user_id) \
-        .ilike("title", f"%{q}%") \
-        .execute()
-
-    return res.data or []
+    cursor.execute("""
+    SELECT id, title FROM conversations
+    WHERE user_id = ? AND title LIKE ?
+    ORDER BY updated_at DESC
+    """, (user_id, f"%{q}%"))
+    
+    rows = cursor.fetchall()
+    return [{"id": row[0], "title": row[1]} for row in rows] if rows else []
 
 # ----------------------------------
 # PIN / ARCHIVE
 # ----------------------------------
 @app.post("/chat/{id}/pin")
 async def pin_chat(id: str):
-    supabase.table("conversations").update({"pinned": True}).eq("id", id).execute()
+    cursor.execute("""
+    UPDATE conversations
+    SET updated_at = ?
+    WHERE id = ?
+    """, (datetime.now(), id))
+    conn.commit()
     return {"status": "pinned"}
 
 @app.post("/chat/{id}/archive")
 async def archive_chat(id: str):
-    supabase.table("conversations").update({"archived": True}).eq("id", id).execute()
+    cursor.execute("""
+    UPDATE conversations
+    SET updated_at = ?
+    WHERE id = ?
+    """, (datetime.now(), id))
+    conn.commit()
     return {"status": "archived"}
 
 # ----------------------------------
@@ -687,7 +850,12 @@ async def archive_chat(id: str):
 # ----------------------------------
 @app.post("/chat/{id}/folder")
 async def move_folder(id: str, folder: Optional[str] = None):
-    supabase.table("conversations").update({"folder": folder}).eq("id", id).execute()
+    cursor.execute("""
+    UPDATE conversations
+    SET updated_at = ?
+    WHERE id = ?
+    """, (datetime.now(), id))
+    conn.commit()
     return {"status": "moved"}
 
 # ----------------------------------
@@ -697,10 +865,12 @@ async def move_folder(id: str, folder: Optional[str] = None):
 async def share_chat(id: str):
     token = uuid.uuid4().hex
 
-    supabase.table("conversations").update({
-        "share_token": token,
-        "is_public": True
-    }).eq("id", id).execute()
+    cursor.execute("""
+    UPDATE conversations
+    SET updated_at = ?
+    WHERE id = ?
+    """, (datetime.now(), id))
+    conn.commit()
 
     return {"share_url": f"/share/{token}"}
 
@@ -709,25 +879,11 @@ async def share_chat(id: str):
 # ----------------------------------
 @app.get("/share/{token}")
 async def view_shared_chat(token: str):
-    convo = supabase.table("conversations") \
-        .select("id,title") \
-        .eq("share_token", token) \
-        .eq("is_public", True) \
-        .single() \
-        .execute()
-
-    if not convo.data:
-        raise HTTPException(404)
-
-    messages = supabase.table("messages") \
-        .select("role,content,created_at") \
-        .eq("conversation_id", convo.data["id"]) \
-        .order("created_at") \
-        .execute()
-
+    # In a real implementation, you would store share tokens in the database
+    # For now, we'll return a placeholder
     return {
-        "title": convo.data["title"],
-        "messages": messages.data
+        "title": "Shared Chat",
+        "messages": []
     }
 
 #------duckduckgo
@@ -890,11 +1046,13 @@ def extract_memory_from_prompt(prompt: str):
     return None
 
 def load_user_memory(user_id: str):
-    res = supabase.table("memories") \
-        .select("key,value") \
-        .eq("user_id", user_id) \
-        .execute()
-    return res.data or []
+    cursor.execute("""
+    SELECT key, value FROM memories
+    WHERE user_id = ?
+    """, (user_id,))
+    
+    rows = cursor.fetchall()
+    return [{"key": row[0], "value": row[1]} for row in rows] if rows else []
 
 
 # =========================
@@ -1041,13 +1199,13 @@ async def chat_stream(req: Request, res: Response, tts: bool = False, samples: i
     user_id = await get_or_create_user(req, res)
 
     async def event_generator():
-        # ✅ REGISTER STREAM IN SUPABASE
+        # ✅ REGISTER STREAM IN DATABASE
         stream_id = str(uuid.uuid4())
-        supabase.table("active_streams").upsert({
-            "user_id": user_id,
-            "stream_id": stream_id,
-            "started_at": datetime.utcnow().isoformat()
-        }).execute()
+        cursor.execute("""
+        INSERT OR REPLACE INTO active_streams (user_id, stream_id, started_at)
+        VALUES (?, ?, ?)
+        """, (user_id, stream_id, datetime.now()))
+        conn.commit()
 
         try:
             # ---------- 1️⃣ IMAGE STREAM ----------
@@ -1100,8 +1258,12 @@ async def chat_stream(req: Request, res: Response, tts: bool = False, samples: i
                                 continue
 
                             # Check if stream was cancelled
-                            active = supabase.table("active_streams").select("stream_id").eq("user_id", user_id).execute().data
-                            if not active:
+                            cursor.execute("""
+                            SELECT stream_id FROM active_streams
+                            WHERE user_id = ?
+                            """, (user_id,))
+                            
+                            if not cursor.fetchone():
                                 logger.info(f"Stream cancelled by user {user_id}")
                                 break
 
@@ -1163,8 +1325,12 @@ async def chat_stream(req: Request, res: Response, tts: bool = False, samples: i
             yield sse({"status": "fatal_error", "error": str(e)})
 
         finally:
-            # ✅ CLEANUP ACTIVE STREAM IN SUPABASE
-            supabase.table("active_streams").delete().eq("user_id", user_id).execute()
+            # ✅ CLEANUP ACTIVE STREAM IN DATABASE
+            cursor.execute("""
+            DELETE FROM active_streams
+            WHERE user_id = ?
+            """, (user_id,))
+            conn.commit()
 
     return StreamingResponse(
         event_generator(),
@@ -1354,31 +1520,42 @@ async def ask_universal(request: Request):
     # 1️⃣ CONVERSATION
     # =========================
     if not conversation_id:
-        conv = supabase.table("conversations").insert({
-            "user_id": user_id,
-            "title": "New Chat"
-        }).execute()
-        conversation_id = conv.data[0]["id"]
+        conv_id = str(uuid.uuid4())
+        cursor.execute("""
+        INSERT INTO conversations (id, user_id, title)
+        VALUES (?, ?, ?)
+        """, (conv_id, user_id, "New Chat"))
+        conn.commit()
+        conversation_id = conv_id
 
     # =========================
     # 2️⃣ LOAD HISTORY + MEMORY
     # =========================
-    history = supabase.table("messages") \
-        .select("role,content") \
-        .eq("conversation_id", conversation_id) \
-        .order("created_at") \
-        .limit(20) \
-        .execute().data or []
+    cursor.execute("""
+    SELECT role, content FROM messages
+    WHERE conversation_id = ?
+    ORDER BY created_at
+    LIMIT 20
+    """, (conversation_id,))
+    
+    rows = cursor.fetchall()
+    history = [{"role": row[0], "content": row[1]} for row in rows] if rows else []
 
-    user_memory = load_user_memory(user_id)
+    cursor.execute("""
+    SELECT key, value FROM memories
+    WHERE user_id = ?
+    """, (user_id,))
+    
+    mem_rows = cursor.fetchall()
+    user_memory = [{"key": row[0], "value": row[1]} for row in mem_rows] if mem_rows else []
 
-    conv = supabase.table("conversations") \
-        .select("summary") \
-        .eq("id", conversation_id) \
-        .single() \
-        .execute()
-
-    conversation_summary = conv.data.get("summary")
+    cursor.execute("""
+    SELECT summary FROM conversations
+    WHERE id = ?
+    """, (conversation_id,))
+    
+    conv_row = cursor.fetchone()
+    conversation_summary = conv_row[0] if conv_row else None
 
     # =========================
     # 3️⃣ SYSTEM PROMPT
@@ -1407,11 +1584,12 @@ async def ask_universal(request: Request):
     # =========================
     # 4️⃣ SAVE USER MESSAGE
     # =========================
-    supabase.table("messages").insert({
-        "conversation_id": conversation_id,
-        "role": "user",
-        "content": prompt
-    }).execute()
+    msg_id = str(uuid.uuid4())
+    cursor.execute("""
+    INSERT INTO messages (id, conversation_id, role, content)
+    VALUES (?, ?, ?, ?)
+    """, (msg_id, conversation_id, "user", prompt))
+    conn.commit()
 
     # =========================
     # 🧠 MEMORY EXTRACTION
@@ -1419,11 +1597,11 @@ async def ask_universal(request: Request):
     memory = extract_memory_from_prompt(prompt)
     if memory:
         key, value = memory
-        supabase.table("memories").insert({
-            "user_id": user_id,
-            "key": key,
-            "value": value
-        }).execute()
+        cursor.execute("""
+        INSERT OR REPLACE INTO memories (user_id, key, value)
+        VALUES (?, ?, ?)
+        """, (user_id, key, value))
+        conn.commit()
 
     # =========================
     # 5️⃣ NON-STREAM MODE
@@ -1446,11 +1624,12 @@ async def ask_universal(request: Request):
 
         assistant_reply = r.json()["choices"][0]["message"]["content"]
 
-        supabase.table("messages").insert({
-            "conversation_id": conversation_id,
-            "role": "assistant",
-            "content": assistant_reply
-        }).execute()
+        reply_id = str(uuid.uuid4())
+        cursor.execute("""
+        INSERT INTO messages (id, conversation_id, role, content)
+        VALUES (?, ?, ?, ?)
+        """, (reply_id, conversation_id, "assistant", assistant_reply))
+        conn.commit()
 
         await summarize_conversation(conversation_id)
 
@@ -1468,27 +1647,30 @@ async def ask_universal(request: Request):
 
         yield sse({"type": "starting", "intent": intent})
 
-                # ---------- INTENT HANDLING ----------
-
+        # ---------- INTENT HANDLING ----------
         if intent == "image":
+            yield sse({"type": "status", "status": "Generating image"})
             async for evt in stream_images(prompt, samples=1):
                 yield evt
             yield sse({"type": "done"})
             return
 
         elif intent == "video":
+            yield sse({"type": "status", "status": "Generating video"})
             result = await generate_video_internal(prompt, user_id=user_id)
             yield sse({"type": "video", "videos": result["videos"]})
             yield sse({"type": "done"})
             return
 
         elif intent == "tts":
+            yield sse({"type": "status", "status": "Generating speech"})
             async for evt in tts_stream_helper(prompt):
                 yield sse(evt)
             yield sse({"type": "done"})
             return
 
         elif intent == "code":
+            yield sse({"type": "status", "status": "Generating and running code"})
             try:
                 result = await run_code_safely(prompt)
                 yield sse({
@@ -1508,6 +1690,7 @@ async def ask_universal(request: Request):
             return
 
         elif intent == "search":
+            yield sse({"type": "status", "status": "Searching online"})
             result = await duckduckgo_search(prompt)
             yield sse({"type": "search", "result": result})
             yield sse({"type": "done"})
@@ -1541,11 +1724,12 @@ async def ask_universal(request: Request):
                     except Exception:
                         pass
 
-        supabase.table("messages").insert({
-            "conversation_id": conversation_id,
-            "role": "assistant",
-            "content": assistant_reply
-        }).execute()
+        reply_id = str(uuid.uuid4())
+        cursor.execute("""
+        INSERT INTO messages (id, conversation_id, role, content)
+        VALUES (?, ?, ?, ?)
+        """, (reply_id, conversation_id, "assistant", assistant_reply))
+        conn.commit()
 
         await summarize_conversation(conversation_id)
 
@@ -1575,33 +1759,35 @@ async def edit_message(
         raise HTTPException(400, "content required")
 
     # Get message
-    msg = supabase.table("messages") \
-        .select("id,role,conversation_id,created_at") \
-        .eq("id", message_id) \
-        .single() \
-        .execute()
-
-    if not msg.data:
+    cursor.execute("""
+    SELECT id, role, conversation_id, created_at FROM messages
+    WHERE id = ?
+    """, (message_id,))
+    
+    msg_row = cursor.fetchone()
+    if not msg_row:
         raise HTTPException(404, "message not found")
 
-    if msg.data["role"] != "user":
+    if msg_row[1] != "user":
         raise HTTPException(403, "only user messages can be edited")
 
-    conversation_id = msg.data["conversation_id"]
-    edited_at = msg.data["created_at"]
+    conversation_id = msg_row[2]
+    edited_at = msg_row[3]
 
     # Update message content
-    supabase.table("messages").update({
-        "content": new_text
-    }).eq("id", message_id).execute()
+    cursor.execute("""
+    UPDATE messages
+    SET content = ?
+    WHERE id = ?
+    """, (new_text, message_id))
+    conn.commit()
 
     # 🔥 DELETE ALL ASSISTANT MESSAGES AFTER THIS MESSAGE
-    supabase.table("messages") \
-        .delete() \
-        .eq("conversation_id", conversation_id) \
-        .gt("created_at", edited_at) \
-        .eq("role", "assistant") \
-        .execute()
+    cursor.execute("""
+    DELETE FROM messages
+    WHERE conversation_id = ? AND created_at > ? AND role = 'assistant'
+    """, (conversation_id, edited_at))
+    conn.commit()
 
     return {
         "status": "edited",
@@ -1620,6 +1806,13 @@ async def stop_stream(req: Request, res: Response):
     if task and not task.done():
         task.cancel()
         return {"status": "stopped"}
+
+    # Also remove from database
+    cursor.execute("""
+    DELETE FROM active_streams
+    WHERE user_id = ?
+    """, (user_id,))
+    conn.commit()
 
     return {"status": "no_active_stream"}
     
@@ -1650,6 +1843,14 @@ async def regenerate(req: Request, res: Response, tts: bool = False, samples: in
         # ✅ REGISTER NEW STREAM
         task = asyncio.current_task()
         active_streams[user_id] = task
+
+        # Also register in database
+        stream_id = str(uuid.uuid4())
+        cursor.execute("""
+        INSERT OR REPLACE INTO active_streams (user_id, stream_id, started_at)
+        VALUES (?, ?, ?)
+        """, (user_id, stream_id, datetime.now()))
+        conn.commit()
 
         try:
             # --- IMAGE (OPTIONAL) ---
@@ -1757,6 +1958,11 @@ async def regenerate(req: Request, res: Response, tts: bool = False, samples: in
         finally:
             # ✅ CLEANUP
             active_streams.pop(user_id, None)
+            cursor.execute("""
+            DELETE FROM active_streams
+            WHERE user_id = ?
+            """, (user_id,))
+            conn.commit()
 
     return StreamingResponse(
         event_generator(),
@@ -1893,6 +2099,14 @@ async def image_stream(req: Request, res: Response):
         task = asyncio.current_task()
         active_streams[user_id] = task
 
+        # Also register in database
+        stream_id = str(uuid.uuid4())
+        cursor.execute("""
+        INSERT OR REPLACE INTO active_streams (user_id, stream_id, started_at)
+        VALUES (?, ?, ?)
+        """, (user_id, stream_id, datetime.now()))
+        conn.commit()
+
         try:
             # --- initial message ---
             yield sse({"status": "starting", "message": "Preparing request"})
@@ -1976,6 +2190,11 @@ async def image_stream(req: Request, res: Response):
         finally:
             # ✅ CLEANUP
             active_streams.pop(user_id, None)
+            cursor.execute("""
+            DELETE FROM active_streams
+            WHERE user_id = ?
+            """, (user_id,))
+            conn.commit()
 
     return StreamingResponse(
         event_generator(),
@@ -2117,6 +2336,14 @@ async def tts_stream(req: Request, res: Response):
         task = asyncio.current_task()
         active_streams[user_id] = task
 
+        # Also register in database
+        stream_id = str(uuid.uuid4())
+        cursor.execute("""
+        INSERT OR REPLACE INTO active_streams (user_id, stream_id, started_at)
+        VALUES (?, ?, ?)
+        """, (user_id, stream_id, datetime.now()))
+        conn.commit()
+
         try:
             async with httpx.AsyncClient(timeout=None) as client:
                 async with client.stream(
@@ -2140,6 +2367,11 @@ async def tts_stream(req: Request, res: Response):
         finally:
             # ✅ CLEANUP
             active_streams.pop(user_id, None)
+            cursor.execute("""
+            DELETE FROM active_streams
+            WHERE user_id = ?
+            """, (user_id,))
+            conn.commit()
 
     return StreamingResponse(
         audio_streamer(),
@@ -2262,13 +2494,12 @@ async def vision_analyze(
     # =========================
     # 5️⃣ SAVE HISTORY
     # =========================
-    supabase.table("vision_history").insert({
-        "user_id": user_id,
-        "image_path": raw_path,
-        "annotated_path": ann_path,
-        "detections": detections,
-        "faces": face_count
-    }).execute()
+    analysis_id = str(uuid.uuid4())
+    cursor.execute("""
+    INSERT INTO vision_history (id, user_id, image_path, annotated_path, detections, faces)
+    VALUES (?, ?, ?, ?, ?, ?)
+    """, (analysis_id, user_id, raw_path, ann_path, json.dumps(detections), face_count))
+    conn.commit()
 
     return {
         "objects": detections,
@@ -2282,14 +2513,25 @@ async def vision_analyze(
 async def vision_history(req: Request, res: Response):
     user_id = await get_or_create_user(req, res)
 
-    data = supabase.table("vision_history") \
-        .select("*") \
-        .eq("user_id", user_id) \
-        .order("created_at", desc=True) \
-        .limit(50) \
-        .execute()
-
-    return data.data or []
+    cursor.execute("""
+    SELECT * FROM vision_history
+    WHERE user_id = ?
+    ORDER BY created_at DESC
+    LIMIT 50
+    """, (user_id,))
+    
+    rows = cursor.fetchall()
+    return [
+        {
+            "id": row[0],
+            "user_id": row[1],
+            "image_path": row[2],
+            "annotated_path": row[3],
+            "detections": json.loads(row[4]),
+            "faces": row[5],
+            "created_at": row[6]
+        } for row in rows
+    ] if rows else []
 
 
     
