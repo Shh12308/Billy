@@ -6,7 +6,6 @@ import PIL
 import json
 from utils import safe_system_prompt  # adjust path as needed
 import uuid
-import sqlite3
 import numpy as np
 from PIL import Image
 from io import BytesIO
@@ -52,6 +51,7 @@ from supabase import create_client
 # ---------- ENV KEYS ----------
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 
 if not SUPABASE_URL or not SUPABASE_KEY:
     raise RuntimeError("SUPABASE_URL or SUPABASE_KEY is missing")
@@ -60,6 +60,65 @@ supabase = create_client(
     SUPABASE_URL,
     SUPABASE_KEY
 )
+
+# Initialize Supabase tables
+def init_supabase_tables():
+    try:
+        # Create memory table
+        supabase.rpc("create_memory_table").execute()
+    except:
+        pass  # Table might already exist
+    
+    try:
+        # Create conversations table
+        supabase.rpc("create_conversations_table").execute()
+    except:
+        pass  # Table might already exist
+    
+    try:
+        # Create messages table
+        supabase.rpc("create_messages_table").execute()
+    except:
+        pass  # Table might already exist
+    
+    try:
+        # Create artifacts table
+        supabase.rpc("create_artifacts_table").execute()
+    except:
+        pass  # Table might already exist
+    
+    try:
+        # Create active_streams table
+        supabase.rpc("create_active_streams_table").execute()
+    except:
+        pass  # Table might already exist
+    
+    try:
+        # Create memories table
+        supabase.rpc("create_memories_table").execute()
+    except:
+        pass  # Table might already exist
+    
+    try:
+        # Create images table
+        supabase.rpc("create_images_table").execute()
+    except:
+        pass  # Table might already exist
+    
+    try:
+        # Create vision_history table
+        supabase.rpc("create_vision_history_table").execute()
+    except:
+        pass  # Table might already exist
+    
+    try:
+        # Create cache table
+        supabase.rpc("create_cache_table").execute()
+    except:
+        pass  # Table might already exist
+
+# Initialize tables on startup
+init_supabase_tables()
 
 groq_client = httpx.AsyncClient(
     timeout=None,
@@ -272,98 +331,6 @@ if not JUDGE0_KEY:
 if not JUDGE0_KEY:
     logger.warning("Code execution disabled (missing Judge0 API key)")
 
-# Initialize memory database
-MEMORY_DB = "zynara_memory.db"
-conn = sqlite3.connect(MEMORY_DB, check_same_thread=False)
-cursor = conn.cursor()
-
-# Create memory tables if they don't exist
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS memory (
-    user_id TEXT,
-    key TEXT,
-    value TEXT,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (user_id, key)
-)
-""")
-
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS conversations (
-    id TEXT PRIMARY KEY,
-    user_id TEXT,
-    title TEXT,
-    summary TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-)
-""")
-
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS messages (
-    id TEXT PRIMARY KEY,
-    conversation_id TEXT,
-    role TEXT,
-    content TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (conversation_id) REFERENCES conversations(id)
-)
-""")
-
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS artifacts (
-    id TEXT PRIMARY KEY,
-    conversation_id TEXT,
-    type TEXT,
-    content TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (conversation_id) REFERENCES conversations(id)
-)
-""")
-
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS active_streams (
-    user_id TEXT PRIMARY KEY,
-    stream_id TEXT,
-    started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-)
-""")
-
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS memories (
-    user_id TEXT,
-    key TEXT,
-    value TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (user_id, key)
-)
-""")
-
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS images (
-    id TEXT PRIMARY KEY,
-    user_id TEXT,
-    prompt TEXT,
-    image_path TEXT,
-    is_nsfw BOOLEAN,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-)
-""")
-
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS vision_history (
-    id TEXT PRIMARY KEY,
-    user_id TEXT,
-    image_path TEXT,
-    annotated_path TEXT,
-    detections TEXT,
-    faces INTEGER,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-)
-""")
-
-conn.commit()
-
 async def run_code_judge0(code: str, language_id: int):
     payload = {
         "language_id": language_id,
@@ -404,24 +371,24 @@ async def get_or_create_user(req: Request, res: Response) -> str:
     return user_id
 
 def cache_result(prompt: str, provider: str, result: dict):
-    # Store cache in SQLite for better performance
-    cursor.execute("""
-    INSERT OR REPLACE INTO cache (prompt, provider, result, created_at)
-    VALUES (?, ?, ?, ?)
-    """, (prompt, provider, json.dumps(result), datetime.now()))
-    conn.commit()
+    # Store cache in Supabase
+    try:
+        supabase.table("cache").insert({
+            "prompt": prompt,
+            "provider": provider,
+            "result": json.dumps(result),
+            "created_at": datetime.now().isoformat()
+        }).execute()
+    except Exception as e:
+        logger.error(f"Failed to cache result: {e}")
 
 def get_cached_result(prompt: str, provider: str) -> Optional[dict]:
-    cursor.execute("""
-    SELECT result FROM cache
-    WHERE prompt = ? AND provider = ?
-    ORDER BY created_at DESC
-    LIMIT 1
-    """, (prompt, provider))
-    
-    row = cursor.fetchone()
-    if row:
-        return json.loads(row[0])
+    try:
+        response = supabase.table("cache").select("result").eq("prompt", prompt).eq("provider", provider).order("created_at", desc=True).limit(1).execute()
+        if response.data:
+            return json.loads(response.data[0]["result"])
+    except Exception as e:
+        logger.error(f"Failed to get cached result: {e}")
     return None
 
 # ---------- Dynamic, user-focused system prompt ----------
@@ -432,24 +399,24 @@ def get_system_prompt(user_message: Optional[str] = None) -> str:
     return base
 
 def build_contextual_prompt(user_id: str, message: str) -> str:
-    cursor.execute("SELECT key,value FROM memory WHERE user_id=? ORDER BY updated_at DESC LIMIT 5", (user_id,))
-    rows = cursor.fetchall()
-    
-    # Also get conversation history for context
-    cursor.execute("""
-    SELECT content FROM messages 
-    WHERE conversation_id IN (
-        SELECT id FROM conversations WHERE user_id = ? 
-        ORDER BY updated_at DESC LIMIT 1
-    ) 
-    ORDER BY created_at DESC LIMIT 10
-    """, (user_id,))
-    msg_rows = cursor.fetchall()
-    
-    context = "\n".join(f"{k}: {v}" for k, v in rows)
-    msg_context = "\n".join(f"Previous: {row[0]}" for row in msg_rows)
-    
-    return f"""You are ZyNaraAI1.0: helpful, concise, friendly. Focus on exactly what the user wants.
+    try:
+        # Get user memory
+        memory_response = supabase.table("memory").select("key, value").eq("user_id", user_id).order("updated_at", desc=True).limit(5).execute()
+        memory_rows = memory_response.data if memory_response.data else []
+        
+        # Get conversation history for context
+        conv_response = supabase.table("conversations").select("id").eq("user_id", user_id).order("updated_at", desc=True).limit(1).execute()
+        if conv_response.data:
+            conv_id = conv_response.data[0]["id"]
+            msg_response = supabase.table("messages").select("content").eq("conversation_id", conv_id).order("created_at", desc=True).limit(10).execute()
+            msg_rows = msg_response.data if msg_response.data else []
+        else:
+            msg_rows = []
+        
+        context = "\n".join(f"{row['key']}: {row['value']}" for row in memory_rows)
+        msg_context = "\n".join(f"Previous: {row['content']}" for row in msg_rows)
+        
+        return f"""You are ZyNaraAI1.0: helpful, concise, friendly. Focus on exactly what the user wants.
 User context:
 {context}
 
@@ -457,6 +424,9 @@ Recent conversation:
 {msg_context}
 
 User message: {message}"""
+    except Exception as e:
+        logger.error(f"Failed to build contextual prompt: {e}")
+        return f"You are ZyNaraAI1.0: helpful, concise, friendly. Focus on exactly what the user wants.\n\nUser message: {message}"
 
 def build_system_prompt(artifact: str | None):
     base = """
@@ -518,11 +488,14 @@ def upload_image_to_supabase(image_bytes: bytes, filename: str):
 
 def save_image_record(user_id, prompt, path, is_nsfw):
     try:
-        cursor.execute("""
-        INSERT INTO images (id, user_id, prompt, image_path, is_nsfw)
-        VALUES (?, ?, ?, ?, ?)
-        """, (str(uuid.uuid4()), user_id, prompt, path, is_nsfw))
-        conn.commit()
+        supabase.table("images").insert({
+            "id": str(uuid.uuid4()),
+            "user_id": user_id,
+            "prompt": prompt,
+            "image_path": path,
+            "is_nsfw": is_nsfw,
+            "created_at": datetime.now().isoformat()
+        }).execute()
     except Exception as e:
         logger.error(f"Failed to save image record: {e}")
 
@@ -550,75 +523,74 @@ async def get_or_create_conversation(user_id: str, conversation_id: str | None):
         return conversation_id
 
     conv_id = str(uuid.uuid4())
-    cursor.execute("""
-    INSERT INTO conversations (id, user_id, title)
-    VALUES (?, ?, ?)
-    """, (conv_id, user_id, "New Chat"))
-    conn.commit()
+    try:
+        supabase.table("conversations").insert({
+            "id": conv_id,
+            "user_id": user_id,
+            "title": "New Chat",
+            "created_at": datetime.now().isoformat(),
+            "updated_at": datetime.now().isoformat()
+        }).execute()
+    except Exception as e:
+        logger.error(f"Failed to create conversation: {e}")
     
     return conv_id
 
 async def load_artifact(conversation_id: str):
-    cursor.execute("""
-    SELECT * FROM artifacts
-    WHERE conversation_id = ?
-    LIMIT 1
-    """, (conversation_id,))
-    
-    row = cursor.fetchone()
-    if row:
-        return {
-            "id": row[0],
-            "conversation_id": row[1],
-            "type": row[2],
-            "content": row[3]
-        }
+    try:
+        response = supabase.table("artifacts").select("*").eq("conversation_id", conversation_id).limit(1).execute()
+        if response.data:
+            row = response.data[0]
+            return {
+                "id": row["id"],
+                "conversation_id": row["conversation_id"],
+                "type": row["type"],
+                "content": row["content"]
+            }
+    except Exception as e:
+        logger.error(f"Failed to load artifact: {e}")
     return None
 
 async def summarize_conversation(conversation_id: str):
-    cursor.execute("""
-    SELECT role, content FROM messages
-    WHERE conversation_id = ?
-    ORDER BY created_at
-    LIMIT 40
-    """, (conversation_id,))
-    
-    rows = cursor.fetchall()
-    if not rows:
-        return
+    try:
+        response = supabase.table("messages").select("role, content").eq("conversation_id", conversation_id).order("created_at").limit(40).execute()
+        rows = response.data if response.data else []
+        
+        if not rows:
+            return
 
-    text = "\n".join(f"{row[0]}: {row[1]}" for row in rows)
+        text = "\n".join(f"{row['role']}: {row['content']}" for row in rows)
 
-    payload = {
-        "model": CHAT_MODEL,
-        "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "Summarize this conversation briefly. "
-                    "Capture important facts, preferences, and ongoing work."
-                )
-            },
-            {"role": "user", "content": text}
-        ],
-        "max_tokens": 200
-    }
+        payload = {
+            "model": CHAT_MODEL,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "Summarize this conversation briefly. "
+                        "Capture important facts, preferences, and ongoing work."
+                    )
+                },
+                {"role": "user", "content": text}
+            ],
+            "max_tokens": 200
+        }
 
-    async with httpx.AsyncClient(timeout=30) as client:
-        r = await client.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers=get_groq_headers(),
-            json=payload
-        )
-        r.raise_for_status()
-        summary = r.json()["choices"][0]["message"]["content"]
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers=get_groq_headers(),
+                json=payload
+            )
+            r.raise_for_status()
+            summary = r.json()["choices"][0]["message"]["content"]
 
-    cursor.execute("""
-    UPDATE conversations
-    SET summary = ?, updated_at = ?
-    WHERE id = ?
-    """, (summary, datetime.now(), conversation_id))
-    conn.commit()
+        supabase.table("conversations").update({
+            "summary": summary,
+            "updated_at": datetime.now().isoformat()
+        }).eq("id", conversation_id).execute()
+    except Exception as e:
+        logger.error(f"Failed to summarize conversation: {e}")
 
 def get_user_from_request(request: Request) -> dict:
     auth = request.headers.get("authorization")
@@ -642,21 +614,24 @@ def get_user_from_request(request: Request) -> dict:
     return res.json()
 
 async def save_artifact(conversation_id: str, type_: str, content: str):
-    existing = await load_artifact(conversation_id)
+    try:
+        existing = await load_artifact(conversation_id)
 
-    if existing:
-        cursor.execute("""
-        UPDATE artifacts
-        SET content = ?, type = ?
-        WHERE id = ?
-        """, (content, type_, existing["id"]))
-    else:
-        cursor.execute("""
-        INSERT INTO artifacts (id, conversation_id, type, content)
-        VALUES (?, ?, ?, ?)
-        """, (str(uuid.uuid4()), conversation_id, type_, content))
-    
-    conn.commit()
+        if existing:
+            supabase.table("artifacts").update({
+                "content": content,
+                "type": type_
+            }).eq("id", existing["id"]).execute()
+        else:
+            supabase.table("artifacts").insert({
+                "id": str(uuid.uuid4()),
+                "conversation_id": conversation_id,
+                "type": type_,
+                "content": content,
+                "created_at": datetime.now().isoformat()
+            }).execute()
+    except Exception as e:
+        logger.error(f"Failed to save artifact: {e}")
 
 def detect_artifact(text: str):
     t = text.lower()
@@ -678,42 +653,28 @@ def detect_artifact(text: str):
 
 
 async def load_history(user_id: str, limit: int = 20):
-    cursor.execute("""
-    SELECT id FROM conversations
-    WHERE user_id = ?
-    ORDER BY updated_at DESC
-    LIMIT 1
-    """, (user_id,))
-    
-    conv_row = cursor.fetchone()
-    if not conv_row:
-        return []
-
-    conversation_id = conv_row[0]
-
-    cursor.execute("""
-    SELECT role, content FROM messages
-    WHERE conversation_id = ?
-    ORDER BY created_at
-    LIMIT ?
-    """, (conversation_id, limit))
-    
-    rows = cursor.fetchall()
-    return [{"role": row[0], "content": row[1]} for row in rows] if rows else []
+    try:
+        conv_response = supabase.table("conversations").select("id").eq("user_id", user_id).order("updated_at", desc=True).limit(1).execute()
+        if conv_response.data:
+            conversation_id = conv_response.data[0]["id"]
+            msg_response = supabase.table("messages").select("role, content").eq("conversation_id", conversation_id).order("created_at").limit(limit).execute()
+            rows = msg_response.data if msg_response.data else []
+            return [{"role": row["role"], "content": row["content"]} for row in rows]
+    except Exception as e:
+        logger.error(f"Failed to load history: {e}")
+    return []
 
 # ----------------------------------
 # MEMORY LOADER
 # ----------------------------------
 def load_memory(conversation_id: str, limit: int = 20):
-    cursor.execute("""
-    SELECT role, content FROM messages
-    WHERE conversation_id = ?
-    ORDER BY created_at
-    LIMIT ?
-    """, (conversation_id, limit))
-    
-    rows = cursor.fetchall()
-    return [{"role": row[0], "content": row[1]} for row in rows] if rows else []
+    try:
+        response = supabase.table("messages").select("role, content").eq("conversation_id", conversation_id).order("created_at").limit(limit).execute()
+        rows = response.data if response.data else []
+        return [{"role": row["role"], "content": row["content"]} for row in rows]
+    except Exception as e:
+        logger.error(f"Failed to load memory: {e}")
+    return []
 
 # ----------------------------------
 # NEW CHAT
@@ -724,11 +685,16 @@ async def new_chat(req: Request, res: Response):
     user_id = await get_or_create_user(req, res)
     cid = str(uuid.uuid4())
 
-    cursor.execute("""
-    INSERT INTO conversations (id, user_id, title)
-    VALUES (?, ?, ?)
-    """, (cid, user_id, "New Chat"))
-    conn.commit()
+    try:
+        supabase.table("conversations").insert({
+            "id": cid,
+            "user_id": user_id,
+            "title": "New Chat",
+            "created_at": datetime.now().isoformat(),
+            "updated_at": datetime.now().isoformat()
+        }).execute()
+    except Exception as e:
+        logger.error(f"Failed to create new chat: {e}")
 
     return {"conversation_id": cid}
 
@@ -742,44 +708,50 @@ async def send_message(conversation_id: str, req: Request, res: Response):
         raise HTTPException(400, "message required")
 
     msg_id = str(uuid.uuid4())
-    cursor.execute("""
-    INSERT INTO messages (id, conversation_id, role, content)
-    VALUES (?, ?, ?, ?)
-    """, (msg_id, conversation_id, "user", text))
-    conn.commit()
+    try:
+        supabase.table("messages").insert({
+            "id": msg_id,
+            "conversation_id": conversation_id,
+            "role": "user",
+            "content": text,
+            "created_at": datetime.now().isoformat()
+        }).execute()
+    except Exception as e:
+        logger.error(f"Failed to save user message: {e}")
 
-    cursor.execute("""
-    SELECT role, content FROM messages
-    WHERE conversation_id = ?
-    ORDER BY created_at
-    """, (conversation_id,))
-    
-    rows = cursor.fetchall()
-    messages = [{"role": row[0], "content": row[1]} for row in rows]
+    try:
+        msg_response = supabase.table("messages").select("role, content").eq("conversation_id", conversation_id).order("created_at").execute()
+        rows = msg_response.data if msg_response.data else []
+        messages = [{"role": row["role"], "content": row["content"]} for row in rows]
 
-    payload = {
-        "model": CHAT_MODEL,
-        "messages": messages,
-        "max_tokens": 1024
-    }
+        payload = {
+            "model": CHAT_MODEL,
+            "messages": messages,
+            "max_tokens": 1024
+        }
 
-    async with httpx.AsyncClient(timeout=30) as client:
-        r = await client.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers=get_groq_headers(),
-            json=payload
-        )
-        r.raise_for_status()
-        reply = r.json()["choices"][0]["message"]["content"]
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers=get_groq_headers(),
+                json=payload
+            )
+            r.raise_for_status()
+            reply = r.json()["choices"][0]["message"]["content"]
 
-    reply_id = str(uuid.uuid4())
-    cursor.execute("""
-    INSERT INTO messages (id, conversation_id, role, content)
-    VALUES (?, ?, ?, ?)
-    """, (reply_id, conversation_id, "assistant", reply))
-    conn.commit()
+        reply_id = str(uuid.uuid4())
+        supabase.table("messages").insert({
+            "id": reply_id,
+            "conversation_id": conversation_id,
+            "role": "assistant",
+            "content": reply,
+            "created_at": datetime.now().isoformat()
+        }).execute()
 
-    return {"reply": reply}
+        return {"reply": reply}
+    except Exception as e:
+        logger.error(f"Failed to process message: {e}")
+        raise HTTPException(500, "Failed to process message")
 
 # ----------------------------------
 # LIST CHATS
@@ -788,23 +760,13 @@ async def send_message(conversation_id: str, req: Request, res: Response):
 async def list_chats(req: Request, res: Response):
     user_id = await get_or_create_user(req, res)
 
-    cursor.execute("""
-    SELECT * FROM conversations
-    WHERE user_id = ?
-    ORDER BY updated_at DESC
-    """, (user_id,))
-    
-    rows = cursor.fetchall()
-    return [
-        {
-            "id": row[0],
-            "user_id": row[1],
-            "title": row[2],
-            "summary": row[3],
-            "created_at": row[4],
-            "updated_at": row[5]
-        } for row in rows
-    ] if rows else []
+    try:
+        response = supabase.table("conversations").select("*").eq("user_id", user_id).order("updated_at", desc=True).execute()
+        rows = response.data if response.data else []
+        return rows
+    except Exception as e:
+        logger.error(f"Failed to list chats: {e}")
+        return []
 
 # ----------------------------------
 # SEARCH CHATS
@@ -813,36 +775,35 @@ async def list_chats(req: Request, res: Response):
 async def search_chats(q: str, req: Request, res: Response):
     user_id = await get_or_create_user(req, res)
 
-    cursor.execute("""
-    SELECT id, title FROM conversations
-    WHERE user_id = ? AND title LIKE ?
-    ORDER BY updated_at DESC
-    """, (user_id, f"%{q}%"))
-    
-    rows = cursor.fetchall()
-    return [{"id": row[0], "title": row[1]} for row in rows] if rows else []
+    try:
+        response = supabase.table("conversations").select("id, title").eq("user_id", user_id).ilike("title", f"%{q}%").order("updated_at", desc=True).execute()
+        rows = response.data if response.data else []
+        return rows
+    except Exception as e:
+        logger.error(f"Failed to search chats: {e}")
+        return []
 
 # ----------------------------------
 # PIN / ARCHIVE
 # ----------------------------------
 @app.post("/chat/{id}/pin")
 async def pin_chat(id: str):
-    cursor.execute("""
-    UPDATE conversations
-    SET updated_at = ?
-    WHERE id = ?
-    """, (datetime.now(), id))
-    conn.commit()
+    try:
+        supabase.table("conversations").update({
+            "updated_at": datetime.now().isoformat()
+        }).eq("id", id).execute()
+    except Exception as e:
+        logger.error(f"Failed to pin chat: {e}")
     return {"status": "pinned"}
 
 @app.post("/chat/{id}/archive")
 async def archive_chat(id: str):
-    cursor.execute("""
-    UPDATE conversations
-    SET updated_at = ?
-    WHERE id = ?
-    """, (datetime.now(), id))
-    conn.commit()
+    try:
+        supabase.table("conversations").update({
+            "updated_at": datetime.now().isoformat()
+        }).eq("id", id).execute()
+    except Exception as e:
+        logger.error(f"Failed to archive chat: {e}")
     return {"status": "archived"}
 
 # ----------------------------------
@@ -850,12 +811,12 @@ async def archive_chat(id: str):
 # ----------------------------------
 @app.post("/chat/{id}/folder")
 async def move_folder(id: str, folder: Optional[str] = None):
-    cursor.execute("""
-    UPDATE conversations
-    SET updated_at = ?
-    WHERE id = ?
-    """, (datetime.now(), id))
-    conn.commit()
+    try:
+        supabase.table("conversations").update({
+            "updated_at": datetime.now().isoformat()
+        }).eq("id", id).execute()
+    except Exception as e:
+        logger.error(f"Failed to move chat to folder: {e}")
     return {"status": "moved"}
 
 # ----------------------------------
@@ -865,12 +826,12 @@ async def move_folder(id: str, folder: Optional[str] = None):
 async def share_chat(id: str):
     token = uuid.uuid4().hex
 
-    cursor.execute("""
-    UPDATE conversations
-    SET updated_at = ?
-    WHERE id = ?
-    """, (datetime.now(), id))
-    conn.commit()
+    try:
+        supabase.table("conversations").update({
+            "updated_at": datetime.now().isoformat()
+        }).eq("id", id).execute()
+    except Exception as e:
+        logger.error(f"Failed to share chat: {e}")
 
     return {"share_url": f"/share/{token}"}
 
@@ -1046,13 +1007,13 @@ def extract_memory_from_prompt(prompt: str):
     return None
 
 def load_user_memory(user_id: str):
-    cursor.execute("""
-    SELECT key, value FROM memories
-    WHERE user_id = ?
-    """, (user_id,))
-    
-    rows = cursor.fetchall()
-    return [{"key": row[0], "value": row[1]} for row in rows] if rows else []
+    try:
+        response = supabase.table("memories").select("key, value").eq("user_id", user_id).execute()
+        rows = response.data if response.data else []
+        return [{"key": row["key"], "value": row["value"]} for row in rows]
+    except Exception as e:
+        logger.error(f"Failed to load user memory: {e}")
+    return []
 
 
 # =========================
@@ -1201,11 +1162,14 @@ async def chat_stream(req: Request, res: Response, tts: bool = False, samples: i
     async def event_generator():
         # ✅ REGISTER STREAM IN DATABASE
         stream_id = str(uuid.uuid4())
-        cursor.execute("""
-        INSERT OR REPLACE INTO active_streams (user_id, stream_id, started_at)
-        VALUES (?, ?, ?)
-        """, (user_id, stream_id, datetime.now()))
-        conn.commit()
+        try:
+            supabase.table("active_streams").insert({
+                "user_id": user_id,
+                "stream_id": stream_id,
+                "started_at": datetime.now().isoformat()
+            }).execute()
+        except Exception as e:
+            logger.error(f"Failed to register stream: {e}")
 
         try:
             # ---------- 1️⃣ IMAGE STREAM ----------
@@ -1258,12 +1222,8 @@ async def chat_stream(req: Request, res: Response, tts: bool = False, samples: i
                                 continue
 
                             # Check if stream was cancelled
-                            cursor.execute("""
-                            SELECT stream_id FROM active_streams
-                            WHERE user_id = ?
-                            """, (user_id,))
-                            
-                            if not cursor.fetchone():
+                            stream_response = supabase.table("active_streams").select("stream_id").eq("user_id", user_id).execute()
+                            if not stream_response.data:
                                 logger.info(f"Stream cancelled by user {user_id}")
                                 break
 
@@ -1326,11 +1286,10 @@ async def chat_stream(req: Request, res: Response, tts: bool = False, samples: i
 
         finally:
             # ✅ CLEANUP ACTIVE STREAM IN DATABASE
-            cursor.execute("""
-            DELETE FROM active_streams
-            WHERE user_id = ?
-            """, (user_id,))
-            conn.commit()
+            try:
+                supabase.table("active_streams").delete().eq("user_id", user_id).execute()
+            except Exception as e:
+                logger.error(f"Failed to cleanup active stream: {e}")
 
     return StreamingResponse(
         event_generator(),
@@ -1521,41 +1480,38 @@ async def ask_universal(request: Request):
     # =========================
     if not conversation_id:
         conv_id = str(uuid.uuid4())
-        cursor.execute("""
-        INSERT INTO conversations (id, user_id, title)
-        VALUES (?, ?, ?)
-        """, (conv_id, user_id, "New Chat"))
-        conn.commit()
+        try:
+            supabase.table("conversations").insert({
+                "id": conv_id,
+                "user_id": user_id,
+                "title": "New Chat",
+                "created_at": datetime.now().isoformat(),
+                "updated_at": datetime.now().isoformat()
+            }).execute()
+        except Exception as e:
+            logger.error(f"Failed to create conversation: {e}")
         conversation_id = conv_id
 
     # =========================
     # 2️⃣ LOAD HISTORY + MEMORY
     # =========================
-    cursor.execute("""
-    SELECT role, content FROM messages
-    WHERE conversation_id = ?
-    ORDER BY created_at
-    LIMIT 20
-    """, (conversation_id,))
-    
-    rows = cursor.fetchall()
-    history = [{"role": row[0], "content": row[1]} for row in rows] if rows else []
+    try:
+        msg_response = supabase.table("messages").select("role, content").eq("conversation_id", conversation_id).order("created_at").limit(20).execute()
+        rows = msg_response.data if msg_response.data else []
+        history = [{"role": row["role"], "content": row["content"]} for row in rows]
 
-    cursor.execute("""
-    SELECT key, value FROM memories
-    WHERE user_id = ?
-    """, (user_id,))
-    
-    mem_rows = cursor.fetchall()
-    user_memory = [{"key": row[0], "value": row[1]} for row in mem_rows] if mem_rows else []
+        mem_response = supabase.table("memories").select("key, value").eq("user_id", user_id).execute()
+        mem_rows = mem_response.data if mem_response.data else []
+        user_memory = [{"key": row["key"], "value": row["value"]} for row in mem_rows]
 
-    cursor.execute("""
-    SELECT summary FROM conversations
-    WHERE id = ?
-    """, (conversation_id,))
-    
-    conv_row = cursor.fetchone()
-    conversation_summary = conv_row[0] if conv_row else None
+        conv_response = supabase.table("conversations").select("summary").eq("id", conversation_id).execute()
+        conv_row = conv_response.data[0] if conv_response.data else None
+        conversation_summary = conv_row["summary"] if conv_row else None
+    except Exception as e:
+        logger.error(f"Failed to load history/memory: {e}")
+        history = []
+        user_memory = []
+        conversation_summary = None
 
     # =========================
     # 3️⃣ SYSTEM PROMPT
@@ -1585,11 +1541,16 @@ async def ask_universal(request: Request):
     # 4️⃣ SAVE USER MESSAGE
     # =========================
     msg_id = str(uuid.uuid4())
-    cursor.execute("""
-    INSERT INTO messages (id, conversation_id, role, content)
-    VALUES (?, ?, ?, ?)
-    """, (msg_id, conversation_id, "user", prompt))
-    conn.commit()
+    try:
+        supabase.table("messages").insert({
+            "id": msg_id,
+            "conversation_id": conversation_id,
+            "role": "user",
+            "content": prompt,
+            "created_at": datetime.now().isoformat()
+        }).execute()
+    except Exception as e:
+        logger.error(f"Failed to save user message: {e}")
 
     # =========================
     # 🧠 MEMORY EXTRACTION
@@ -1597,11 +1558,15 @@ async def ask_universal(request: Request):
     memory = extract_memory_from_prompt(prompt)
     if memory:
         key, value = memory
-        cursor.execute("""
-        INSERT OR REPLACE INTO memories (user_id, key, value)
-        VALUES (?, ?, ?)
-        """, (user_id, key, value))
-        conn.commit()
+        try:
+            supabase.table("memories").upsert({
+                "user_id": user_id,
+                "key": key,
+                "value": value,
+                "created_at": datetime.now().isoformat()
+            }).execute()
+        except Exception as e:
+            logger.error(f"Failed to save memory: {e}")
 
     # =========================
     # 5️⃣ NON-STREAM MODE
@@ -1625,11 +1590,16 @@ async def ask_universal(request: Request):
         assistant_reply = r.json()["choices"][0]["message"]["content"]
 
         reply_id = str(uuid.uuid4())
-        cursor.execute("""
-        INSERT INTO messages (id, conversation_id, role, content)
-        VALUES (?, ?, ?, ?)
-        """, (reply_id, conversation_id, "assistant", assistant_reply))
-        conn.commit()
+        try:
+            supabase.table("messages").insert({
+                "id": reply_id,
+                "conversation_id": conversation_id,
+                "role": "assistant",
+                "content": assistant_reply,
+                "created_at": datetime.now().isoformat()
+            }).execute()
+        except Exception as e:
+            logger.error(f"Failed to save assistant reply: {e}")
 
         await summarize_conversation(conversation_id)
 
@@ -1725,11 +1695,16 @@ async def ask_universal(request: Request):
                         pass
 
         reply_id = str(uuid.uuid4())
-        cursor.execute("""
-        INSERT INTO messages (id, conversation_id, role, content)
-        VALUES (?, ?, ?, ?)
-        """, (reply_id, conversation_id, "assistant", assistant_reply))
-        conn.commit()
+        try:
+            supabase.table("messages").insert({
+                "id": reply_id,
+                "conversation_id": conversation_id,
+                "role": "assistant",
+                "content": assistant_reply,
+                "created_at": datetime.now().isoformat()
+            }).execute()
+        except Exception as e:
+            logger.error(f"Failed to save assistant reply: {e}")
 
         await summarize_conversation(conversation_id)
 
@@ -1759,40 +1734,35 @@ async def edit_message(
         raise HTTPException(400, "content required")
 
     # Get message
-    cursor.execute("""
-    SELECT id, role, conversation_id, created_at FROM messages
-    WHERE id = ?
-    """, (message_id,))
-    
-    msg_row = cursor.fetchone()
-    if not msg_row:
-        raise HTTPException(404, "message not found")
+    try:
+        msg_response = supabase.table("messages").select("id, role, conversation_id, created_at").eq("id", message_id).execute()
+        if not msg_response.data:
+            raise HTTPException(404, "message not found")
+        
+        msg_row = msg_response.data[0]
+        if msg_row["role"] != "user":
+            raise HTTPException(403, "only user messages can be edited")
 
-    if msg_row[1] != "user":
-        raise HTTPException(403, "only user messages can be edited")
+        conversation_id = msg_row["conversation_id"]
+        edited_at = msg_row["created_at"]
 
-    conversation_id = msg_row[2]
-    edited_at = msg_row[3]
+        # Update message content
+        supabase.table("messages").update({
+            "content": new_text
+        }).eq("id", message_id).execute()
 
-    # Update message content
-    cursor.execute("""
-    UPDATE messages
-    SET content = ?
-    WHERE id = ?
-    """, (new_text, message_id))
-    conn.commit()
+        # 🔥 DELETE ALL ASSISTANT MESSAGES AFTER THIS MESSAGE
+        supabase.table("messages").delete().eq("conversation_id", conversation_id).gt("created_at", edited_at).eq("role", "assistant").execute()
 
-    # 🔥 DELETE ALL ASSISTANT MESSAGES AFTER THIS MESSAGE
-    cursor.execute("""
-    DELETE FROM messages
-    WHERE conversation_id = ? AND created_at > ? AND role = 'assistant'
-    """, (conversation_id, edited_at))
-    conn.commit()
-
-    return {
-        "status": "edited",
-        "conversation_id": conversation_id
-    }
+        return {
+            "status": "edited",
+            "conversation_id": conversation_id
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to edit message: {e}")
+        raise HTTPException(500, "Failed to edit message")
     
 # -----------------------------
 # Stop endpoint
@@ -1808,11 +1778,10 @@ async def stop_stream(req: Request, res: Response):
         return {"status": "stopped"}
 
     # Also remove from database
-    cursor.execute("""
-    DELETE FROM active_streams
-    WHERE user_id = ?
-    """, (user_id,))
-    conn.commit()
+    try:
+        supabase.table("active_streams").delete().eq("user_id", user_id).execute()
+    except Exception as e:
+        logger.error(f"Failed to stop stream: {e}")
 
     return {"status": "no_active_stream"}
     
@@ -1846,11 +1815,14 @@ async def regenerate(req: Request, res: Response, tts: bool = False, samples: in
 
         # Also register in database
         stream_id = str(uuid.uuid4())
-        cursor.execute("""
-        INSERT OR REPLACE INTO active_streams (user_id, stream_id, started_at)
-        VALUES (?, ?, ?)
-        """, (user_id, stream_id, datetime.now()))
-        conn.commit()
+        try:
+            supabase.table("active_streams").insert({
+                "user_id": user_id,
+                "stream_id": stream_id,
+                "started_at": datetime.now().isoformat()
+            }).execute()
+        except Exception as e:
+            logger.error(f"Failed to register stream: {e}")
 
         try:
             # --- IMAGE (OPTIONAL) ---
@@ -1958,11 +1930,10 @@ async def regenerate(req: Request, res: Response, tts: bool = False, samples: in
         finally:
             # ✅ CLEANUP
             active_streams.pop(user_id, None)
-            cursor.execute("""
-            DELETE FROM active_streams
-            WHERE user_id = ?
-            """, (user_id,))
-            conn.commit()
+            try:
+                supabase.table("active_streams").delete().eq("user_id", user_id).execute()
+            except Exception as e:
+                logger.error(f"Failed to cleanup active stream: {e}")
 
     return StreamingResponse(
         event_generator(),
@@ -2034,7 +2005,7 @@ async def generate_video(request: Request):
 async def image_gen(request: Request):
     body = await request.json()
     prompt = body.get("prompt", "")
-    user_id = body.get("user_id", user_id)
+    user_id = body.get("user_id", "anonymous")
 
     try:
         samples = max(1, int(body.get("samples", 1)))
@@ -2101,11 +2072,14 @@ async def image_stream(req: Request, res: Response):
 
         # Also register in database
         stream_id = str(uuid.uuid4())
-        cursor.execute("""
-        INSERT OR REPLACE INTO active_streams (user_id, stream_id, started_at)
-        VALUES (?, ?, ?)
-        """, (user_id, stream_id, datetime.now()))
-        conn.commit()
+        try:
+            supabase.table("active_streams").insert({
+                "user_id": user_id,
+                "stream_id": stream_id,
+                "started_at": datetime.now().isoformat()
+            }).execute()
+        except Exception as e:
+            logger.error(f"Failed to register stream: {e}")
 
         try:
             # --- initial message ---
@@ -2190,11 +2164,10 @@ async def image_stream(req: Request, res: Response):
         finally:
             # ✅ CLEANUP
             active_streams.pop(user_id, None)
-            cursor.execute("""
-            DELETE FROM active_streams
-            WHERE user_id = ?
-            """, (user_id,))
-            conn.commit()
+            try:
+                supabase.table("active_streams").delete().eq("user_id", user_id).execute()
+            except Exception as e:
+                logger.error(f"Failed to cleanup active stream: {e}")
 
     return StreamingResponse(
         event_generator(),
@@ -2234,7 +2207,7 @@ async def img2img(request: Request, file: UploadFile = File(...), prompt: str = 
                     # If we use local_image_url for edits, we will hit the same 404 error on Railway.
                     # Let's upload to Supabase here too for consistency.
                     
-                    
+                    image_bytes = base64.b64decode(b64)
                     supabase_fname = f"{user_id}/edits/{fname}"
                     upload_image_to_supabase(image_bytes, supabase_fname)
                     signed = supabase.storage.from_("ai-images").create_signed_url(supabase_fname, 60*60)
@@ -2338,11 +2311,14 @@ async def tts_stream(req: Request, res: Response):
 
         # Also register in database
         stream_id = str(uuid.uuid4())
-        cursor.execute("""
-        INSERT OR REPLACE INTO active_streams (user_id, stream_id, started_at)
-        VALUES (?, ?, ?)
-        """, (user_id, stream_id, datetime.now()))
-        conn.commit()
+        try:
+            supabase.table("active_streams").insert({
+                "user_id": user_id,
+                "stream_id": stream_id,
+                "started_at": datetime.now().isoformat()
+            }).execute()
+        except Exception as e:
+            logger.error(f"Failed to register stream: {e}")
 
         try:
             async with httpx.AsyncClient(timeout=None) as client:
@@ -2367,11 +2343,10 @@ async def tts_stream(req: Request, res: Response):
         finally:
             # ✅ CLEANUP
             active_streams.pop(user_id, None)
-            cursor.execute("""
-            DELETE FROM active_streams
-            WHERE user_id = ?
-            """, (user_id,))
-            conn.commit()
+            try:
+                supabase.table("active_streams").delete().eq("user_id", user_id).execute()
+            except Exception as e:
+                logger.error(f"Failed to cleanup active stream: {e}")
 
     return StreamingResponse(
         audio_streamer(),
@@ -2495,11 +2470,18 @@ async def vision_analyze(
     # 5️⃣ SAVE HISTORY
     # =========================
     analysis_id = str(uuid.uuid4())
-    cursor.execute("""
-    INSERT INTO vision_history (id, user_id, image_path, annotated_path, detections, faces)
-    VALUES (?, ?, ?, ?, ?, ?)
-    """, (analysis_id, user_id, raw_path, ann_path, json.dumps(detections), face_count))
-    conn.commit()
+    try:
+        supabase.table("vision_history").insert({
+            "id": analysis_id,
+            "user_id": user_id,
+            "image_path": raw_path,
+            "annotated_path": ann_path,
+            "detections": json.dumps(detections),
+            "faces": face_count,
+            "created_at": datetime.now().isoformat()
+        }).execute()
+    except Exception as e:
+        logger.error(f"Failed to save vision analysis: {e}")
 
     return {
         "objects": detections,
@@ -2513,26 +2495,13 @@ async def vision_analyze(
 async def vision_history(req: Request, res: Response):
     user_id = await get_or_create_user(req, res)
 
-    cursor.execute("""
-    SELECT * FROM vision_history
-    WHERE user_id = ?
-    ORDER BY created_at DESC
-    LIMIT 50
-    """, (user_id,))
-    
-    rows = cursor.fetchall()
-    return [
-        {
-            "id": row[0],
-            "user_id": row[1],
-            "image_path": row[2],
-            "annotated_path": row[3],
-            "detections": json.loads(row[4]),
-            "faces": row[5],
-            "created_at": row[6]
-        } for row in rows
-    ] if rows else []
-
+    try:
+        response = supabase.table("vision_history").select("*").eq("user_id", user_id).order("created_at", desc=True).limit(50).execute()
+        rows = response.data if response.data else []
+        return rows
+    except Exception as e:
+        logger.error(f"Failed to get vision history: {e}")
+        return []
 
     
 # ---------- Code generation ----------
