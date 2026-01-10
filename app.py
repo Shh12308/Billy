@@ -1460,216 +1460,134 @@ async def run_code_safely(prompt: str):
     return {"code": code, "execution": execution}
 
 
+# =========================================================
+# 🧠 TOOL SCHEMAS (OpenAI style)
+# =========================================================
+
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": "Search the internet for up-to-date information",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"}
+                },
+                "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_code",
+            "description": "Generate and execute code safely",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task": {"type": "string"}
+                },
+                "required": ["task"]
+            }
+        }
+    }
+]
+
+# =========================================================
+# 🧠 ROLE + PERMISSION CHECK
+# =========================================================
+
+def check_permission(role: str, tool_name: str) -> bool:
+    permissions = {
+        "user": {"web_search"},
+        "admin": {"web_search", "run_code"},
+        "system": {"web_search", "run_code"}
+    }
+    return tool_name in permissions.get(role, set())
+
+# =========================================================
+# 💸 COST TRACKING
+# =========================================================
+
+def track_cost(user_id: str, tokens: int, tool: str | None = None):
+    supabase.table("usage").insert({
+        "user_id": user_id,
+        "tokens": tokens,
+        "tool": tool,
+        "created_at": datetime.now().isoformat()
+    }).execute()
+
+# =========================================================
+# 🧠 MEMORY SCORING + DECAY
+# =========================================================
+
+def score_memory(text: str) -> int:
+    score = 1
+    if "important" in text.lower(): score += 2
+    if "remember" in text.lower(): score += 2
+    return score
+
+async def decay_memories(user_id: str):
+    supabase.rpc("decay_memories", {"uid": user_id}).execute()
+
+# =========================================================
+# 🤖 AGENT ORCHESTRATION
+# =========================================================
+
+async def run_agents(prompt: str):
+    async def research():
+        return await duckduckgo_search(prompt)
+
+    async def coding():
+        return await run_code_safely(prompt)
+
+    results = await asyncio.gather(
+        research(),
+        coding(),
+        return_exceptions=True
+    )
+    return results
+
+# =========================================================
+# 🚀 UNIVERSAL ENDPOINT (FULL)
+# =========================================================
+
 @app.post("/ask/universal")
 async def ask_universal(request: Request):
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(400, "Invalid JSON")
-
+    body = await request.json()
     prompt = body.get("prompt", "").strip()
     user_id = body.get("user_id", "anonymous")
-    conversation_id = body.get("conversation_id")
+    role = body.get("role", "user")
     stream = bool(body.get("stream", False))
 
     if not prompt:
         raise HTTPException(400, "prompt required")
 
-    # =========================
-    # 1️⃣ CONVERSATION
-    # =========================
-    if not conversation_id:
-        conv_id = str(uuid.uuid4())
-        try:
-            supabase.table("conversations").insert({
-                "id": conv_id,
-                "user_id": user_id,
-                "title": "New Chat",
-                "created_at": datetime.now().isoformat(),
-                "updated_at": datetime.now().isoformat()
-            }).execute()
-        except Exception as e:
-            logger.error(f"Failed to create conversation: {e}")
-        conversation_id = conv_id
+    # ---------- Load history ----------
+    history = load_history(user_id)
 
-    # =========================
-    # 2️⃣ LOAD HISTORY + MEMORY
-    # =========================
-    try:
-        msg_response = supabase.table("messages").select("role, content").eq("conversation_id", conversation_id).order("created_at").limit(20).execute()
-        rows = msg_response.data if msg_response.data else []
-        history = [{"role": row["role"], "content": row["content"]} for row in rows]
-
-        mem_response = supabase.table("memories").select("key, value").eq("user_id", user_id).execute()
-        mem_rows = mem_response.data if mem_response.data else []
-        user_memory = [{"key": row["key"], "value": row["value"]} for row in mem_rows]
-
-        conv_response = supabase.table("conversations").select("summary").eq("id", conversation_id).execute()
-        conv_row = conv_response.data[0] if conv_response.data else None
-        conversation_summary = conv_row["summary"] if conv_row else None
-    except Exception as e:
-        logger.error(f"Failed to load history/memory: {e}")
-        history = []
-        user_memory = []
-        conversation_summary = None
-
-    # =========================
-    # 3️⃣ SYSTEM PROMPT
-    # =========================
     system_prompt = (
-        "You are a ChatGPT-style assistant.\n"
-        "Maintain context across turns.\n"
-        "Use memory when relevant.\n"
-        "Modify existing work instead of restarting.\n"
+        "You are a ChatGPT-style multimodal assistant.\n"
+        "You can call tools when useful.\n"
+        "Maintain memory and context.\n"
     )
-
-    if conversation_summary:
-        system_prompt += f"\nConversation summary:\n{conversation_summary}\n"
-
-    if user_memory:
-        system_prompt += "\nUser memory:\n"
-        for m in user_memory:
-            system_prompt += f"- {m['key']}: {m['value']}\n"
 
     messages = [{"role": "system", "content": system_prompt}]
     messages.extend(history)
     messages.append({"role": "user", "content": prompt})
 
-    intent = detect_intent(prompt)
-
-    # =========================
-    # 4️⃣ SAVE USER MESSAGE
-    # =========================
-    msg_id = str(uuid.uuid4())
-    try:
-        supabase.table("messages").insert({
-            "id": msg_id,
-            "conversation_id": conversation_id,
-            "role": "user",
-            "content": prompt,
-            "created_at": datetime.now().isoformat()
-        }).execute()
-    except Exception as e:
-        logger.error(f"Failed to save user message: {e}")
-
-    # =========================
-    # 🧠 MEMORY EXTRACTION
-    # =========================
-    memory = extract_memory_from_prompt(prompt)
-    if memory:
-        key, value = memory
-        try:
-            supabase.table("memories").upsert({
-                "user_id": user_id,
-                "key": key,
-                "value": value,
-                "created_at": datetime.now().isoformat()
-            }).execute()
-        except Exception as e:
-            logger.error(f"Failed to save memory: {e}")
-
-    # =========================
-    # 5️⃣ NON-STREAM MODE
-    # =========================
-    if not stream:
-        payload = {
-            "model": CHAT_MODEL,
-            "messages": messages,
-            "temperature": 0.7,
-            "max_tokens": 1500
-        }
-
-        async with httpx.AsyncClient(timeout=60) as client:
-            r = await client.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers=get_groq_headers(),
-                json=payload
-            )
-            r.raise_for_status()
-
-        assistant_reply = r.json()["choices"][0]["message"]["content"]
-
-        reply_id = str(uuid.uuid4())
-        try:
-            supabase.table("messages").insert({
-                "id": reply_id,
-                "conversation_id": conversation_id,
-                "role": "assistant",
-                "content": assistant_reply,
-                "created_at": datetime.now().isoformat()
-            }).execute()
-        except Exception as e:
-            logger.error(f"Failed to save assistant reply: {e}")
-
-        await summarize_conversation(conversation_id)
-
-        return {
-            "conversation_id": conversation_id,
-            "intent": intent,
-            "reply": assistant_reply
-        }
-
-    # =========================
-    # 6️⃣ STREAM MODE
-    # =========================
+    # ---------- STREAM MODE ----------
     async def event_generator():
         assistant_reply = ""
 
-        yield sse({"type": "starting", "intent": intent})
-
-        # ---------- INTENT HANDLING ----------
-        if intent == "image":
-            yield sse({"type": "status", "status": "Generating image"})
-            async for evt in stream_images(prompt, samples=1):
-                yield evt
-            yield sse({"type": "done"})
-            return
-
-        elif intent == "video":
-            yield sse({"type": "status", "status": "Generating video"})
-            result = await generate_video_internal(prompt, user_id=user_id)
-            yield sse({"type": "video", "videos": result["videos"]})
-            yield sse({"type": "done"})
-            return
-
-        elif intent == "tts":
-            yield sse({"type": "status", "status": "Generating speech"})
-            async for evt in tts_stream_helper(prompt):
-                yield sse(evt)
-            yield sse({"type": "done"})
-            return
-
-        elif intent == "code":
-            yield sse({"type": "status", "status": "Generating and running code"})
-            try:
-                result = await run_code_safely(prompt)
-                yield sse({
-                    "type": "code",
-                    "code": result.get("code"),
-                    "execution": result.get("execution"),
-                    "status": "ok"
-                })
-            except Exception:
-                yield sse({
-                    "type": "code",
-                    "status": "execution_disabled",
-                    "error": "Code execution unavailable"
-                })
-
-            yield sse({"type": "done"})
-            return
-
-        elif intent == "search":
-            yield sse({"type": "status", "status": "Searching online"})
-            result = await duckduckgo_search(prompt)
-            yield sse({"type": "search", "result": result})
-            yield sse({"type": "done"})
-            return
-
         payload = {
             "model": CHAT_MODEL,
-            "stream": True,
             "messages": messages,
+            "tools": TOOLS,
+            "tool_choice": "auto",
+            "stream": True,
             "max_tokens": 1500
         }
 
@@ -1683,42 +1601,75 @@ async def ask_universal(request: Request):
                 async for line in resp.aiter_lines():
                     if not line.startswith("data:"):
                         continue
+
                     data = line[5:].strip()
                     if data == "[DONE]":
                         break
-                    try:
-                        delta = json.loads(data)["choices"][0]["delta"].get("content")
-                        if delta:
-                            assistant_reply += delta
-                            yield sse({"type": "token", "text": delta})
-                    except Exception:
-                        pass
 
-        reply_id = str(uuid.uuid4())
-        try:
-            supabase.table("messages").insert({
-                "id": reply_id,
-                "conversation_id": conversation_id,
-                "role": "assistant",
-                "content": assistant_reply,
-                "created_at": datetime.now().isoformat()
-            }).execute()
-        except Exception as e:
-            logger.error(f"Failed to save assistant reply: {e}")
+                    chunk = json.loads(data)
+                    delta = chunk["choices"][0]["delta"]
 
-        await summarize_conversation(conversation_id)
+                    # ---- TOOL CALL ----
+                    if "tool_calls" in delta:
+                        for call in delta["tool_calls"]:
+                            name = call["function"]["name"]
+                            args = json.loads(call["function"]["arguments"])
+
+                            if not check_permission(role, name):
+                                yield sse({"type": "error", "error": "Permission denied"})
+                                continue
+
+                            if name == "web_search":
+                                result = await duckduckgo_search(args["query"])
+                                yield sse({"type": "tool", "tool": name, "result": result})
+                                track_cost(user_id, 300, "web_search")
+
+                            if name == "run_code":
+                                result = await run_code_safely(args["task"])
+                                yield sse({"type": "tool", "tool": name, "result": result})
+                                track_cost(user_id, 800, "run_code")
+
+                    # ---- TEXT TOKEN ----
+                    content = delta.get("content")
+                    if content:
+                        assistant_reply += content
+                        yield sse({"type": "token", "text": content})
+
+        # ---------- SAVE MESSAGE ----------
+        supabase.table("messages").insert({
+            "id": str(uuid.uuid4()),
+            "user_id": user_id,
+            "role": "assistant",
+            "content": assistant_reply,
+            "created_at": datetime.now().isoformat()
+        }).execute()
+
+        # ---------- MEMORY EXTRACTION ----------
+        importance = score_memory(assistant_reply)
+        supabase.table("memories").insert({
+            "user_id": user_id,
+            "content": assistant_reply[:500],
+            "importance": importance,
+            "created_at": datetime.now().isoformat()
+        }).execute()
+
+        await decay_memories(user_id)
+        await summarize_conversation(user_id)
 
         yield sse({"type": "done"})
 
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"
-        }
-    )
+    if stream:
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
+
+    return {"error": "Non-stream mode disabled for universal endpoint"}
 
 @app.post("/message/{message_id}/edit")
 async def edit_message(
