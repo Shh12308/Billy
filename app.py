@@ -499,6 +499,28 @@ def save_image_record(user_id, prompt, path, is_nsfw):
     except Exception as e:
         logger.error(f"Failed to save image record: {e}")
 
+
+def decide_tool(query: str, conversation_history: list):
+    """
+    Decide whether to answer from memory or go online.
+    Returns: "memory" or "search"
+    """
+    query_lower = query.lower()
+
+    # 1. Simple keyword-based check for personal questions
+    personal_keywords = ["who am i", "what did i say", "my name", "my info"]
+    if any(kw in query_lower for kw in personal_keywords):
+        return "memory"
+
+    # 2. Check if history has relevant info
+    for msg in reversed(conversation_history):
+        if any(word in msg["content"].lower() for word in query_lower.split()):
+            return "memory"
+
+    # 3. Default to online search if no memory match
+    return "search"
+
+
 async def get_user_id_from_cookie(request: Request, response: Response) -> str:
     return await get_or_create_user(request, response)
 
@@ -1580,60 +1602,102 @@ async def ask_universal(request: Request):
 
     # ---------- STREAM MODE ----------
     async def event_generator():
-        assistant_reply = ""
+    assistant_reply = ""
+    role = "user"  # TODO: load from auth / DB
 
-        payload = {
-            "model": CHAT_MODEL,
-            "messages": messages,
-            "tools": TOOLS,
-            "tool_choice": "auto",
-            "stream": True,
-            "max_tokens": 1500
-        }
+    yield sse({"type": "starting"})
 
-        async with httpx.AsyncClient(timeout=None) as client:
-            async with client.stream(
-                "POST",
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers=get_groq_headers(),
-                json=payload
-            ) as resp:
-                async for line in resp.aiter_lines():
-                    if not line.startswith("data:"):
-                        continue
+    payload = {
+        "model": CHAT_MODEL,
+        "messages": messages,
+        "tools": TOOLS,
+        "tool_choice": "auto",
+        "stream": True,
+        "max_tokens": 1500
+    }
 
-                    data = line[5:].strip()
-                    if data == "[DONE]":
-                        break
+    tool = decide_tool(user_query, history)
 
-                    chunk = json.loads(data)
-                    delta = chunk["choices"][0]["delta"]
+if max_similarity(memory_results) > 0.75:
+    tool = "memory"
+else:
+    tool = "search"
 
-                    # ---- TOOL CALL ----
-                    if "tool_calls" in delta:
-                        for call in delta["tool_calls"]:
-                            name = call["function"]["name"]
-                            args = json.loads(call["function"]["arguments"])
+    async with httpx.AsyncClient(timeout=None) as client:
+        async with client.stream(
+            "POST",
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers=get_groq_headers(),
+            json=payload
+        ) as resp:
+            async for line in resp.aiter_lines():
+                if not line.startswith("data:"):
+                    continue
 
-                            if not check_permission(role, name):
-                                yield sse({"type": "error", "error": "Permission denied"})
-                                continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    break
 
-                            if name == "web_search":
-                                result = await duckduckgo_search(args["query"])
-                                yield sse({"type": "tool", "tool": name, "result": result})
+                chunk = json.loads(data)
+                delta = chunk["choices"][0]["delta"]
+
+                # ---------- TOOL CALL ----------
+                if "tool_calls" in delta:
+                    for call in delta["tool_calls"]:
+                        name = call["function"]["name"]
+                        args = json.loads(call["function"]["arguments"])
+
+                        if not check_permission(role, name):
+                            yield sse({"type": "error", "error": "Permission denied"})
+                            continue
+
+                        result = None
+
+                        if name == "web_search":
+                            result = await duckduckgo_search(args["query"])
+                            yield sse({"type": "tool", "tool": name, "result": result})
+
+                            try:
                                 track_cost(user_id, 300, "web_search")
+                            except Exception:
+                                logger.warning("Cost tracking failed (ignored)")
 
-                            if name == "run_code":
-                                result = await run_code_safely(args["task"])
-                                yield sse({"type": "tool", "tool": name, "result": result})
+                        elif name == "run_code":
+                            result = await run_code_safely(args["task"])
+                            yield sse({"type": "tool", "tool": name, "result": result})
+
+                            try:
                                 track_cost(user_id, 800, "run_code")
+                            except Exception:
+                                logger.warning("Cost tracking failed (ignored)")
 
-                    # ---- TEXT TOKEN ----
-                    content = delta.get("content")
-                    if content:
-                        assistant_reply += content
-                        yield sse({"type": "token", "text": content})
+                        # 🔑 CRITICAL: send tool result back to model
+                        messages.append({
+                            "role": "tool",
+                            "tool_name": name,
+                            "content": json.dumps(result)
+                        })
+
+                # ---------- TEXT TOKEN ----------
+                content = delta.get("content")
+                if content:
+                    assistant_reply += content
+                    yield sse({"type": "token", "text": content})
+
+    # ---------- SAVE ASSISTANT MESSAGE ----------
+    if assistant_reply.strip():
+        try:
+            supabase.table("messages").insert({
+                "id": str(uuid.uuid4()),
+                "conversation_id": conversation_id,
+                "role": "assistant",
+                "content": assistant_reply,
+                "created_at": datetime.now().isoformat()
+            }).execute()
+        except Exception as e:
+            logger.error(f"Failed to save assistant reply: {e}")
+
+    yield sse({"type": "done"})
 
         # ---------- SAVE MESSAGE ----------
         supabase.table("messages").insert({
