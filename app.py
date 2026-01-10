@@ -428,6 +428,33 @@ User message: {message}"""
         logger.error(f"Failed to build contextual prompt: {e}")
         return f"You are ZyNaraAI1.0: helpful, concise, friendly. Focus on exactly what the user wants.\n\nUser message: {message}"
 
+
+def get_or_create_conversation_id(supabase, user_id: str) -> str:
+    # Try to get most recent conversation
+    res = (
+        supabase.table("conversations")
+        .select("id")
+        .eq("user_id", user_id)
+        .order("updated_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+
+    if res.data:
+        return res.data[0]["id"]
+
+    # Create new conversation
+    conversation_id = str(uuid.uuid4())
+    supabase.table("conversations").insert({
+        "id": conversation_id,
+        "user_id": user_id,
+        "created_at": datetime.utcnow().isoformat(),
+        "updated_at": datetime.utcnow().isoformat()
+    }).execute()
+
+    return conversation_id
+
+
 def build_system_prompt(artifact: str | None):
     base = """
 You are a helpful AI assistant.
@@ -711,6 +738,7 @@ async def new_chat(req: Request, res: Response):
         supabase.table("conversations").insert({
             "id": cid,
             "user_id": user_id,
+            "conversation_id": conversation_id,
             "title": "New Chat",
             "created_at": datetime.now().isoformat(),
             "updated_at": datetime.now().isoformat()
@@ -1587,6 +1615,12 @@ async def ask_universal(request: Request):
     if not prompt:
         raise HTTPException(400, "prompt required")
 
+    conversation_id = get_or_create_conversation_id(
+    supabase=supabase,
+    user_id=user_id
+)
+
+    
     # ---------- Load history ----------
     history = await load_history(user_id)
 
@@ -1634,7 +1668,7 @@ async def ask_universal(request: Request):
                 chunk = json.loads(data)
                 delta = chunk["choices"][0]["delta"]
 
-                # ---------- TOOL CALL ----------
+                # TOOL CALLS
                 if "tool_calls" in delta:
                     for call in delta["tool_calls"]:
                         name = call["function"]["name"]
@@ -1644,56 +1678,32 @@ async def ask_universal(request: Request):
                             yield sse({"type": "error", "error": "Permission denied"})
                             continue
 
-                        result = None
-
                         if name == "web_search":
                             result = await duckduckgo_search(args["query"])
-                            yield sse({"type": "tool", "tool": name, "result": result})
-                            try:
-                                track_cost(user_id, 300, "web_search")
-                            except Exception:
-                                logger.warning("Cost tracking failed (ignored)")
-
                         elif name == "run_code":
                             result = await run_code_safely(args["task"])
-                            yield sse({"type": "tool", "tool": name, "result": result})
-                            try:
-                                track_cost(user_id, 800, "run_code")
-                            except Exception:
-                                logger.warning("Cost tracking failed (ignored)")
+                        else:
+                            continue
 
-                        # 🔑 Send tool result back to model
+                        yield sse({"type": "tool", "tool": name, "result": result})
+
                         messages.append({
                             "role": "tool",
                             "tool_name": name,
                             "content": json.dumps(result)
                         })
 
-                # ---------- TEXT TOKEN ----------
                 content = delta.get("content")
                 if content:
                     assistant_reply += content
                     yield sse({"type": "token", "text": content})
 
-    # ---------- SAVE ASSISTANT MESSAGE ----------
-    if assistant_reply.strip():
-        try:
-            supabase.table("messages").insert({
-                "id": str(uuid.uuid4()),
-                "conversation_id": conversation_id,
-                "role": "assistant",
-                "content": assistant_reply,
-                "created_at": datetime.now().isoformat()
-            }).execute()
-        except Exception as e:
-            logger.error(f"Failed to save assistant reply: {e}")
-
     yield sse({"type": "done"})
-
         # ---------- SAVE MESSAGE ----------
         supabase.table("messages").insert({
             "id": str(uuid.uuid4()),
             "user_id": user_id,
+            "conversation_id": conversation_id,
             "role": "assistant",
             "content": assistant_reply,
             "created_at": datetime.now().isoformat()
@@ -1703,6 +1713,7 @@ async def ask_universal(request: Request):
         importance = score_memory(assistant_reply)
         supabase.table("memories").insert({
             "user_id": user_id,
+            "conversation_id": conversation_id,
             "content": assistant_reply[:500],
             "importance": importance,
             "created_at": datetime.now().isoformat()
