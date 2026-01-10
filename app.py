@@ -1767,9 +1767,11 @@ async def ask_universal(request: Request):
                             if name == "web_search":
                                 result = await duckduckgo_search(args["query"])
                                 track_cost(user_id, 300, "web_search")
+
                             elif name == "run_code":
                                 result = await run_code_safely(args["task"])
                                 track_cost(user_id, 800, "run_code")
+
                             else:
                                 continue
 
@@ -1792,31 +1794,54 @@ async def ask_universal(request: Request):
                         yield sse({"type": "token", "text": content})
 
     finally:
+        # ---------- SAVE ASSISTANT MESSAGE ----------
         if assistant_reply.strip():
-            # ---------- SAVE ASSISTANT MESSAGE ----------
-            message_data = {
+            supabase.table("messages").insert({
                 "id": str(uuid.uuid4()),
                 "user_id": user_id,
                 "conversation_id": conversation_id,
                 "role": "assistant",
                 "content": assistant_reply,
                 "created_at": datetime.now().isoformat()
-            }
-            supabase.table("messages").insert(message_data).execute()
+            }).execute()
 
             # ---------- MEMORY ----------
             importance = score_memory(assistant_reply)
-            memory_data = {
+            supabase.table("memories").insert({
                 "user_id": user_id,
                 "conversation_id": conversation_id,
                 "content": assistant_reply[:500],
                 "importance": importance,
                 "created_at": datetime.now().isoformat()
-            }
-            supabase.table("memories").insert(memory_data).execute()
+            }).execute()
 
             await decay_memories(user_id)
             await summarize_conversation(conversation_id)
+
+        yield sse({"type": "done"})
+
+        # ---------- SAVE MESSAGE ----------
+        supabase.table("messages").insert({
+            "id": str(uuid.uuid4()),
+            "user_id": user_id,
+            "conversation_id": conversation_id,
+            "role": "assistant",
+            "content": assistant_reply,
+            "created_at": datetime.now().isoformat()
+        }).execute()
+
+        # ---------- MEMORY EXTRACTION ----------
+        importance = score_memory(assistant_reply)
+        supabase.table("memories").insert({
+            "user_id": user_id,
+            "conversation_id": conversation_id,
+            "content": assistant_reply[:500],
+            "importance": importance,
+            "created_at": datetime.now().isoformat()
+        }).execute()
+
+        await decay_memories(user_id)
+        await summarize_conversation(user_id)
 
         yield sse({"type": "done"})
 
