@@ -1566,7 +1566,7 @@ async def ask_universal(request: Request):
         raise HTTPException(400, "prompt required")
 
     # ---------- Load history ----------
-    history = load_history(user_id)
+    history = await load_history(user_id)
 
     system_prompt = (
         "You are a ChatGPT-style multimodal assistant.\n"
