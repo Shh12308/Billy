@@ -1719,7 +1719,8 @@ async def ask_universal(request: Request):
     messages.append({"role": "user", "content": prompt})
 
     # ---------- STREAM MODE ----------
-    async def event_generator():
+    # ---------- STREAM MODE ----------
+async def event_generator():
     assistant_reply = ""
     role = "user"  # TODO: load from auth / DB
 
