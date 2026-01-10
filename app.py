@@ -1616,13 +1616,6 @@ async def ask_universal(request: Request):
         "max_tokens": 1500
     }
 
-    tool = decide_tool(user_query, history)
-
-if max_similarity(memory_results) > 0.75:
-    tool = "memory"
-else:
-    tool = "search"
-
     async with httpx.AsyncClient(timeout=None) as client:
         async with client.stream(
             "POST",
@@ -1656,7 +1649,6 @@ else:
                         if name == "web_search":
                             result = await duckduckgo_search(args["query"])
                             yield sse({"type": "tool", "tool": name, "result": result})
-
                             try:
                                 track_cost(user_id, 300, "web_search")
                             except Exception:
@@ -1665,13 +1657,12 @@ else:
                         elif name == "run_code":
                             result = await run_code_safely(args["task"])
                             yield sse({"type": "tool", "tool": name, "result": result})
-
                             try:
                                 track_cost(user_id, 800, "run_code")
                             except Exception:
                                 logger.warning("Cost tracking failed (ignored)")
 
-                        # 🔑 CRITICAL: send tool result back to model
+                        # 🔑 Send tool result back to model
                         messages.append({
                             "role": "tool",
                             "tool_name": name,
