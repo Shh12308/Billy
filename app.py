@@ -428,6 +428,92 @@ User message: {message}"""
         logger.error(f"Failed to build contextual prompt: {e}")
         return f"You are ZyNaraAI1.0: helpful, concise, friendly. Focus on exactly what the user wants.\n\nUser message: {message}"
 
+async def stream_llm(user_id, conversation_id, messages):
+    assistant_reply = ""
+
+    payload = {
+        "model": CHAT_MODEL,
+        "messages": messages,
+        "tools": TOOLS,
+        "tool_choice": "auto",
+        "stream": True,
+        "max_tokens": 1500
+    }
+
+    async with httpx.AsyncClient(timeout=None) as client:
+        async with client.stream(
+            "POST",
+            GROQ_URL,
+            headers=get_groq_headers(),
+            json=payload
+        ) as resp:
+            async for line in resp.aiter_lines():
+                if not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    break
+
+                chunk = json.loads(data)
+                delta = chunk["choices"][0]["delta"]
+
+                if "tool_calls" in delta:
+                    yield from await handle_tools(user_id, messages, delta)
+
+                if content := delta.get("content"):
+                    assistant_reply += content
+                    yield sse({"type": "token", "text": content})
+
+    await persist_reply(user_id, conversation_id, assistant_reply)
+
+def score_memory(text: str) -> int:
+    if any(k in text.lower() for k in ["name", "preference", "goal"]):
+        return 5
+    return 2
+
+async def decay_memories(user_id):
+    supabase.rpc("decay_memories", {"uid": user_id}).execute()
+
+async def persist_reply(user_id, conversation_id, text):
+    supabase.table("messages").insert({
+        "id": str(uuid.uuid4()),
+        "conversation_id": conversation_id,
+        "role": "assistant",
+        "content": text,
+        "created_at": datetime.utcnow().isoformat()
+    }).execute()
+
+    supabase.table("memories").insert({
+        "user_id": user_id,
+        "conversation_id": conversation_id,
+        "content": text[:500],
+        "importance": score_memory(text),
+        "created_at": datetime.utcnow().isoformat()
+    }).execute()
+
+    await decay_memories(user_id)
+
+async def handle_tools(user_id, messages, delta):
+    calls = delta["tool_calls"]
+
+    async def run(call):
+        name = call["function"]["name"]
+        args = json.loads(call["function"]["arguments"])
+
+        if name == "web_search":
+            return name, await duckduckgo_search(args["query"])
+        if name == "run_code":
+            return name, await run_code_safely(args["task"])
+
+    results = await asyncio.gather(*(run(c) for c in calls))
+
+    for name, result in results:
+        messages.append({
+            "role": "tool",
+            "tool_name": name,
+            "content": json.dumps(result)
+        })
+        yield sse({"type": "tool", "tool": name, "result": result})
 
 def get_or_create_conversation_id(supabase, user_id: str) -> str:
     # Try to get most recent conversation
@@ -527,24 +613,22 @@ def save_image_record(user_id, prompt, path, is_nsfw):
         logger.error(f"Failed to save image record: {e}")
 
 
-def decide_tool(query: str, conversation_history: list):
-    """
-    Decide whether to answer from memory or go online.
-    Returns: "memory" or "search"
-    """
-    query_lower = query.lower()
+async def route_query(user_id: str, query: str):
+    q = query.lower()
 
-    # 1. Simple keyword-based check for personal questions
-    personal_keywords = ["who am i", "what did i say", "my name", "my info"]
-    if any(kw in query_lower for kw in personal_keywords):
+    PERSONAL = ["who am i", "what did i say", "my name", "about me"]
+    if any(k in q for k in PERSONAL):
         return "memory"
 
-    # 2. Check if history has relevant info
-    for msg in reversed(conversation_history):
-        if any(word in msg["content"].lower() for word in query_lower.split()):
-            return "memory"
+    memories = supabase.rpc("search_memories", {
+        "uid": user_id,
+        "q": query,
+        "limit": 3
+    }).execute().data
 
-    # 3. Default to online search if no memory match
+    if memories and memories[0]["score"] > 0.75:
+        return "memory"
+
     return "search"
 
 
@@ -1650,55 +1734,92 @@ async def ask_universal(request: Request):
         "max_tokens": 1500
     }
 
-    async with httpx.AsyncClient(timeout=None) as client:
-        async with client.stream(
-            "POST",
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers=get_groq_headers(),
-            json=payload
-        ) as resp:
-            async for line in resp.aiter_lines():
-                if not line.startswith("data:"):
-                    continue
+    try:
+        async with httpx.AsyncClient(timeout=None) as client:
+            async with client.stream(
+                "POST",
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers=get_groq_headers(),
+                json=payload
+            ) as resp:
 
-                data = line[5:].strip()
-                if data == "[DONE]":
-                    break
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
 
-                chunk = json.loads(data)
-                delta = chunk["choices"][0]["delta"]
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
 
-                # TOOL CALLS
-                if "tool_calls" in delta:
-                    for call in delta["tool_calls"]:
-                        name = call["function"]["name"]
-                        args = json.loads(call["function"]["arguments"])
+                    chunk = json.loads(data)
+                    delta = chunk["choices"][0]["delta"]
 
-                        if not check_permission(role, name):
-                            yield sse({"type": "error", "error": "Permission denied"})
-                            continue
+                    # ---------- TOOL CALLS ----------
+                    if "tool_calls" in delta:
+                        for call in delta["tool_calls"]:
+                            name = call["function"]["name"]
+                            args = json.loads(call["function"]["arguments"])
 
-                        if name == "web_search":
-                            result = await duckduckgo_search(args["query"])
-                        elif name == "run_code":
-                            result = await run_code_safely(args["task"])
-                        else:
-                            continue
+                            if not check_permission(role, name):
+                                yield sse({"type": "error", "error": "Permission denied"})
+                                continue
 
-                        yield sse({"type": "tool", "tool": name, "result": result})
+                            if name == "web_search":
+                                result = await duckduckgo_search(args["query"])
+                                track_cost(user_id, 300, "web_search")
 
-                        messages.append({
-                            "role": "tool",
-                            "tool_name": name,
-                            "content": json.dumps(result)
-                        })
+                            elif name == "run_code":
+                                result = await run_code_safely(args["task"])
+                                track_cost(user_id, 800, "run_code")
 
-                content = delta.get("content")
-                if content:
-                    assistant_reply += content
-                    yield sse({"type": "token", "text": content})
+                            else:
+                                continue
 
-    yield sse({"type": "done"})
+                            yield sse({
+                                "type": "tool",
+                                "tool": name,
+                                "result": result
+                            })
+
+                            messages.append({
+                                "role": "tool",
+                                "tool_name": name,
+                                "content": json.dumps(result)
+                            })
+
+                    # ---------- TEXT TOKENS ----------
+                    content = delta.get("content")
+                    if content:
+                        assistant_reply += content
+                        yield sse({"type": "token", "text": content})
+
+    finally:
+        # ---------- SAVE ASSISTANT MESSAGE ----------
+        if assistant_reply.strip():
+            supabase.table("messages").insert({
+                "id": str(uuid.uuid4()),
+                "user_id": user_id,
+                "conversation_id": conversation_id,
+                "role": "assistant",
+                "content": assistant_reply,
+                "created_at": datetime.now().isoformat()
+            }).execute()
+
+            # ---------- MEMORY ----------
+            importance = score_memory(assistant_reply)
+            supabase.table("memories").insert({
+                "user_id": user_id,
+                "conversation_id": conversation_id,
+                "content": assistant_reply[:500],
+                "importance": importance,
+                "created_at": datetime.now().isoformat()
+            }).execute()
+
+            await decay_memories(user_id)
+            await summarize_conversation(conversation_id)
+
+        yield sse({"type": "done"})
+        
         # ---------- SAVE MESSAGE ----------
         supabase.table("messages").insert({
             "id": str(uuid.uuid4()),
@@ -1785,22 +1906,13 @@ async def edit_message(
 # Stop endpoint
 # -----------------------------
 @app.post("/stop")
-async def stop_stream(req: Request, res: Response):
-    # ✅ resolve user from cookie
-    user_id = await get_or_create_user(req, res)
-
-    task = active_streams.get(user_id)
-    if task and not task.done():
+async def stop(user=Depends(auth)):
+    task = active_streams.get(user.id)
+    if task:
         task.cancel()
-        return {"status": "stopped"}
-
-    # Also remove from database
-    try:
-        supabase.table("active_streams").delete().eq("user_id", user_id).execute()
-    except Exception as e:
-        logger.error(f"Failed to stop stream: {e}")
-
-    return {"status": "no_active_stream"}
+        del active_streams[user.id]
+        return {"stopped": True}
+    return {"stopped": False}
     
 # -----------------------------
 # Regenerate endpoint
