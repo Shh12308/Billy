@@ -1775,12 +1775,14 @@ async def ask_universal(request: Request):
                             else:
                                 continue
 
+                            # stream tool result
                             yield sse({
                                 "type": "tool",
                                 "tool": name,
                                 "result": result
                             })
 
+                            # feed tool result back into model context
                             messages.append({
                                 "role": "tool",
                                 "tool_name": name,
@@ -1793,55 +1795,36 @@ async def ask_universal(request: Request):
                         assistant_reply += content
                         yield sse({"type": "token", "text": content})
 
+    except asyncio.CancelledError:
+        logger.info("Stream cancelled by client")
+        return
+
     finally:
+        if not assistant_reply.strip():
+            return
+
         # ---------- SAVE ASSISTANT MESSAGE ----------
-        if assistant_reply.strip():
-            supabase.table("messages").insert({
-                "id": str(uuid.uuid4()),
-                "user_id": user_id,
-                "conversation_id": conversation_id,
-                "role": "assistant",
-                "content": assistant_reply,
-                "created_at": datetime.now().isoformat()
-            }).execute()
-
-            # ---------- MEMORY ----------
-            importance = score_memory(assistant_reply)
-            supabase.table("memories").insert({
-                "user_id": user_id,
-                "conversation_id": conversation_id,
-                "content": assistant_reply[:500],
-                "importance": importance,
-                "created_at": datetime.now().isoformat()
-            }).execute()
-
-            await decay_memories(user_id)
-            await summarize_conversation(conversation_id)
-
-        yield sse({"type": "done"})
-        
-        # ---------- SAVE MESSAGE ----------
         supabase.table("messages").insert({
             "id": str(uuid.uuid4()),
             "user_id": user_id,
             "conversation_id": conversation_id,
             "role": "assistant",
             "content": assistant_reply,
-            "created_at": datetime.now().isoformat()
+            "created_at": datetime.utcnow().isoformat()
         }).execute()
 
-        # ---------- MEMORY EXTRACTION ----------
+        # ---------- MEMORY ----------
         importance = score_memory(assistant_reply)
         supabase.table("memories").insert({
             "user_id": user_id,
             "conversation_id": conversation_id,
             "content": assistant_reply[:500],
             "importance": importance,
-            "created_at": datetime.now().isoformat()
+            "created_at": datetime.utcnow().isoformat()
         }).execute()
 
         await decay_memories(user_id)
-        await summarize_conversation(user_id)
+        await summarize_conversation(conversation_id)
 
         yield sse({"type": "done"})
 
