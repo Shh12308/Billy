@@ -459,7 +459,7 @@ async def stream_llm(user_id, conversation_id, messages):
 
                 if "tool_calls" in delta:
                     async for item in handle_tools(user_id, messages, delta):
-    yield item
+                        yield item
 
                 if content := delta.get("content"):
                     assistant_reply += content
