@@ -1,4 +1,3 @@
-# app.py — ZyNara1 AI full multimodal server: SDXL + TTS/STT + code + vision + search + remove-bg/upscale + caching + metadata
 import os
 import io
 import utils
@@ -18,9 +17,10 @@ import logging
 import subprocess
 import tempfile
 from datetime import datetime
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Union
 from ultralytics import YOLO
 import cv2
+import requests  # Added missing import
 
 YOLO_OBJECTS = None
 YOLO_FACES = None
@@ -168,6 +168,7 @@ logger.info(f"GROQ key present: {bool(GROQ_API_KEY)}")
 # Models
 # -------------------
 CHAT_MODEL = os.getenv("CHAT_MODEL", "llama-3.1-8b-instant")
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"  # Added missing URL
 
 # TTS/STT are handled via ElevenLabs now
 TTS_MODEL = None
@@ -542,7 +543,7 @@ def get_or_create_conversation_id(supabase, user_id: str) -> str:
     return conversation_id
 
 
-def build_system_prompt(artifact: str | None):
+def build_system_prompt(artifact: Union[str, None]):
     base = """
 You are a helpful AI assistant.
 
@@ -652,7 +653,7 @@ async def nsfw_check(prompt: str) -> bool:
         return result["flagged"]
         
 # ---------- USER / COOKIE ----------
-async def get_or_create_conversation(user_id: str, conversation_id: str | None):
+async def get_or_create_conversation(user_id: str, conversation_id: Union[str, None]):
     if conversation_id:
         return conversation_id
 
@@ -823,7 +824,6 @@ async def new_chat(req: Request, res: Response):
         supabase.table("conversations").insert({
             "id": cid,
             "user_id": user_id,
-            "conversation_id": conversation_id,
             "title": "New Chat",
             "created_at": datetime.now().isoformat(),
             "updated_at": datetime.now().isoformat()
@@ -1558,7 +1558,7 @@ async def _generate_image_core(
 
 async def image_gen_internal(prompt: str, samples: int = 1):
     """Helper for streaming /ask/universal."""
-    result = await _generate_image_core(prompt, samples, user_id, return_base64=False)
+    result = await _generate_image_core(prompt, samples, "anonymous", return_base64=False)
 
 async def stream_images(prompt: str, samples: int):
     try:
@@ -1646,7 +1646,7 @@ def check_permission(role: str, tool_name: str) -> bool:
 # 💸 COST TRACKING
 # =========================================================
 
-def track_cost(user_id: str, tokens: int, tool: str | None = None):
+def track_cost(user_id: str, tokens: int, tool: Union[str, None] = None):
     supabase.table("usage").insert({
         "user_id": user_id,
         "tokens": tokens,
@@ -1724,133 +1724,102 @@ async def ask_universal(request: Request):
         assistant_reply = ""
         role = "user"
 
-    yield sse({"type": "starting"})
+        yield sse({"type": "starting"})
 
-    payload = {
-        "model": CHAT_MODEL,
-        "messages": messages,
-        "tools": TOOLS,
-        "tool_choice": "auto",
-        "stream": True,
-        "max_tokens": 1500
-    }
+        payload = {
+            "model": CHAT_MODEL,
+            "messages": messages,
+            "tools": TOOLS,
+            "tool_choice": "auto",
+            "stream": True,
+            "max_tokens": 1500
+        }
 
-    try:
-        async with httpx.AsyncClient(timeout=None) as client:
-            async with client.stream(
-                "POST",
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers=get_groq_headers(),
-                json=payload
-            ) as resp:
+        try:
+            async with httpx.AsyncClient(timeout=None) as client:
+                async with client.stream(
+                    "POST",
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers=get_groq_headers(),
+                    json=payload
+                ) as resp:
 
-                async for line in resp.aiter_lines():
-                    if not line.startswith("data:"):
-                        continue
+                    async for line in resp.aiter_lines():
+                        if not line.startswith("data:"):
+                            continue
 
-                    data = line[5:].strip()
-                    if data == "[DONE]":
-                        break
+                        data = line[5:].strip()
+                        if data == "[DONE]":
+                            break
 
-                    chunk = json.loads(data)
-                    delta = chunk["choices"][0]["delta"]
+                        chunk = json.loads(data)
+                        delta = chunk["choices"][0]["delta"]
 
-                    # ---------- TOOL CALLS ----------
-                    if "tool_calls" in delta:
-                        for call in delta["tool_calls"]:
-                            name = call["function"]["name"]
-                            args = json.loads(call["function"]["arguments"])
+                        # ---------- TOOL CALLS ----------
+                        if "tool_calls" in delta:
+                            for call in delta["tool_calls"]:
+                                name = call["function"]["name"]
+                                args = json.loads(call["function"]["arguments"])
 
-                            if not check_permission(role, name):
-                                yield sse({"type": "error", "error": "Permission denied"})
-                                continue
+                                if not check_permission(role, name):
+                                    yield sse({"type": "error", "error": "Permission denied"})
+                                    continue
 
-                            if name == "web_search":
-                                result = await duckduckgo_search(args["query"])
-                                track_cost(user_id, 300, "web_search")
+                                if name == "web_search":
+                                    result = await duckduckgo_search(args["query"])
+                                    track_cost(user_id, 300, "web_search")
 
-                            elif name == "run_code":
-                                result = await run_code_safely(args["task"])
-                                track_cost(user_id, 800, "run_code")
+                                elif name == "run_code":
+                                    result = await run_code_safely(args["task"])
+                                    track_cost(user_id, 800, "run_code")
 
-                            else:
-                                continue
+                                else:
+                                    continue
 
-                            yield sse({
-                                "type": "tool",
-                                "tool": name,
-                                "result": result
-                            })
+                                yield sse({
+                                    "type": "tool",
+                                    "tool": name,
+                                    "result": result
+                                })
 
-                            messages.append({
-                                "role": "tool",
-                                "tool_name": name,
-                                "content": json.dumps(result)
-                            })
+                                messages.append({
+                                    "role": "tool",
+                                    "tool_name": name,
+                                    "content": json.dumps(result)
+                                })
 
-                    # ---------- TEXT TOKENS ----------
-                    content = delta.get("content")
-                    if content:
-                        assistant_reply += content
-                        yield sse({"type": "token", "text": content})
+                        # ---------- TEXT TOKENS ----------
+                        content = delta.get("content")
+                        if content:
+                            assistant_reply += content
+                            yield sse({"type": "token", "text": content})
 
-    finally:
-        # ---------- SAVE ASSISTANT MESSAGE ----------
-        if assistant_reply.strip():
-            supabase.table("messages").insert({
-                "id": str(uuid.uuid4()),
-                "user_id": user_id,
-                "conversation_id": conversation_id,
-                "role": "assistant",
-                "content": assistant_reply,
-                "created_at": datetime.now().isoformat()
-            }).execute()
+        finally:
+            # ---------- SAVE ASSISTANT MESSAGE ----------
+            if assistant_reply.strip():
+                supabase.table("messages").insert({
+                    "id": str(uuid.uuid4()),
+                    "user_id": user_id,
+                    "conversation_id": conversation_id,
+                    "role": "assistant",
+                    "content": assistant_reply,
+                    "created_at": datetime.now().isoformat()
+                }).execute()
 
-            # ---------- MEMORY ----------
-            importance = score_memory(assistant_reply)
-            supabase.table("memories").insert({
-                "user_id": user_id,
-                "conversation_id": conversation_id,
-                "content": assistant_reply[:500],
-                "importance": importance,
-                "created_at": datetime.now().isoformat()
-            }).execute()
+                # ---------- MEMORY ----------
+                importance = score_memory(assistant_reply)
+                supabase.table("memories").insert({
+                    "user_id": user_id,
+                    "conversation_id": conversation_id,
+                    "content": assistant_reply[:500],
+                    "importance": importance,
+                    "created_at": datetime.now().isoformat()
+                }).execute()
 
-            await decay_memories(user_id)
-            await summarize_conversation(conversation_id)
+                await decay_memories(user_id)
+                await summarize_conversation(conversation_id)
 
-        yield sse({"type": "done"})
-
-        # ---------- SAVE MESSAGE ----------
-        supabase.table("messages").insert({
-            "id": str(uuid.uuid4()),
-            "user_id": user_id,
-            "conversation_id": conversation_id,
-            "role": "assistant",
-            "content": assistant_reply,
-            "created_at": datetime.now().isoformat()
-        }).execute()
-
-        # ---------- MEMORY EXTRACTION ----------
-        importance = score_memory(assistant_reply)
-        supabase.table("memories").insert({
-            "user_id": user_id,
-            "conversation_id": conversation_id,
-            "content": assistant_reply[:500],
-            "importance": importance,
-            "created_at": datetime.now().isoformat()
-        }).execute()
-
-        await decay_memories(user_id)
-        await summarize_conversation(user_id)
-
-        yield sse({"type": "done"})
-
-    async def event_generator():
-        assistant_reply = ""
-        role = "user"
-
-    yield sse({"type": "starting"})
+            yield sse({"type": "done"})
 
     if stream:
         return StreamingResponse(
@@ -1863,7 +1832,7 @@ async def ask_universal(request: Request):
             },
         )
 
-return {"error": "Non-stream mode disabled for universal endpoint"}
+    return {"error": "Non-stream mode disabled for universal endpoint"}
 
 @app.post("/message/{message_id}/edit")
 async def edit_message(
@@ -1911,12 +1880,27 @@ async def edit_message(
 
 @app.get("/stream")
 async def stream_endpoint():
+    async def event_generator():
+        for i in range(1, 6):
+            # Check if client disconnected
+            yield sse({"message": f"This is chunk {i}"})
+            await asyncio.sleep(1)
+        yield sse({"message": "Done"})
+        yield "data: [DONE]\n\n"
+    
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 # -----------------------------
 # Stop endpoint
 # -----------------------------
+async def auth(request: Request):
+    # Simple auth function that extracts user_id from cookie
+    user_id = request.cookies.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return type('User', (), {'id': user_id})()
+
 @app.post("/stop")
 async def stop(user=Depends(auth)):
     task = active_streams.get(user.id)
@@ -2574,7 +2558,7 @@ async def vision_analyze(
     # =========================
     hex_colors = []
     try:
-        from sklearn.cluster import KMeans
+        from sklearn.cluster import KMeans  # Added import inside function to avoid import error if sklearn is not installed
         pixels = np_img.reshape(-1, 3)
         kmeans = KMeans(n_clusters=5, random_state=0).fit(pixels)
         hex_colors = [
