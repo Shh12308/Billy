@@ -1308,211 +1308,6 @@ async def chat_stream(req: Request, res: Response, tts: bool = False, samples: i
 
     # ✅ COOKIE USER
     user_id = await get_or_create_user(req, res)
-
-    @app.post("/ask/universal")
-async def ask_universal(request: Request):
-    body = await request.json()
-    prompt = body.get("prompt", "").strip()
-    user_id = body.get("user_id", str(uuid.uuid4()))  # Generate a UUID if not provided
-    role = body.get("role", "user")
-    stream = bool(body.get("stream", False))
-
-    if not prompt:
-        raise HTTPException(400, "prompt required")
-
-    conversation_id = get_or_create_conversation_id(
-        supabase=supabase,
-        user_id=user_id
-    )
-
-    # ---------- Load history ----------
-    history = await load_history(user_id)
-
-    system_prompt = (
-        "You are a ChatGPT-style multimodal assistant.\n"
-        "You can call tools when useful.\n"
-        "Maintain memory and context.\n"
-    )
-
-    messages = [{"role": "system", "content": system_prompt}]
-    messages.extend(history)
-    messages.append({"role": "user", "content": prompt})
-
-    # ---------- STREAM MODE ----------
- 
-@app.post("/ask/universal")
-async def ask_universal(request: Request):
-    body = await request.json()
-    prompt = body.get("prompt", "").strip()
-    user_id = body.get("user_id", str(uuid.uuid4()))
-    role = body.get("role", "user")
-    stream = bool(body.get("stream", False))
-
-    if not prompt:
-        raise HTTPException(400, "prompt required")
-
-    # --------------------
-    # Get or create conversation
-    # --------------------
-    conversation_id = get_or_create_conversation_id(supabase=supabase, user_id=user_id)
-
-    # --------------------
-    # Load history
-    # --------------------
-    history = await load_history(user_id)
-
-    # --------------------
-    # Fetch user profile for personality
-    # --------------------
-    profile_resp = supabase.table("profiles").select("nickname, personality").eq("id", user_id).single().execute()
-    profile = profile_resp.data or {}
-    nickname = profile.get("nickname", "User")
-    personality = profile.get("personality", "friendly")
-
-    personality_instructions = {
-        "friendly": "Be cheerful, encouraging, and warm.",
-        "professional": "Be concise, formal, and precise.",
-        "playful": "Use humor, emojis, and casual tone."
-    }
-
-    system_prompt = f"""
-You are a ChatGPT-style multimodal assistant.
-You can call tools when useful.
-Maintain memory and context.
-Your personality is: {personality}.
-Address the user as {nickname}.
-Additional instruction: {personality_instructions.get(personality, '')}
-"""
-
-    messages = [{"role": "system", "content": system_prompt}]
-    messages.extend(history)
-    messages.append({"role": "user", "content": prompt})
-
-    # --------------------
-    # Event generator
-    # --------------------
-    async def event_generator():
-        assistant_reply = ""
-
-        yield sse({"type": "starting"})
-
-        payload = {
-            "model": CHAT_MODEL,
-            "messages": messages,
-            "tools": TOOLS,
-            "tool_choice": "auto",
-            "stream": True,
-            "max_tokens": 1500
-        }
-
-        try:
-            async with httpx.AsyncClient(timeout=None) as client:
-                async with client.stream(
-                    "POST",
-                    "https://api.groq.com/openai/v1/chat/completions",
-                    headers=get_groq_headers(),
-                    json=payload
-                ) as resp:
-
-                    async for line in resp.aiter_lines():
-                        if not line.startswith("data:"):
-                            continue
-
-                        data = line[5:].strip()
-                        if data == "[DONE]":
-                            break
-
-                        chunk = json.loads(data)
-                        delta = chunk["choices"][0]["delta"]
-
-                        # ---------- TOOL CALLS ----------
-                        if "tool_calls" in delta:
-                            for call in delta["tool_calls"]:
-                                name = call["function"]["name"]
-                                args = json.loads(call["function"]["arguments"])
-
-                                if not check_permission(role, name):
-                                    yield sse({"type": "error", "error": "Permission denied"})
-                                    continue
-
-                                if name == "web_search":
-                                    result = await duckduckgo_search(args["query"])
-                                    track_cost(user_id, 300, "web_search")
-
-                                elif name == "run_code":
-                                    result = await run_code_safely(args["task"])
-                                    track_cost(user_id, 800, "run_code")
-
-                                else:
-                                    continue
-
-                                yield sse({
-                                    "type": "tool",
-                                    "tool": name,
-                                    "result": result
-                                })
-
-                                messages.append({
-                                    "role": "tool",
-                                    "tool_name": name,
-                                    "content": json.dumps(result)
-                                })
-
-                        # ---------- TEXT TOKENS ----------
-                        content = delta.get("content")
-                        if content:
-                            assistant_reply += content
-                            yield sse({"type": "token", "text": content})
-
-        except asyncio.CancelledError:
-            yield sse({"type": "cancelled"})
-            return
-
-        finally:
-            # ---------- SAVE ASSISTANT MESSAGE ----------
-            if assistant_reply.strip():
-                try:
-                    supabase.table("messages").insert({
-                        "id": str(uuid.uuid4()),
-                        "conversation_id": conversation_id,
-                        "role": "assistant",
-                        "content": assistant_reply,
-                        "created_at": datetime.now().isoformat()
-                    }).execute()
-
-                    # ---------- MEMORY ----------
-                    importance = score_memory(assistant_reply)
-                    try:
-                        supabase.table("memories").insert({
-                            "user_id": user_id,
-                            "conversation_id": conversation_id,
-                            "content": assistant_reply[:500],
-                            "importance": importance,
-                            "created_at": datetime.now().isoformat()
-                        }).execute()
-                    except Exception as e:
-                        logger.error(f"Failed to save memory: {e}")
-
-                    await decay_memories(user_id)
-                    await summarize_conversation(conversation_id)
-                except Exception as e:
-                    logger.error(f"Failed to save assistant message: {e}")
-
-            yield sse({"type": "done"})
-
-    # ---------- RETURN STREAMING RESPONSE ----------
-    if stream:
-        return StreamingResponse(
-            event_generator(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",
-            },
-        )
-
-    return {"error": "Non-stream mode disabled for universal endpoint"}
     
 # ---------- Chat endpoint ----------
 @app.post("/chat")
@@ -1779,23 +1574,39 @@ async def ask_universal(request: Request):
     prompt = body.get("prompt", "").strip()
     user_id = body.get("user_id", str(uuid.uuid4()))
     role = body.get("role", "user")
-    stream = bool(body.get("stream", False))
+    stream = bool(body.get("stream", True))
 
     if not prompt:
         raise HTTPException(400, "prompt required")
 
-    conversation_id = get_or_create_conversation_id(
-        supabase=supabase,
-        user_id=user_id
-    )
-
+    conversation_id = get_or_create_conversation_id(supabase, user_id)
     history = await load_history(user_id)
 
-    system_prompt = (
-        "You are a ChatGPT-style multimodal assistant.\n"
-        "You can call tools when useful.\n"
-        "Maintain memory and context.\n"
+    # 🎭 Personality from Supabase
+    profile = (
+        supabase.table("profiles")
+        .select("nickname, personality")
+        .eq("id", user_id)
+        .single()
+        .execute()
+        .data or {}
     )
+
+    nickname = profile.get("nickname", "User")
+    personality = profile.get("personality", "friendly")
+
+    personality_map = {
+        "friendly": "Be warm, encouraging, and supportive.",
+        "professional": "Be concise, formal, and precise.",
+        "playful": "Use light humor and emojis when appropriate."
+    }
+
+    system_prompt = f"""
+You are a multimodal AI assistant.
+Personality: {personality}
+Address the user as {nickname}.
+{personality_map.get(personality, "")}
+"""
 
     messages = [{"role": "system", "content": system_prompt}]
     messages.extend(history)
@@ -1803,7 +1614,6 @@ async def ask_universal(request: Request):
 
     async def event_generator():
         assistant_reply = ""
-
         yield sse({"type": "starting"})
 
         payload = {
@@ -1815,86 +1625,69 @@ async def ask_universal(request: Request):
             "max_tokens": 1500
         }
 
-        try:
-            async with httpx.AsyncClient(timeout=None) as client:
-                async with client.stream(
-                    "POST",
-                    "https://api.groq.com/openai/v1/chat/completions",
-                    headers=get_groq_headers(),
-                    json=payload
-                ) as resp:
+        async with httpx.AsyncClient(timeout=None) as client:
+            async with client.stream(
+                "POST",
+                GROQ_URL,
+                headers=get_groq_headers(),
+                json=payload
+            ) as resp:
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
 
-                    async for line in resp.aiter_lines():
-                        if not line.startswith("data:"):
-                            continue
+                    chunk = json.loads(data)
+                    delta = chunk["choices"][0]["delta"]
 
-                        data = line[5:].strip()
-                        if data == "[DONE]":
-                            break
+                    if "tool_calls" in delta:
+                        for call in delta["tool_calls"]:
+                            name = call["function"]["name"]
+                            args = json.loads(call["function"]["arguments"])
 
-                        chunk = json.loads(data)
-                        delta = chunk["choices"][0]["delta"]
+                            if not check_permission(role, name):
+                                yield sse({"type": "error", "error": "Permission denied"})
+                                continue
 
-                        if "tool_calls" in delta:
-                            for call in delta["tool_calls"]:
-                                name = call["function"]["name"]
-                                args = json.loads(call["function"]["arguments"])
+                            if name == "web_search":
+                                result = await duckduckgo_search(args["query"])
+                            elif name == "run_code":
+                                result = await run_code_safely(args["task"])
+                            else:
+                                continue
 
-                                if not check_permission(role, name):
-                                    yield sse({"type": "error", "error": "Permission denied"})
-                                    continue
+                            messages.append({
+                                "role": "tool",
+                                "tool_name": name,
+                                "content": json.dumps(result)
+                            })
 
-                                if name == "web_search":
-                                    result = await duckduckgo_search(args["query"])
-                                elif name == "run_code":
-                                    result = await run_code_safely(args["task"])
-                                else:
-                                    continue
+                            yield sse({"type": "tool", "tool": name, "result": result})
 
-                                yield sse({
-                                    "type": "tool",
-                                    "tool": name,
-                                    "result": result
-                                })
+                    if content := delta.get("content"):
+                        assistant_reply += content
+                        yield sse({"type": "token", "text": content})
 
-                                messages.append({
-                                    "role": "tool",
-                                    "tool_name": name,
-                                    "content": json.dumps(result)
-                                })
+        supabase.table("messages").insert({
+            "conversation_id": conversation_id,
+            "role": "assistant",
+            "content": assistant_reply,
+            "created_at": datetime.utcnow().isoformat()
+        }).execute()
 
-                        content = delta.get("content")
-                        if content:
-                            assistant_reply += content
-                            yield sse({"type": "token", "text": content})
+        yield sse({"type": "done"})
 
-        except asyncio.CancelledError:
-            logger.info("Stream cancelled by user")
-            yield sse({"type": "cancelled"})
-            return
-
-        finally:
-            if assistant_reply.strip():
-                supabase.table("messages").insert({
-                    "conversation_id": conversation_id,
-                    "role": "assistant",
-                    "content": assistant_reply
-                }).execute()
-
-            yield sse({"type": "done"})
-
-    if stream:
-        return StreamingResponse(
-            event_generator(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",
-            },
-        )
-
-    return {"error": "Non-stream mode disabled"}
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+    )
 
 @app.post("/message/{message_id}/edit")
 async def edit_message(
