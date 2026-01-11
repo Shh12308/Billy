@@ -1309,147 +1309,159 @@ async def chat_stream(req: Request, res: Response, tts: bool = False, samples: i
     # ✅ COOKIE USER
     user_id = await get_or_create_user(req, res)
 
+    @app.post("/ask/universal")
+async def ask_universal(request: Request):
+    body = await request.json()
+    prompt = body.get("prompt", "").strip()
+    user_id = body.get("user_id", str(uuid.uuid4()))  # Generate a UUID if not provided
+    role = body.get("role", "user")
+    stream = bool(body.get("stream", False))
+
+    if not prompt:
+        raise HTTPException(400, "prompt required")
+
+    conversation_id = get_or_create_conversation_id(
+        supabase=supabase,
+        user_id=user_id
+    )
+
+    # ---------- Load history ----------
+    history = await load_history(user_id)
+
+    system_prompt = (
+        "You are a ChatGPT-style multimodal assistant.\n"
+        "You can call tools when useful.\n"
+        "Maintain memory and context.\n"
+    )
+
+    messages = [{"role": "system", "content": system_prompt}]
+    messages.extend(history)
+    messages.append({"role": "user", "content": prompt})
+
+    # ---------- STREAM MODE ----------
     async def event_generator():
-        # ✅ REGISTER STREAM IN DATABASE
-        stream_id = str(uuid.uuid4())
-        try:
-            supabase.table("active_streams").insert({
-                "user_id": user_id,
-                "stream_id": stream_id,
-                "started_at": datetime.now().isoformat()
-            }).execute()
-        except Exception as e:
-            logger.error(f"Failed to register stream: {e}")
+        assistant_reply = ""
+
+        yield sse({"type": "starting"})
+
+        payload = {
+            "model": CHAT_MODEL,
+            "messages": messages,
+            "tools": TOOLS,
+            "tool_choice": "auto",
+            "stream": True,
+            "max_tokens": 1500
+        }
 
         try:
-            # ---------- 1️⃣ IMAGE STREAM ----------
-            if any(w in prompt.lower() for w in ("image", "draw", "illustrate", "painting", "art", "picture")):
-                try:
-                    yield sse({"status": "image_start", "message": "Starting image generation"})
+            async with httpx.AsyncClient(timeout=None) as client:
+                async with client.stream(
+                    "POST",
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers=get_groq_headers(),
+                    json=payload
+                ) as resp:
 
-                    img_payload = {"prompt": prompt, "samples": samples, "base64": False}
+                    async for line in resp.aiter_lines():
+                        if not line.startswith("data:"):
+                            continue
 
-                    async with httpx.AsyncClient(timeout=None) as client:
-                        async with client.stream(
-                            "POST",
-                            "http://127.0.0.1:8000/image/stream",
-                            json=img_payload
-                        ) as resp:
-                            async for line in resp.aiter_lines():
-                                if line.strip():
-                                    yield line + "\n\n"
+                        data = line[5:].strip()
+                        if data == "[DONE]":
+                            break
 
-                    yield sse({"status": "image_done", "message": "Image generation complete"})
+                        chunk = json.loads(data)
+                        delta = chunk["choices"][0]["delta"]
 
-                except Exception:
-                    logger.exception("Image streaming failed")
-                    yield sse({"status": "image_error", "message": "Image generation failed"})
+                        # ---------- TOOL CALLS ----------
+                        if "tool_calls" in delta:
+                            for call in delta["tool_calls"]:
+                                name = call["function"]["name"]
+                                args = json.loads(call["function"]["arguments"])
 
-            # ---------- 2️⃣ CHAT STREAM ----------
-            try:
-                messages = [
-                    {"role": "system", "content": safe_system_prompt(build_contextual_prompt(user_id, prompt))},
-                    {"role": "user", "content": prompt}
-                ]
+                                if not check_permission(role, name):
+                                    yield sse({"type": "error", "error": "Permission denied"})
+                                    continue
 
-                payload = {
-                    "model": CHAT_MODEL,
-                    "stream": True,
-                    "messages": messages,
-                    "temperature": 0.7,
-                    "max_tokens": 1024
-                }
+                                if name == "web_search":
+                                    result = await duckduckgo_search(args["query"])
+                                    track_cost(user_id, 300, "web_search")
 
-                async with httpx.AsyncClient(timeout=None) as client:
-                    async with client.stream(
-                        "POST",
-                        "https://api.groq.com/openai/v1/chat/completions",
-                        headers=get_groq_headers(),
-                        json=payload
-                    ) as resp:
-                        async for line in resp.aiter_lines():
-                            if not line.startswith("data:"):
-                                continue
+                                elif name == "run_code":
+                                    result = await run_code_safely(args["task"])
+                                    track_cost(user_id, 800, "run_code")
 
-                            # Check if stream was cancelled
-                            stream_response = supabase.table("active_streams").select("stream_id").eq("user_id", user_id).execute()
-                            if not stream_response.data:
-                                logger.info(f"Stream cancelled by user {user_id}")
-                                break
+                                else:
+                                    continue
 
-                            data = line[len("data:"):].strip()
-                            if data == "[DONE]":
-                                break
+                                yield sse({
+                                    "type": "tool",
+                                    "tool": name,
+                                    "result": result
+                                })
 
-                            delta = json.loads(data)["choices"][0]["delta"].get("content")
-                            if delta:
-                                yield sse({"token": delta})
+                                messages.append({
+                                    "role": "tool",
+                                    "tool_name": name,
+                                    "content": json.dumps(result)
+                                })
 
-            except Exception:
-                logger.exception("Chat streaming failed")
-                yield sse({"status": "chat_error", "message": "Chat stream failed"})
-
-            # ---------- 3️⃣ TTS ----------
-            if tts:
-                try:
-                    tts_payload = {
-                        "model": "tts-1",
-                        "voice": "alloy",
-                        "input": prompt,
-                        "format": "mp3"
-                    }
-
-                    headers = {
-                        "Authorization": f"Bearer {OPENAI_API_KEY}",
-                        "Content-Type": "application/json"
-                    }
-
-                    audio_buffer = bytearray()
-                    async with httpx.AsyncClient(timeout=None) as client:
-                        async with client.stream(
-                            "POST",
-                            "https://api.openai.com/v1/audio/speech",
-                            headers=headers,
-                            json=tts_payload
-                        ) as resp:
-                            async for chunk in resp.aiter_bytes():
-                                if chunk:
-                                    audio_buffer.extend(chunk)
-
-                    b64_audio = base64.b64encode(audio_buffer).decode("utf-8")
-                    yield sse({"status": "tts_done", "audio": b64_audio})
-
-                except Exception:
-                    logger.exception("TTS failed")
-                    yield sse({"status": "tts_error", "message": "TTS failed"})
-
-            yield sse({"status": "done"})
+                        # ---------- TEXT TOKENS ----------
+                        content = delta.get("content")
+                        if content:
+                            assistant_reply += content
+                            yield sse({"type": "token", "text": content})
 
         except asyncio.CancelledError:
-            logger.info(f"Chat stream cancelled for user {user_id}")
-            yield sse({"status": "stopped"})
-            raise
-
-        except Exception as e:
-            logger.exception("Universal stream crashed")
-            yield sse({"status": "fatal_error", "error": str(e)})
+            logger.info("Stream cancelled by user")
+            yield sse({"type": "cancelled"})
+            return
 
         finally:
-            # ✅ CLEANUP ACTIVE STREAM IN DATABASE
-            try:
-                supabase.table("active_streams").delete().eq("user_id", user_id).execute()
-            except Exception as e:
-                logger.error(f"Failed to cleanup active stream: {e}")
+            # ---------- SAVE ASSISTANT MESSAGE ----------
+            if assistant_reply.strip():
+                try:
+                    supabase.table("messages").insert({
+                        "id": str(uuid.uuid4()),
+                        "conversation_id": conversation_id,
+                        "role": "assistant",
+                        "content": assistant_reply,
+                        "created_at": datetime.now().isoformat()
+                    }).execute()
 
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"
-        }
-    )
+                    # ---------- MEMORY ----------
+                    importance = score_memory(assistant_reply)
+                    try:
+                        supabase.table("memories").insert({
+                            "user_id": user_id,
+                            "conversation_id": conversation_id,
+                            "content": assistant_reply[:500],
+                            "importance": importance,
+                            "created_at": datetime.now().isoformat()
+                        }).execute()
+                    except Exception as e:
+                        logger.error(f"Failed to save memory: {e}")
+
+                    await decay_memories(user_id)
+                    await summarize_conversation(conversation_id)
+                except Exception as e:
+                    logger.error(f"Failed to save assistant message: {e}")
+
+            yield sse({"type": "done"})
+
+    # ---------- RETURN STREAMING RESPONSE ----------
+    if stream:
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    return {"error": "Non-stream mode disabled for universal endpoint"}
     
 # ---------- Chat endpoint ----------
 @app.post("/chat")
