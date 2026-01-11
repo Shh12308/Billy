@@ -1777,7 +1777,7 @@ async def run_agents(prompt: str):
 async def ask_universal(request: Request):
     body = await request.json()
     prompt = body.get("prompt", "").strip()
-    user_id = body.get("user_id", str(uuid.uuid4()))  # Generate a UUID if not provided
+    user_id = body.get("user_id", str(uuid.uuid4()))
     role = body.get("role", "user")
     stream = bool(body.get("stream", False))
 
@@ -1785,12 +1785,10 @@ async def ask_universal(request: Request):
         raise HTTPException(400, "prompt required")
 
     conversation_id = get_or_create_conversation_id(
-    supabase=supabase,
-    user_id=user_id
-)
+        supabase=supabase,
+        user_id=user_id
+    )
 
-    
-    # ---------- Load history ----------
     history = await load_history(user_id)
 
     system_prompt = (
@@ -1803,10 +1801,8 @@ async def ask_universal(request: Request):
     messages.extend(history)
     messages.append({"role": "user", "content": prompt})
 
-    # ---------- STREAM MODE ----------
     async def event_generator():
         assistant_reply = ""
-        role = "user"
 
         yield sse({"type": "starting"})
 
@@ -1839,7 +1835,6 @@ async def ask_universal(request: Request):
                         chunk = json.loads(data)
                         delta = chunk["choices"][0]["delta"]
 
-                        # ---------- TOOL CALLS ----------
                         if "tool_calls" in delta:
                             for call in delta["tool_calls"]:
                                 name = call["function"]["name"]
@@ -1851,12 +1846,8 @@ async def ask_universal(request: Request):
 
                                 if name == "web_search":
                                     result = await duckduckgo_search(args["query"])
-                                    track_cost(user_id, 300, "web_search")
-
                                 elif name == "run_code":
                                     result = await run_code_safely(args["task"])
-                                    track_cost(user_id, 800, "run_code")
-
                                 else:
                                     continue
 
@@ -1872,51 +1863,26 @@ async def ask_universal(request: Request):
                                     "content": json.dumps(result)
                                 })
 
-                        # ---------- TEXT TOKENS ----------
                         content = delta.get("content")
                         if content:
                             assistant_reply += content
                             yield sse({"type": "token", "text": content})
 
+        except asyncio.CancelledError:
+            logger.info("Stream cancelled by user")
+            yield sse({"type": "cancelled"})
+            return
+
         finally:
-            # ---------- SAVE ASSISTANT MESSAGE ----------
             if assistant_reply.strip():
-                try:
-                    supabase.table("messages").insert({
-                        "id": str(uuid.uuid4()),
-                        "conversation_id": conversation_id,
-                        "role": "assistant",
-                        "content": assistant_reply,
-                        "created_at": datetime.now().isoformat()
-                    }).execute()
-
-                    # ---------- MEMORY ----------
-                    importance = score_memory(assistant_reply)
-                    try:
-                        supabase.table("memories").insert({
-                            "user_id": user_id,
-                            "conversation_id": conversation_id,
-                            "content": assistant_reply[:500],
-                            "importance": importance,
-                            "created_at": datetime.now().isoformat()
-                        }).execute()
-                    except Exception as e:
-                        logger.error(f"Failed to save memory: {e}")
-
-                    await decay_memories(user_id)
-                    await summarize_conversation(conversation_id)
-                except Exception as e:
-                    logger.error(f"Failed to save assistant message: {e}")
+                supabase.table("messages").insert({
+                    "conversation_id": conversation_id,
+                    "role": "assistant",
+                    "content": assistant_reply
+                }).execute()
 
             yield sse({"type": "done"})
 
-    try:
-        async for chunk in ai_stream(...):
-            yield chunk
-    except asyncio.CancelledError:
-        print("Stream cancelled by user")
-        return
-        
     if stream:
         return StreamingResponse(
             event_generator(),
@@ -1928,7 +1894,7 @@ async def ask_universal(request: Request):
             },
         )
 
-    return {"error": "Non-stream mode disabled for universal endpoint"}
+    return {"error": "Non-stream mode disabled"}
 
 @app.post("/message/{message_id}/edit")
 async def edit_message(
