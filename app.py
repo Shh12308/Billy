@@ -1646,16 +1646,13 @@ def check_permission(role: str, tool_name: str) -> bool:
 # 💸 COST TRACKING
 # =========================================================
 
-def track_cost(user_id: str, amount: int, reason: str):
-    try:
-        supabase.table("usage").insert({
-            "user_id": user_id,
-            "amount": amount,
-            "reason": reason,
-            "created_at": datetime.utcnow().isoformat()
-        }).execute()
-    except Exception as e:
-        logger.warning(f"Cost tracking failed: {e}")
+def track_cost(user_id: str, tokens: int, tool: Union[str, None] = None):
+    supabase.table("usage").insert({
+        "user_id": user_id,
+        "tokens": tokens,
+        "tool": tool,
+        "created_at": datetime.now().isoformat()
+    }).execute()
 
 # =========================================================
 # 🧠 MEMORY SCORING + DECAY
