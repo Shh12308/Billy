@@ -1720,8 +1720,7 @@ async def ask_universal(request: Request):
     messages.append({"role": "user", "content": prompt})
 
     # ---------- STREAM MODE ----------
-    # ---------- STREAM MODE ----------
-async def event_generator():
+    async def event_generator():
     assistant_reply = ""
     role = "user"  # TODO: load from auth / DB
 
@@ -1848,10 +1847,6 @@ async def event_generator():
         yield sse({"type": "done"})
 
     if stream:
-        return StreamingResponse(
-            event_generator(),
-            media_type="text/event-stream",
-            headers={
                 "Cache-Control": "no-cache",
                 "Connection": "keep-alive",
                 "X-Accel-Buffering": "no"
@@ -1903,7 +1898,12 @@ async def edit_message(
     except Exception as e:
         logger.error(f"Failed to edit message: {e}")
         raise HTTPException(500, "Failed to edit message")
-    
+
+@app.get("/stream")
+async def stream_endpoint():
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
 # -----------------------------
 # Stop endpoint
 # -----------------------------
