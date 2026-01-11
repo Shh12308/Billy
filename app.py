@@ -1339,6 +1339,58 @@ async def ask_universal(request: Request):
     messages.append({"role": "user", "content": prompt})
 
     # ---------- STREAM MODE ----------
+ 
+@app.post("/ask/universal")
+async def ask_universal(request: Request):
+    body = await request.json()
+    prompt = body.get("prompt", "").strip()
+    user_id = body.get("user_id", str(uuid.uuid4()))
+    role = body.get("role", "user")
+    stream = bool(body.get("stream", False))
+
+    if not prompt:
+        raise HTTPException(400, "prompt required")
+
+    # --------------------
+    # Get or create conversation
+    # --------------------
+    conversation_id = get_or_create_conversation_id(supabase=supabase, user_id=user_id)
+
+    # --------------------
+    # Load history
+    # --------------------
+    history = await load_history(user_id)
+
+    # --------------------
+    # Fetch user profile for personality
+    # --------------------
+    profile_resp = supabase.table("profiles").select("nickname, personality").eq("id", user_id).single().execute()
+    profile = profile_resp.data or {}
+    nickname = profile.get("nickname", "User")
+    personality = profile.get("personality", "friendly")
+
+    personality_instructions = {
+        "friendly": "Be cheerful, encouraging, and warm.",
+        "professional": "Be concise, formal, and precise.",
+        "playful": "Use humor, emojis, and casual tone."
+    }
+
+    system_prompt = f"""
+You are a ChatGPT-style multimodal assistant.
+You can call tools when useful.
+Maintain memory and context.
+Your personality is: {personality}.
+Address the user as {nickname}.
+Additional instruction: {personality_instructions.get(personality, '')}
+"""
+
+    messages = [{"role": "system", "content": system_prompt}]
+    messages.extend(history)
+    messages.append({"role": "user", "content": prompt})
+
+    # --------------------
+    # Event generator
+    # --------------------
     async def event_generator():
         assistant_reply = ""
 
@@ -1413,7 +1465,6 @@ async def ask_universal(request: Request):
                             yield sse({"type": "token", "text": content})
 
         except asyncio.CancelledError:
-            logger.info("Stream cancelled by user")
             yield sse({"type": "cancelled"})
             return
 
