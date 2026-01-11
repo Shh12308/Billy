@@ -1847,13 +1847,17 @@ async def ask_universal(request: Request):
         yield sse({"type": "done"})
 
     if stream:
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no"
-            }
-        )
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
-    return {"error": "Non-stream mode disabled for universal endpoint"}
+return {"error": "Non-stream mode disabled for universal endpoint"}
 
 @app.post("/message/{message_id}/edit")
 async def edit_message(
