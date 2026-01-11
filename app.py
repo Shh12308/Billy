@@ -116,6 +116,12 @@ def init_supabase_tables():
         supabase.rpc("create_cache_table").execute()
     except:
         pass  # Table might already exist
+    
+    try:
+        # Create usage table
+        supabase.rpc("create_usage_table").execute()
+    except:
+        pass  # Table might already exist
 
 # Initialize tables on startup
 init_supabase_tables()
@@ -474,26 +480,32 @@ def score_memory(text: str) -> int:
     return 2
 
 async def decay_memories(user_id):
-    supabase.rpc("decay_memories", {"uid": user_id}).execute()
+    try:
+        supabase.rpc("decay_memories", {"uid": user_id}).execute()
+    except Exception as e:
+        logger.error(f"Failed to decay memories: {e}")
 
 async def persist_reply(user_id, conversation_id, text):
-    supabase.table("messages").insert({
-        "id": str(uuid.uuid4()),
-        "conversation_id": conversation_id,
-        "role": "assistant",
-        "content": text,
-        "created_at": datetime.utcnow().isoformat()
-    }).execute()
+    try:
+        supabase.table("messages").insert({
+            "id": str(uuid.uuid4()),
+            "conversation_id": conversation_id,
+            "role": "assistant",
+            "content": text,
+            "created_at": datetime.utcnow().isoformat()
+        }).execute()
 
-    supabase.table("memories").insert({
-        "user_id": user_id,
-        "conversation_id": conversation_id,
-        "content": text[:500],
-        "importance": score_memory(text),
-        "created_at": datetime.utcnow().isoformat()
-    }).execute()
+        supabase.table("memories").insert({
+            "user_id": user_id,
+            "conversation_id": conversation_id,
+            "content": text[:500],
+            "importance": score_memory(text),
+            "created_at": datetime.utcnow().isoformat()
+        }).execute()
 
-    await decay_memories(user_id)
+        await decay_memories(user_id)
+    except Exception as e:
+        logger.error(f"Failed to persist reply: {e}")
 
 async def handle_tools(user_id, messages, delta):
     calls = delta["tool_calls"]
@@ -622,14 +634,17 @@ async def route_query(user_id: str, query: str):
     if any(k in q for k in PERSONAL):
         return "memory"
 
-    memories = supabase.rpc("search_memories", {
-        "uid": user_id,
-        "q": query,
-        "limit": 3
-    }).execute().data
+    try:
+        memories = supabase.rpc("search_memories", {
+            "uid": user_id,
+            "q": query,
+            "limit": 3
+        }).execute().data
 
-    if memories and memories[0]["score"] > 0.75:
-        return "memory"
+        if memories and memories[0]["score"] > 0.75:
+            return "memory"
+    except Exception as e:
+        logger.error(f"Failed to search memories: {e}")
 
     return "search"
 
@@ -1647,12 +1662,15 @@ def check_permission(role: str, tool_name: str) -> bool:
 # =========================================================
 
 def track_cost(user_id: str, tokens: int, tool: Union[str, None] = None):
-    supabase.table("usage").insert({
-        "user_id": user_id,
-        "tokens": tokens,
-        "tool": tool,
-        "created_at": datetime.now().isoformat()
-    }).execute()
+    try:
+        supabase.table("usage").insert({
+            "user_id": user_id,
+            "tokens": tokens,
+            "tool": tool,
+            "created_at": datetime.now().isoformat()
+        }).execute()
+    except Exception as e:
+        logger.error(f"Cost tracking failed: {e}")
 
 # =========================================================
 # 🧠 MEMORY SCORING + DECAY
@@ -1665,7 +1683,10 @@ def score_memory(text: str) -> int:
     return score
 
 async def decay_memories(user_id: str):
-    supabase.rpc("decay_memories", {"uid": user_id}).execute()
+    try:
+        supabase.rpc("decay_memories", {"uid": user_id}).execute()
+    except Exception as e:
+        logger.error(f"Failed to decay memories: {e}")
 
 # =========================================================
 # 🤖 AGENT ORCHESTRATION
@@ -1693,7 +1714,7 @@ async def run_agents(prompt: str):
 async def ask_universal(request: Request):
     body = await request.json()
     prompt = body.get("prompt", "").strip()
-    user_id = body.get("user_id", "anonymous")
+    user_id = body.get("user_id", str(uuid.uuid4()))  # Generate a UUID if not provided
     role = body.get("role", "user")
     stream = bool(body.get("stream", False))
 
@@ -1797,27 +1818,32 @@ async def ask_universal(request: Request):
         finally:
             # ---------- SAVE ASSISTANT MESSAGE ----------
             if assistant_reply.strip():
-                supabase.table("messages").insert({
-                    "id": str(uuid.uuid4()),
-                    "user_id": user_id,
-                    "conversation_id": conversation_id,
-                    "role": "assistant",
-                    "content": assistant_reply,
-                    "created_at": datetime.now().isoformat()
-                }).execute()
+                try:
+                    supabase.table("messages").insert({
+                        "id": str(uuid.uuid4()),
+                        "conversation_id": conversation_id,
+                        "role": "assistant",
+                        "content": assistant_reply,
+                        "created_at": datetime.now().isoformat()
+                    }).execute()
 
-                # ---------- MEMORY ----------
-                importance = score_memory(assistant_reply)
-                supabase.table("memories").insert({
-                    "user_id": user_id,
-                    "conversation_id": conversation_id,
-                    "content": assistant_reply[:500],
-                    "importance": importance,
-                    "created_at": datetime.now().isoformat()
-                }).execute()
+                    # ---------- MEMORY ----------
+                    importance = score_memory(assistant_reply)
+                    try:
+                        supabase.table("memories").insert({
+                            "user_id": user_id,
+                            "conversation_id": conversation_id,
+                            "content": assistant_reply[:500],
+                            "importance": importance,
+                            "created_at": datetime.now().isoformat()
+                        }).execute()
+                    except Exception as e:
+                        logger.error(f"Failed to save memory: {e}")
 
-                await decay_memories(user_id)
-                await summarize_conversation(conversation_id)
+                    await decay_memories(user_id)
+                    await summarize_conversation(conversation_id)
+                except Exception as e:
+                    logger.error(f"Failed to save assistant message: {e}")
 
             yield sse({"type": "done"})
 
@@ -2079,7 +2105,7 @@ async def generate_video(request: Request):
     """
     body = await request.json()
     prompt = body.get("prompt", "").strip()
-    user_id = body.get("user_id", "anonymous")
+    user_id = body.get("user_id", str(uuid.uuid4()))  # Generate a UUID if not provided
     samples = max(1, int(body.get("samples", 1)))
 
     if not prompt:
@@ -2130,7 +2156,7 @@ async def generate_video(request: Request):
 async def image_gen(request: Request):
     body = await request.json()
     prompt = body.get("prompt", "")
-    user_id = body.get("user_id", "anonymous")
+    user_id = body.get("user_id", str(uuid.uuid4()))  # Generate a UUID if not provided
 
     try:
         samples = max(1, int(body.get("samples", 1)))
@@ -2306,7 +2332,10 @@ async def image_stream(req: Request, res: Response):
     
 # ---------- Img2Img (DALL·E edits) ----------
 @app.post("/img2img")
-async def img2img(request: Request, file: UploadFile = File(...), prompt: str = "", user_id: str = "anonymous"):
+async def img2img(request: Request, file: UploadFile = File(...), prompt: str = "", user_id: str = None):
+    if user_id is None:
+        user_id = str(uuid.uuid4())
+        
     if not prompt:
         raise HTTPException(400, "prompt required")
     content = await file.read()
@@ -2636,7 +2665,7 @@ async def code_gen(req: Request):
     prompt = body.get("prompt", "")
     language = body.get("language", "python").lower()
     run_flag = bool(body.get("run", False))
-    user_id = body.get("user_id", "anonymous")
+    user_id = body.get("user_id", str(uuid.uuid4()))  # Generate a UUID if not provided
 
     if not prompt:
         raise HTTPException(400, "prompt required")
