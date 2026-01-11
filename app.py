@@ -1722,7 +1722,7 @@ async def ask_universal(request: Request):
     # ---------- STREAM MODE ----------
     async def event_generator():
         assistant_reply = ""
-        role = "user"  # TODO: load from auth / DB
+        role = "user"
 
     yield sse({"type": "starting"})
 
@@ -1846,16 +1846,22 @@ async def ask_universal(request: Request):
 
         yield sse({"type": "done"})
 
+    async def event_generator():
+        assistant_reply = ""
+        role = "user"
+
+    yield sse({"type": "starting"})
+
     if stream:
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
 return {"error": "Non-stream mode disabled for universal endpoint"}
 
