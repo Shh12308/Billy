@@ -1847,6 +1847,13 @@ async def ask_universal(request: Request):
 
             yield sse({"type": "done"})
 
+    try:
+        async for chunk in ai_stream(...):
+            yield chunk
+    except asyncio.CancelledError:
+        print("Stream cancelled by user")
+        return
+        
     if stream:
         return StreamingResponse(
             event_generator(),
