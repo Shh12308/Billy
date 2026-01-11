@@ -1721,8 +1721,8 @@ async def ask_universal(request: Request):
 
     # ---------- STREAM MODE ----------
     async def event_generator():
-    assistant_reply = ""
-    role = "user"  # TODO: load from auth / DB
+        assistant_reply = ""
+        role = "user"  # TODO: load from auth / DB
 
     yield sse({"type": "starting"})
 
