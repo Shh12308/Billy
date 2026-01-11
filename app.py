@@ -458,7 +458,8 @@ async def stream_llm(user_id, conversation_id, messages):
                 delta = chunk["choices"][0]["delta"]
 
                 if "tool_calls" in delta:
-                    yield from await handle_tools(user_id, messages, delta)
+                    async for item in handle_tools(user_id, messages, delta):
+    yield item
 
                 if content := delta.get("content"):
                     assistant_reply += content
