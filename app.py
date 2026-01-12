@@ -1478,18 +1478,14 @@ async def chat_endpoint(req: Request):
 # 🚀 UNIVERSAL MULTIMODAL ENDPOINT — /ask/universal
 # =========================================================
 
+def sse(payload: dict) -> str:
+    return f"data: {json.dumps(payload)}\n\n"
+
 @app.post("/ask/universal")
-async def ask_universal(
-    request: Request,
-    background_tasks: BackgroundTasks
-):
+async def ask_universal(request: Request, background_tasks: BackgroundTasks):
     body = await request.json()
-
     prompt = body.get("prompt", "").strip()
-
-    # ✅ ALWAYS guarantee user_id
     user_id = body.get("user_id") or str(uuid.uuid4())
-
     role = body.get("role", "user")
     stream = bool(body.get("stream", False))
 
@@ -1499,35 +1495,27 @@ async def ask_universal(
     # -------------------------
     # Load or create conversation
     # -------------------------
-    conversation_id = get_or_create_conversation_id(
-        supabase=supabase,
-        user_id=user_id
-    )
-
+    conversation_id = get_or_create_conversation_id(supabase=supabase, user_id=user_id)
     history = await load_history(user_id)
 
     # -------------------------
-    # Load personality (SAFE)
+    # Load personality safely
     # -------------------------
     personality = "friendly"
     nickname = ""
 
     try:
         profile = (
-            supabase
-            .table("profiles")
+            supabase.table("profiles")
             .select("nickname, personality")
             .eq("id", user_id)
-            .maybe_single()   # ✅ IMPORTANT (no crash if missing)
+            .maybe_single()
             .execute()
         )
-
         if profile.data:
             personality = profile.data.get("personality", "friendly")
             nickname = profile.data.get("nickname", "")
-
     except Exception:
-        # profiles table optional — ignore safely
         pass
 
     # -------------------------
@@ -1546,27 +1534,17 @@ async def ask_universal(
     messages.append({"role": "user", "content": prompt})
 
     # -------------------------
-    # 🔥 BACKGROUND AI TASK
+    # Non-stream mode: just run background task
     # -------------------------
-    background_tasks.add_task(
-        generate_ai_response,
-        conversation_id,
-        user_id,
-        messages
-    )
-
-    # Respond immediately (frontend polls later)
-    return {
-        "status": "processing",
-        "conversation_id": conversation_id
-    }
+    if not stream:
+        background_tasks.add_task(generate_ai_response, conversation_id, user_id, messages)
+        return {"status": "processing", "conversation_id": conversation_id}
 
     # -------------------------
-    # STREAM GENERATOR
+    # Stream generator
     # -------------------------
     async def event_generator():
         assistant_reply = ""
-
         yield sse({"type": "starting"})
 
         payload = {
@@ -1586,11 +1564,9 @@ async def ask_universal(
                     headers=get_groq_headers(),
                     json=payload
                 ) as resp:
-
                     async for line in resp.aiter_lines():
                         if not line.startswith("data:"):
                             continue
-
                         data = line[5:].strip()
                         if data == "[DONE]":
                             break
@@ -1598,7 +1574,7 @@ async def ask_universal(
                         chunk = json.loads(data)
                         delta = chunk["choices"][0]["delta"]
 
-                        # -------- TOOL CALLS --------
+                        # TOOL CALLS
                         if "tool_calls" in delta:
                             for call in delta["tool_calls"]:
                                 name = call["function"]["name"]
@@ -1615,11 +1591,7 @@ async def ask_universal(
                                 else:
                                     continue
 
-                                yield sse({
-                                    "type": "tool",
-                                    "tool": name,
-                                    "result": result
-                                })
+                                yield sse({"type": "tool", "tool": name, "result": result})
 
                                 messages.append({
                                     "role": "tool",
@@ -1627,7 +1599,7 @@ async def ask_universal(
                                     "content": json.dumps(result)
                                 })
 
-                        # -------- TEXT TOKENS --------
+                        # TEXT TOKENS
                         content = delta.get("content")
                         if content:
                             assistant_reply += content
@@ -1636,8 +1608,6 @@ async def ask_universal(
         except asyncio.CancelledError:
             logger.info("Stream cancelled by user")
             yield sse({"type": "cancelled"})
-            return
-
         finally:
             if assistant_reply.strip():
                 supabase.table("messages").insert({
@@ -1645,21 +1615,21 @@ async def ask_universal(
                     "role": "assistant",
                     "content": assistant_reply
                 }).execute()
-
             yield sse({"type": "done"})
 
-    if stream:
-        return StreamingResponse(
-            event_generator(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no"
-            }
-        )
-
-    return {"error": "Non-stream mode disabled"}
+    # -------------------------
+    # Return StreamingResponse
+    # -------------------------
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
+    
     
 @app.post("/message/{message_id}/edit")
 async def edit_message(
