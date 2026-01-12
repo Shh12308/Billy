@@ -1484,6 +1484,7 @@ def sse(payload: dict) -> str:
 @app.post("/ask/universal")
 async def ask_universal(request: Request, background_tasks: BackgroundTasks):
     body = await request.json()
+
     prompt = body.get("prompt", "").strip()
     user_id = body.get("user_id") or str(uuid.uuid4())
     role = body.get("role", "user")
@@ -1492,15 +1493,13 @@ async def ask_universal(request: Request, background_tasks: BackgroundTasks):
     if not prompt:
         raise HTTPException(400, "prompt required")
 
-    # -------------------------
-    # Load or create conversation
-    # -------------------------
-    conversation_id = get_or_create_conversation_id(supabase=supabase, user_id=user_id)
+    conversation_id = get_or_create_conversation_id(
+        supabase=supabase,
+        user_id=user_id
+    )
+
     history = await load_history(user_id)
 
-    # -------------------------
-    # Load personality safely
-    # -------------------------
     personality = "friendly"
     nickname = ""
 
@@ -1518,9 +1517,6 @@ async def ask_universal(request: Request, background_tasks: BackgroundTasks):
     except Exception:
         pass
 
-    # -------------------------
-    # System prompt
-    # -------------------------
     system_prompt = (
         PERSONALITY_MAP.get(personality, PERSONALITY_MAP["friendly"])
         + f"\nUser nickname: {nickname}\n"
@@ -1533,108 +1529,117 @@ async def ask_universal(request: Request, background_tasks: BackgroundTasks):
     messages.extend(history)
     messages.append({"role": "user", "content": prompt})
 
-    # -------------------------
-    # Non-stream mode: just run background task
-    # -------------------------
+    # ======================================================
+    # STREAM MODE
+    # ======================================================
     if stream:
-    # streaming generator
-    async def event_generator():
-        ...
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
-else:
-    # background task only
-    background_tasks.add_task(generate_ai_response, conversation_id, user_id, messages)
-    return {"status": "processing", "conversation_id": conversation_id}
 
-    # -------------------------
-    # Stream generator
-    # -------------------------
-    async def event_generator():
-        assistant_reply = ""
-        yield sse({"type": "starting"})
+        async def event_generator():
+            assistant_reply = ""
+            yield sse({"type": "starting"})
 
-        payload = {
-            "model": CHAT_MODEL,
-            "messages": messages,
-            "tools": TOOLS,
-            "tool_choice": "auto",
-            "stream": True,
-            "max_tokens": 1500
-        }
+            payload = {
+                "model": CHAT_MODEL,
+                "messages": messages,
+                "tools": TOOLS,
+                "tool_choice": "auto",
+                "stream": True,
+                "max_tokens": 1500
+            }
 
-        try:
-            async with httpx.AsyncClient(timeout=None) as client:
-                async with client.stream(
-                    "POST",
-                    "https://api.groq.com/openai/v1/chat/completions",
-                    headers=get_groq_headers(),
-                    json=payload
-                ) as resp:
-                    async for line in resp.aiter_lines():
-                        if not line.startswith("data:"):
-                            continue
-                        data = line[5:].strip()
-                        if data == "[DONE]":
-                            break
+            try:
+                async with httpx.AsyncClient(timeout=None) as client:
+                    async with client.stream(
+                        "POST",
+                        "https://api.groq.com/openai/v1/chat/completions",
+                        headers=get_groq_headers(),
+                        json=payload
+                    ) as resp:
 
-                        chunk = json.loads(data)
-                        delta = chunk["choices"][0]["delta"]
+                        async for line in resp.aiter_lines():
+                            if not line.startswith("data:"):
+                                continue
 
-                        # TOOL CALLS
-                        if "tool_calls" in delta:
-                            for call in delta["tool_calls"]:
-                                name = call["function"]["name"]
-                                args = json.loads(call["function"]["arguments"])
+                            data = line[5:].strip()
+                            if data == "[DONE]":
+                                break
 
-                                if not check_permission(role, name):
-                                    yield sse({"type": "error", "error": "Permission denied"})
-                                    continue
+                            chunk = json.loads(data)
+                            delta = chunk["choices"][0]["delta"]
 
-                                if name == "web_search":
-                                    result = await duckduckgo_search(args["query"])
-                                elif name == "run_code":
-                                    result = await run_code_safely(args["task"])
-                                else:
-                                    continue
+                            # TOOL CALLS
+                            if "tool_calls" in delta:
+                                for call in delta["tool_calls"]:
+                                    name = call["function"]["name"]
+                                    args = json.loads(call["function"]["arguments"])
 
-                                yield sse({"type": "tool", "tool": name, "result": result})
+                                    if not check_permission(role, name):
+                                        yield sse({"type": "error", "error": "Permission denied"})
+                                        continue
 
-                                messages.append({
-                                    "role": "tool",
-                                    "tool_name": name,
-                                    "content": json.dumps(result)
-                                })
+                                    if name == "web_search":
+                                        result = await duckduckgo_search(args["query"])
+                                    elif name == "run_code":
+                                        result = await run_code_safely(args["task"])
+                                    else:
+                                        continue
 
-                        # TEXT TOKENS
-                        content = delta.get("content")
-                        if content:
-                            assistant_reply += content
-                            yield sse({"type": "token", "text": content})
+                                    yield sse({
+                                        "type": "tool",
+                                        "tool": name,
+                                        "result": result
+                                    })
 
-        except asyncio.CancelledError:
-            logger.info("Stream cancelled by user")
-            yield sse({"type": "cancelled"})
-        finally:
-            if assistant_reply.strip():
-                supabase.table("messages").insert({
-                    "conversation_id": conversation_id,
-                    "role": "assistant",
-                    "content": assistant_reply
-                }).execute()
-            yield sse({"type": "done"})
+                                    messages.append({
+                                        "role": "tool",
+                                        "tool_name": name,
+                                        "content": json.dumps(result)
+                                    })
 
-    # -------------------------
-    # Return StreamingResponse
-    # -------------------------
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"
-        }
+                            # TEXT TOKENS
+                            content = delta.get("content")
+                            if content:
+                                assistant_reply += content
+                                yield sse({"type": "token", "text": content})
+
+            except asyncio.CancelledError:
+                logger.info("Stream cancelled by user")
+                yield sse({"type": "cancelled"})
+
+            finally:
+                if assistant_reply.strip():
+                    supabase.table("messages").insert({
+                        "conversation_id": conversation_id,
+                        "role": "assistant",
+                        "content": assistant_reply
+                    }).execute()
+
+                yield sse({"type": "done"})
+
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
+
+    # ======================================================
+    # NON-STREAM MODE
+    # ======================================================
+    background_tasks.add_task(
+        generate_ai_response,
+        conversation_id,
+        user_id,
+        messages
     )
+
+    return {
+        "status": "processing",
+        "conversation_id": conversation_id
+    }
     
     
 @app.post("/message/{message_id}/edit")
