@@ -373,20 +373,17 @@ asyncio.create_task(
     )
 )
 
-async def generate_ai_response(conversation_id, user_id, messages):
-    assistant_reply = ""
-
+async def generate_ai_response(payload: dict):
     async with httpx.AsyncClient(timeout=None) as client:
         async with client.stream(
             "POST",
             "https://api.groq.com/openai/v1/chat/completions",
             headers=get_groq_headers(),
-            json={
-                "model": CHAT_MODEL,
-                "messages": messages,
-                "stream": True
-            }
+            json=payload
         ) as resp:
+            async for line in resp.aiter_lines():
+                if line.startswith("data:"):
+                    yield line
 
             async for line in resp.aiter_lines():
                 if not line.startswith("data:"):
