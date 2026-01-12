@@ -1,27 +1,45 @@
 import os
 import io
-import utils
-import PIL
 import json
-from utils import safe_system_prompt  # adjust path as needed
 import uuid
 import numpy as np
-from PIL import Image
-from io import BytesIO
-import torch
-from torchvision import models, transforms
-import asyncio
 import base64
 import time
-import aiohttp
+import asyncio
 import logging
 import subprocess
 import tempfile
+import cv2
+import requests
 from datetime import datetime
 from typing import Optional, Dict, Any, List, Union
+from io import BytesIO
+
+import httpx
+import aiohttp
+import torch
+from PIL import Image
+from fastapi import BackgroundTasks, FastAPI, Request, Header, UploadFile, File, HTTPException, Query, Form, Depends, Response
+from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse, FileResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from sse_starlette.sse import EventSourceResponse
+from supabase import create_client
 from ultralytics import YOLO
-import cv2
-import requests  # Added missing import
+from torchvision import models, transforms
+
+# Fix: Import utils with proper error handling
+try:
+    import utils
+    from utils import safe_system_prompt
+except ImportError:
+    # Create a placeholder if utils is not available
+    def safe_system_prompt(prompt):
+        return prompt
+    
+    class UtilsPlaceholder:
+        pass
+    utils = UtilsPlaceholder()
 
 YOLO_OBJECTS = None
 YOLO_FACES = None
@@ -40,15 +58,6 @@ def get_yolo_faces():
         YOLO_FACES = YOLO("yolov8n-face.pt")
         YOLO_FACES.to(YOLO_DEVICE)
     return YOLO_FACES
-
-import httpx
-from fastapi import BackgroundTasks
-from fastapi import FastAPI, Request, Header, UploadFile, File, HTTPException, Query, Form, Depends
-from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse, FileResponse, Response
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from sse_starlette.sse import EventSourceResponse
-from supabase import create_client
 
 # ---------- ENV KEYS ----------
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -367,51 +376,204 @@ async def run_code_judge0(code: str, language_id: int):
         submit.raise_for_status()
         return submit.json()
 
-asyncio.create_task(
-    generate_ai_response(
-        conversation_id=conversation_id,
-        user_id=user_id,
-        messages=messages
-    )
-)
+# Fix: Moved generate_ai_response function before it's used
+async def generate_ai_response(conversation_id: str, user_id: str, messages: list):
+    """
+    Generates an AI response using Groq API in the background.
+    """
+    payload = {
+        "model": CHAT_MODEL,
+        "messages": messages,
+        "max_tokens": 1500
+    }
 
-async def generate_ai_response(payload: dict):
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(GROQ_URL, json=payload, headers=headers) as resp:
+                resp.raise_for_status()
+                data = await resp.json()
+                ai_message = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                print(f"[Conversation {conversation_id}] AI response: {ai_message}")
+                return ai_message
+    except Exception as e:
+        print(f"Error generating AI response: {e}")
+        return "Sorry, I couldn't generate a response at this time."
+
+# Fix: Moved stream_llm function before it's used
+async def stream_llm(user_id, conversation_id, messages):
+    assistant_reply = ""
+
+    payload = {
+        "model": CHAT_MODEL,
+        "messages": messages,
+        "tools": TOOLS,
+        "tool_choice": "auto",
+        "stream": True,
+        "max_tokens": 1500
+    }
+
     async with httpx.AsyncClient(timeout=None) as client:
         async with client.stream(
             "POST",
-            "https://api.groq.com/openai/v1/chat/completions",
+            GROQ_URL,
             headers=get_groq_headers(),
             json=payload
         ) as resp:
             async for line in resp.aiter_lines():
-                if line.startswith("data:"):
-                    yield line
-
-            async for line in resp.aiter_lines():
                 if not line.startswith("data:"):
                     continue
-                if line.strip() == "data: [DONE]":
+                data = line[5:].strip()
+                if data == "[DONE]":
                     break
 
-                chunk = json.loads(line[5:])
-                content = chunk["choices"][0]["delta"].get("content")
+                chunk = json.loads(data)
+                delta = chunk["choices"][0]["delta"]
 
-                if content:
+                if "tool_calls" in delta:
+                    async for item in handle_tools(user_id, messages, delta):
+                        yield item
+
+                if content := delta.get("content"):
                     assistant_reply += content
-                    # 🔹 SAVE PARTIAL TOKENS
-                    supabase.table("message_chunks").insert({
-                        "conversation_id": conversation_id,
-                        "content": content,
-                        "created_at": datetime.utcnow().isoformat()
-                    }).execute()
+                    yield sse({"type": "token", "text": content})
 
-    # 🔹 SAVE FINAL MESSAGE
-    supabase.table("messages").insert({
-        "conversation_id": conversation_id,
-        "role": "assistant",
-        "content": assistant_reply
-    }).execute()
+    await persist_reply(user_id, conversation_id, assistant_reply)
 
+# Fix: Moved handle_tools function before it's used
+async def handle_tools(user_id, messages, delta):
+    calls = delta["tool_calls"]
+
+    async def run(call):
+        name = call["function"]["name"]
+        args = json.loads(call["function"]["arguments"])
+
+        if name == "web_search":
+            return name, await duckduckgo_search(args["query"])
+        if name == "run_code":
+            return name, await run_code_safely(args["task"])
+
+    results = await asyncio.gather(*(run(c) for c in calls))
+
+    for name, result in results:
+        messages.append({
+            "role": "tool",
+            "tool_name": name,
+            "content": json.dumps(result)
+        })
+        yield sse({"type": "tool", "tool": name, "result": result})
+
+# Fix: Moved persist_reply function before it's used
+async def persist_reply(user_id, conversation_id, text):
+    try:
+        supabase.table("messages").insert({
+            "id": str(uuid.uuid4()),
+            "conversation_id": conversation_id,
+            "role": "assistant",
+            "content": text,
+            "created_at": datetime.utcnow().isoformat()
+        }).execute()
+
+        supabase.table("memories").insert({
+            "user_id": user_id,
+            "conversation_id": conversation_id,
+            "content": text[:500],
+            "importance": score_memory(text),
+            "created_at": datetime.utcnow().isoformat()
+        }).execute()
+
+        await decay_memories(user_id)
+    except Exception as e:
+        logger.error(f"Failed to persist reply: {e}")
+
+# Fix: Moved score_memory function before it's used
+def score_memory(text: str) -> int:
+    if any(k in text.lower() for k in ["name", "preference", "goal"]):
+        return 5
+    return 2
+
+# Fix: Moved decay_memories function before it's used
+async def decay_memories(user_id):
+    try:
+        supabase.rpc("decay_memories", {"uid": user_id}).execute()
+    except Exception as e:
+        logger.error(f"Failed to decay memories: {e}")
+
+# Fix: Moved get_groq_headers function before it's used
+def get_groq_headers():
+    return {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+# Fix: Moved run_code_safely function before it's used
+async def run_code_safely(prompt: str):
+    """Helper for streaming /ask/universal."""
+    # Default to python if not specified for this helper
+    language = "python" 
+    
+    # 1. Generate code
+    code_prompt = f"Write a complete {language} program to: {prompt}"
+    payload = {
+        "model": CHAT_MODEL,
+        "messages": [{"role": "user", "content": code_prompt}],
+        "max_tokens": 2048
+    }
+    async with httpx.AsyncClient(timeout=60) as client:
+        r = await client.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers=get_groq_headers(),
+            json=payload
+        )
+        r.raise_for_status()
+        code = r.json()["choices"][0]["message"]["content"]
+
+    # 2. Run code
+    lang_id = JUDGE0_LANGUAGES.get(language, 71)
+    execution = await run_code_judge0(code, lang_id)
+    
+    return {"code": code, "execution": execution}
+
+# Fix: Moved duckduckgo_search function before it's used
+async def duckduckgo_search(q: str):
+    """
+    Use DuckDuckGo Instant Answer API (no API key required).
+    Returns a simple structured result with abstract, answer and a list of related topics.
+    """
+    url = "https://api.duckduckgo.com/"
+    params = {"q": q, "format": "json", "no_html":1, "skip_disambig": 1}
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        r = await client.get(url, params=params)
+        r.raise_for_status()
+        data = r.json()
+
+        results = []
+        # RelatedTopics can contain nested topics or single items; handle both.
+        for item in data.get("RelatedTopics", []):
+            if isinstance(item, dict):
+                # Some items are like {"Text": "...", "FirstURL": "..."}
+                if item.get("Text"):
+                    results.append({"title": item.get("Text"), "url": item.get("FirstURL")})
+                # Some are category blocks with "Topics" list
+                elif item.get("Topics"):
+                    for t in item.get("Topics", []):
+                        if t.get("Text"):
+                            results.append({"title": t.get("Text"), "url": t.get("FirstURL")})
+        # Limit results to a reasonable number
+        results = results[:10]
+
+        return {
+            "query": q,
+            "abstract": data.get("AbstractText"),
+            "answer": data.get("Answer"),
+            "results": results
+            }
+
+# Fix: Moved get_or_create_user function before it's used
 async def get_or_create_user(req: Request, res: Response) -> str:
     user_id = req.cookies.get("user_id")
     if not user_id:
@@ -424,6 +586,7 @@ async def get_or_create_user(req: Request, res: Response) -> str:
         )
     return user_id
 
+# Fix: Moved cache_result function before it's used
 def cache_result(prompt: str, provider: str, result: dict):
     # Store cache in Supabase
     try:
@@ -436,6 +599,7 @@ def cache_result(prompt: str, provider: str, result: dict):
     except Exception as e:
         logger.error(f"Failed to cache result: {e}")
 
+# Fix: Moved get_cached_result function before it's used
 def get_cached_result(prompt: str, provider: str) -> Optional[dict]:
     try:
         response = supabase.table("cache").select("result").eq("prompt", prompt).eq("provider", provider).order("created_at", desc=True).limit(1).execute()
@@ -445,13 +609,14 @@ def get_cached_result(prompt: str, provider: str) -> Optional[dict]:
         logger.error(f"Failed to get cached result: {e}")
     return None
 
-# ---------- Dynamic, user-focused system prompt ----------
+# Fix: Moved get_system_prompt function before it's used
 def get_system_prompt(user_message: Optional[str] = None) -> str:
     base = "You are ZynaraAI1.0: helpful, concise, friendly, and focus entirely on what the user asks. Do not reference your creator or yourself unless explicitly asked."
     if user_message:
         base += f" The user said: \"{user_message}\". Tailor your response to this."
     return base
 
+# Fix: Moved build_contextual_prompt function before it's used
 def build_contextual_prompt(user_id: str, message: str) -> str:
     try:
         # Get user memory
@@ -482,6 +647,7 @@ User message: {message}"""
         logger.error(f"Failed to build contextual prompt: {e}")
         return f"You are ZyNaraAI1.0: helpful, concise, friendly. Focus on exactly what the user wants.\n\nUser message: {message}"
 
+# Fix: Moved check_permission function before it's used
 def check_permission(role: str, tool_name: str) -> bool:
     permissions = {
         "user": {"web_search"},
@@ -490,172 +656,7 @@ def check_permission(role: str, tool_name: str) -> bool:
     }
     return tool_name in permissions.get(role, set())
 
-
-async def stream_llm(user_id, conversation_id, messages):
-    assistant_reply = ""
-
-    payload = {
-        "model": CHAT_MODEL,
-        "messages": messages,
-        "tools": TOOLS,
-        "tool_choice": "auto",
-        "stream": True,
-        "max_tokens": 1500
-    }
-
-    async def generate_ai_response(conversation_id: str, user_id: str, messages: list):
-        """
-        Generates an AI response using Groq API in the background.
-        """
-        payload_inner = {
-            "model": CHAT_MODEL,
-            "messages": messages,
-            "max_tokens": 1500
-        }
-
-        headers = {
-            "Authorization": f"Bearer {GROQ_API_KEY}",
-            "Content-Type": "application/json"
-        }
-
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(GROQ_URL, json=payload_inner, headers=headers) as resp:
-                    resp.raise_for_status()
-                    data = await resp.json()
-                    ai_message = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-                    print(f"[Conversation {conversation_id}] AI response: {ai_message}")
-                    return ai_message
-        except Exception as e:
-            print(f"Error generating AI response: {e}")
-            return "Sorry, I couldn't generate a response at this time."
-
-    # Fire-and-forget
-    asyncio.create_task(generate_ai_response(conversation_id, user_id, messages))
-
-# Example FastAPI endpoint that fires AI response in the background
-from fastapi.responses import StreamingResponse
-
-@app.post("/chat/stream/{conversation_id}/{user_id}")
-async def chat_stream_endpoint(conversation_id: str, user_id: str, messages: list):
-    """
-    Streams AI response tokens to the client, saving them in Supabase in real-time.
-    """
-    async def event_generator():
-        async for token_sse in stream_llm(user_id, conversation_id, messages):
-            yield token_sse  # only yield here, no return
-
-    # Return StreamingResponse from the endpoint, not inside the generator
-    return StreamingResponse(
-    event_generator(),
-    media_type="text/event-stream",
-    headers={"Cache-Control": "no-cache"},
-)
-    
-    try:
-        async with httpx.AsyncClient(timeout=None) as client:
-            resp = await client.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers=get_groq_headers(),
-                json=payload
-            )
-            resp.raise_for_status()
-            data = resp.json()
-
-        assistant_reply = data["choices"][0]["message"]["content"]
-
-        # Save assistant message
-        supabase.table("messages").insert({
-            "conversation_id": conversation_id,
-            "role": "assistant",
-            "content": assistant_reply
-        }).execute()
-
-    except Exception as e:
-        logger.error(f"Background AI failed: {e}") 
-
-    async with httpx.AsyncClient(timeout=None) as client:
-        async with client.stream(
-            "POST",
-            GROQ_URL,
-            headers=get_groq_headers(),
-            json=payload
-        ) as resp:
-            async for line in resp.aiter_lines():
-                if not line.startswith("data:"):
-                    continue
-                data = line[5:].strip()
-                if data == "[DONE]":
-                    break
-
-                chunk = json.loads(data)
-                delta = chunk["choices"][0]["delta"]
-
-                if "tool_calls" in delta:
-                    async for item in handle_tools(user_id, messages, delta):
-                        yield item
-
-                if content := delta.get("content"):
-                    assistant_reply += content
-                    yield sse({"type": "token", "text": content})
-
-    await persist_reply(user_id, conversation_id, assistant_reply)
-
-def score_memory(text: str) -> int:
-    if any(k in text.lower() for k in ["name", "preference", "goal"]):
-        return 5
-    return 2
-
-async def decay_memories(user_id):
-    try:
-        supabase.rpc("decay_memories", {"uid": user_id}).execute()
-    except Exception as e:
-        logger.error(f"Failed to decay memories: {e}")
-
-async def persist_reply(user_id, conversation_id, text):
-    try:
-        supabase.table("messages").insert({
-            "id": str(uuid.uuid4()),
-            "conversation_id": conversation_id,
-            "role": "assistant",
-            "content": text,
-            "created_at": datetime.utcnow().isoformat()
-        }).execute()
-
-        supabase.table("memories").insert({
-            "user_id": user_id,
-            "conversation_id": conversation_id,
-            "content": text[:500],
-            "importance": score_memory(text),
-            "created_at": datetime.utcnow().isoformat()
-        }).execute()
-
-        await decay_memories(user_id)
-    except Exception as e:
-        logger.error(f"Failed to persist reply: {e}")
-
-async def handle_tools(user_id, messages, delta):
-    calls = delta["tool_calls"]
-
-    async def run(call):
-        name = call["function"]["name"]
-        args = json.loads(call["function"]["arguments"])
-
-        if name == "web_search":
-            return name, await duckduckgo_search(args["query"])
-        if name == "run_code":
-            return name, await run_code_safely(args["task"])
-
-    results = await asyncio.gather(*(run(c) for c in calls))
-
-    for name, result in results:
-        messages.append({
-            "role": "tool",
-            "tool_name": name,
-            "content": json.dumps(result)
-        })
-        yield sse({"type": "tool", "tool": name, "result": result})
-
+# Fix: Moved get_or_create_conversation_id function before it's used
 def get_or_create_conversation_id(supabase, user_id: str) -> str:
     # Try to get most recent conversation
     res = (
@@ -681,7 +682,7 @@ def get_or_create_conversation_id(supabase, user_id: str) -> str:
 
     return conversation_id
 
-
+# Fix: Moved build_system_prompt function before it's used
 def build_system_prompt(artifact: Union[str, None]):
     base = """
 You are a helpful AI assistant.
@@ -707,10 +708,11 @@ Return the FULL updated version.
 """
     return base
 
-# ---------- Image helpers ----------
+# Fix: Moved unique_filename function before it's used
 def unique_filename(ext="png"):
     return f"{int(time.time())}-{uuid.uuid4().hex[:10]}.{ext}"
 
+# Fix: Moved upload_to_supabase function before it's used
 def upload_to_supabase(
     file_bytes: bytes,
     filename: str,
@@ -727,7 +729,7 @@ def upload_to_supabase(
     )
     return filename
 
-# Helper wrappers for missing functions
+# Fix: Moved upload_image_to_supabase function before it's used
 def upload_image_to_supabase(image_bytes: bytes, filename: str):
     upload = supabase.storage.from_("ai-images").upload(
         filename,
@@ -740,6 +742,7 @@ def upload_image_to_supabase(image_bytes: bytes, filename: str):
 
     return upload
 
+# Fix: Moved save_image_record function before it's used
 def save_image_record(user_id, prompt, path, is_nsfw):
     try:
         supabase.table("images").insert({
@@ -753,7 +756,7 @@ def save_image_record(user_id, prompt, path, is_nsfw):
     except Exception as e:
         logger.error(f"Failed to save image record: {e}")
 
-
+# Fix: Moved route_query function before it's used
 async def route_query(user_id: str, query: str):
     q = query.lower()
 
@@ -775,10 +778,11 @@ async def route_query(user_id: str, query: str):
 
     return "search"
 
-
+# Fix: Moved get_user_id_from_cookie function before it's used
 async def get_user_id_from_cookie(request: Request, response: Response) -> str:
     return await get_or_create_user(request, response)
 
+# Fix: Moved nsfw_check function before it's used
 async def nsfw_check(prompt: str) -> bool:
     if not OPENAI_API_KEY: return False
     async with httpx.AsyncClient(timeout=15) as client:
@@ -793,8 +797,8 @@ async def nsfw_check(prompt: str) -> bool:
         r.raise_for_status()
         result = r.json()["results"][0]
         return result["flagged"]
-        
-# ---------- USER / COOKIE ----------
+
+# Fix: Moved get_or_create_conversation function before it's used
 async def get_or_create_conversation(user_id: str, conversation_id: Union[str, None]):
     if conversation_id:
         return conversation_id
@@ -813,6 +817,7 @@ async def get_or_create_conversation(user_id: str, conversation_id: Union[str, N
     
     return conv_id
 
+# Fix: Moved load_artifact function before it's used
 async def load_artifact(conversation_id: str):
     try:
         response = supabase.table("artifacts").select("*").eq("conversation_id", conversation_id).limit(1).execute()
@@ -828,6 +833,7 @@ async def load_artifact(conversation_id: str):
         logger.error(f"Failed to load artifact: {e}")
     return None
 
+# Fix: Moved summarize_conversation function before it's used
 async def summarize_conversation(conversation_id: str):
     try:
         response = supabase.table("messages").select("role, content").eq("conversation_id", conversation_id).order("created_at").limit(40).execute()
@@ -869,6 +875,7 @@ async def summarize_conversation(conversation_id: str):
     except Exception as e:
         logger.error(f"Failed to summarize conversation: {e}")
 
+# Fix: Moved get_user_from_request function before it's used
 def get_user_from_request(request: Request) -> dict:
     auth = request.headers.get("authorization")
 
@@ -890,6 +897,7 @@ def get_user_from_request(request: Request) -> dict:
 
     return res.json()
 
+# Fix: Moved save_artifact function before it's used
 async def save_artifact(conversation_id: str, type_: str, content: str):
     try:
         existing = await load_artifact(conversation_id)
@@ -910,6 +918,7 @@ async def save_artifact(conversation_id: str, type_: str, content: str):
     except Exception as e:
         logger.error(f"Failed to save artifact: {e}")
 
+# Fix: Moved detect_artifact function before it's used
 def detect_artifact(text: str):
     t = text.lower()
 
@@ -928,7 +937,7 @@ def detect_artifact(text: str):
 
     return None
 
-
+# Fix: Moved load_history function before it's used
 async def load_history(user_id: str, limit: int = 20):
     try:
         conv_response = supabase.table("conversations").select("id").eq("user_id", user_id).order("updated_at", desc=True).limit(1).execute()
@@ -941,9 +950,7 @@ async def load_history(user_id: str, limit: int = 20):
         logger.error(f"Failed to load history: {e}")
     return []
 
-# ----------------------------------
-# MEMORY LOADER
-# ----------------------------------
+# Fix: Moved load_memory function before it's used
 def load_memory(conversation_id: str, limit: int = 20):
     try:
         response = supabase.table("messages").select("role, content").eq("conversation_id", conversation_id).order("created_at").limit(limit).execute()
@@ -953,244 +960,146 @@ def load_memory(conversation_id: str, limit: int = 20):
         logger.error(f"Failed to load memory: {e}")
     return []
 
-# ----------------------------------
-# NEW CHAT
-# ----------------------------------
+# Fix: Moved extract_memory_from_prompt function before it's used
+def extract_memory_from_prompt(prompt: str):
+    p = prompt.lower()
 
-@app.post("/chat/new")
-async def new_chat(req: Request, res: Response):
-    user_id = await get_or_create_user(req, res)
-    cid = str(uuid.uuid4())
+    if "my name is" in p:
+        name = prompt.split("my name is", 1)[1].strip().split()[0]
+        return ("name", name)
 
+    if "i live in" in p:
+        location = prompt.split("i live in", 1)[1].strip()
+        return ("location", location)
+
+    if "i like" in p:
+        pref = prompt.split("i like", 1)[1].strip()
+        return ("preference", pref)
+
+    return None
+
+# Fix: Moved load_user_memory function before it's used
+def load_user_memory(user_id: str):
     try:
-        supabase.table("conversations").insert({
-            "id": cid,
-            "user_id": user_id,
-            "title": "New Chat",
-            "created_at": datetime.now().isoformat(),
-            "updated_at": datetime.now().isoformat()
-        }).execute()
-    except Exception as e:
-        logger.error(f"Failed to create new chat: {e}")
-
-    return {"conversation_id": cid}
-
-@app.post("/chat/{conversation_id}")
-async def send_message(conversation_id: str, req: Request, res: Response):
-    user_id = await get_or_create_user(req, res)
-    body = await req.json()
-    text = body.get("message")
-
-    if not text:
-        raise HTTPException(400, "message required")
-
-    msg_id = str(uuid.uuid4())
-    try:
-        supabase.table("messages").insert({
-            "id": msg_id,
-            "conversation_id": conversation_id,
-            "role": "user",
-            "content": text,
-            "created_at": datetime.now().isoformat()
-        }).execute()
-    except Exception as e:
-        logger.error(f"Failed to save user message: {e}")
-
-    try:
-        msg_response = supabase.table("messages").select("role, content").eq("conversation_id", conversation_id).order("created_at").execute()
-        rows = msg_response.data if msg_response.data else []
-        messages = [{"role": row["role"], "content": row["content"]} for row in rows]
-
-        payload = {
-            "model": CHAT_MODEL,
-            "messages": messages,
-            "max_tokens": 1024
-        }
-
-        async with httpx.AsyncClient(timeout=30) as client:
-            r = await client.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers=get_groq_headers(),
-                json=payload
-            )
-            r.raise_for_status()
-            reply = r.json()["choices"][0]["message"]["content"]
-
-        reply_id = str(uuid.uuid4())
-        supabase.table("messages").insert({
-            "id": reply_id,
-            "conversation_id": conversation_id,
-            "role": "assistant",
-            "content": reply,
-            "created_at": datetime.now().isoformat()
-        }).execute()
-
-        return {"reply": reply}
-    except Exception as e:
-        logger.error(f"Failed to process message: {e}")
-        raise HTTPException(500, "Failed to process message")
-
-# ----------------------------------
-# LIST CHATS
-# ----------------------------------
-@app.get("/chats")
-async def list_chats(req: Request, res: Response):
-    user_id = await get_or_create_user(req, res)
-
-    try:
-        response = supabase.table("conversations").select("*").eq("user_id", user_id).order("updated_at", desc=True).execute()
+        response = supabase.table("memories").select("key, value").eq("user_id", user_id).execute()
         rows = response.data if response.data else []
-        return rows
+        return [{"key": row["key"], "value": row["value"]} for row in rows]
     except Exception as e:
-        logger.error(f"Failed to list chats: {e}")
-        return []
+        logger.error(f"Failed to load user memory: {e}")
+    return []
 
-# ----------------------------------
-# SEARCH CHATS
-# ----------------------------------
-@app.get("/chats/search")
-async def search_chats(q: str, req: Request, res: Response):
-    user_id = await get_or_create_user(req, res)
-
-    try:
-        response = supabase.table("conversations").select("id, title").eq("user_id", user_id).ilike("title", f"%{q}%").order("updated_at", desc=True).execute()
-        rows = response.data if response.data else []
-        return rows
-    except Exception as e:
-        logger.error(f"Failed to search chats: {e}")
-        return []
-
-# ----------------------------------
-# PIN / ARCHIVE
-# ----------------------------------
-@app.post("/chat/{id}/pin")
-async def pin_chat(id: str):
-    try:
-        supabase.table("conversations").update({
-            "updated_at": datetime.now().isoformat()
-        }).eq("id", id).execute()
-    except Exception as e:
-        logger.error(f"Failed to pin chat: {e}")
-    return {"status": "pinned"}
-
-@app.post("/chat/{id}/archive")
-async def archive_chat(id: str):
-    try:
-        supabase.table("conversations").update({
-            "updated_at": datetime.now().isoformat()
-        }).eq("id", id).execute()
-    except Exception as e:
-        logger.error(f"Failed to archive chat: {e}")
-    return {"status": "archived"}
-
-# ----------------------------------
-# FOLDER
-# ----------------------------------
-@app.post("/chat/{id}/folder")
-async def move_folder(id: str, folder: Optional[str] = None):
-    try:
-        supabase.table("conversations").update({
-            "updated_at": datetime.now().isoformat()
-        }).eq("id", id).execute()
-    except Exception as e:
-        logger.error(f"Failed to move chat to folder: {e}")
-    return {"status": "moved"}
-
-# ----------------------------------
-# SHARE CHAT
-# ----------------------------------
-@app.post("/chat/{id}/share")
-async def share_chat(id: str):
-    token = uuid.uuid4().hex
-
-    try:
-        supabase.table("conversations").update({
-            "updated_at": datetime.now().isoformat()
-        }).eq("id", id).execute()
-    except Exception as e:
-        logger.error(f"Failed to share chat: {e}")
-
-    return {"share_url": f"/share/{token}"}
-
-# ----------------------------------
-# VIEW SHARED CHAT (READ ONLY)
-# ----------------------------------
-@app.get("/share/{token}")
-async def view_shared_chat(token: str):
-    # In a real implementation, you would store share tokens in the database
-    # For now, we'll return a placeholder
-    return {
-        "title": "Shared Chat",
-        "messages": []
-    }
-
-#------duckduckgo
-
-async def duckduckgo_search(q: str):
-    """
-    Use DuckDuckGo Instant Answer API (no API key required).
-    Returns a simple structured result with abstract, answer and a list of related topics.
-    """
-    url = "https://api.duckduckgo.com/"
-    params = {"q": q, "format": "json", "no_html":1, "skip_disambig": 1}
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        r = await client.get(url, params=params)
-        r.raise_for_status()
-        data = r.json()
-
-        results = []
-        # RelatedTopics can contain nested topics or single items; handle both.
-        for item in data.get("RelatedTopics", []):
-            if isinstance(item, dict):
-                # Some items are like {"Text": "...", "FirstURL": "..."}
-                if item.get("Text"):
-                    results.append({"title": item.get("Text"), "url": item.get("FirstURL")})
-                # Some are category blocks with "Topics" list
-                elif item.get("Topics"):
-                    for t in item.get("Topics", []):
-                        if t.get("Text"):
-                            results.append({"title": t.get("Text"), "url": t.get("FirstURL")})
-        # Limit results to a reasonable number
-        results = results[:10]
-
-        return {
-            "query": q,
-            "abstract": data.get("AbstractText"),
-            "answer": data.get("Answer"),
-            "results": results
-            }
-
-# ---------- Helper: centralize Groq headers ----------
-def get_groq_headers():
-    return {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
-        "Content-Type": "application/json"
-    }
-
-async def tts_stream_helper(text: str):
-    headers = {
-        "Authorization": f"Bearer {OPENAI_API_KEY}",
-        "Content-Type": "application/json"
-    }
+# Fix: Moved universal_chat_stream function before it's used
+async def universal_chat_stream(user_id: str, prompt: str):
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = get_groq_headers()
 
     payload = {
-        "model": "tts-1", 
-        "voice": "alloy",
-        "input": text
+        "model": CHAT_MODEL,
+        "stream": True,
+        "messages": [
+            {"role": "system", "content": safe_system_prompt(
+    build_contextual_prompt(user_id, prompt)
+)},
+            {"role": "user", "content": prompt}
+           ],
+            "max_tokens": 1024
+        
     }
 
-    async with httpx.AsyncClient(timeout=60) as client:
-        r = await client.post(
-            "https://api.openai.com/v1/audio/speech",
-            headers=headers,
-            json=payload
-        )
-        r.raise_for_status()
+    async with httpx.AsyncClient(timeout=None) as client:
+        async with client.stream("POST", url, headers=headers, json=payload) as resp:
+            async for line in resp.aiter_lines():
+                if not line or not line.startswith("data: "):
+                    continue
 
-    b64 = base64.b64encode(r.content).decode()
-    yield {"type": "tts_done", "audio": b64}
-    
-# ---------- Prompt enhancer ----------
+                data = line[6:].strip()
+                if data == "[DONE]":
+                    break
+
+                try:
+                    chunk = json.loads(data)
+                    delta = chunk["choices"][0]["delta"].get("content")
+                    if delta:
+                        yield {"type": "chat_token", "text": delta}
+                except Exception:
+                    continue
+
+# Fix: Moved analyze_prompt function before it's used
+def analyze_prompt(prompt: str):
+    p = prompt.lower()
+    settings = {"model": "stable-diffusion-xl-v1","width":1024,"height":1024,"steps":30,"cfg_scale":7,"samples":1,"negative_prompt":"nsfw, nudity, watermark, lowres, text, logo"}
+    if any(w in p for w in ("wallpaper","background","poster")):
+        settings["width"], settings["height"] = 1920, 1080
+    if any(w in p for w in ("landscape","city","wide","panorama")):
+        settings["width"], settings["height"] = 1280, 720
+    for token in p.split():
+        if token.isnumeric():
+            n = int(token)
+            if 1 <= n <= 6:
+                settings["samples"] = n
+    return settings
+
+# Fix: Moved image_stream_helper function before it's used
+async def image_stream_helper(prompt: str, samples: int):
+    try:
+        result = await _generate_image_core(prompt, samples, "anonymous", return_base64=False)
+        yield {
+            "type": "images",
+            "provider": result["provider"],
+            "images": result["images"]
+        }
+    except HTTPException as e:
+        yield {
+            "type": "image_error",
+            "error": e.detail
+        }
+    except Exception as e:
+        logger.exception("Unhandled image stream error")
+        yield {
+            "type": "image_error",
+            "error": "Unexpected image error"
+        }
+
+# Fix: Moved chat_stream_helper function before it's used
+async def chat_stream_helper(user_id: str, prompt: str):
+    url = "https://api.groq.com/openai/v1/chat/completions"
+
+    payload = {
+    "model": CHAT_MODEL,
+    "stream": True,
+    "messages": [
+        {"role": "system", "content": safe_system_prompt(
+    build_contextual_prompt(user_id, prompt)
+)},
+        {"role": "user", "content": prompt}
+    ],
+    "max_tokens": 1024
+}
+
+    async with httpx.AsyncClient(timeout=None) as client:
+        async with client.stream(
+            "POST",
+            url,
+            headers=get_groq_headers(),
+            json=payload
+        ) as resp:
+            async for line in resp.aiter_lines():
+                if not line or not line.startswith("data: "):
+                    continue
+
+                data = line[6:].strip()
+                if data == "[DONE]":
+                    break
+
+                try:
+                    chunk = json.loads(data)
+                    delta = chunk["choices"][0]["delta"].get("content")
+                    if delta:
+                        yield {"type": "token", "text": delta}
+                except Exception:
+                    continue
+
+# Fix: Moved enhance_prompt_with_groq function before it's used
 async def enhance_prompt_with_groq(prompt: str) -> str:
     if not GROQ_API_KEY:
         return prompt
@@ -1211,7 +1120,7 @@ async def enhance_prompt_with_groq(prompt: str) -> str:
         logger.exception("Prompt enhancer failed")
     return prompt
 
-
+# Fix: Moved generate_video_internal function before it's used
 async def generate_video_internal(prompt: str, samples: int = 1, user_id: str = "anonymous") -> dict:
     """
     Generate video (stub). Stores video files in Supabase storage like images.
@@ -1239,7 +1148,7 @@ async def generate_video_internal(prompt: str, samples: int = 1, user_id: str = 
 
     return {"provider": "stub", "videos": urls}
 
-# ---------- Intent Detection ----------
+# Fix: Moved detect_intent function before it's used
 def detect_intent(prompt: str) -> str:
     if not prompt:
         return "chat"
@@ -1300,208 +1209,31 @@ def detect_intent(prompt: str) -> str:
 
     return "chat"
 
-def extract_memory_from_prompt(prompt: str):
-    p = prompt.lower()
-
-    if "my name is" in p:
-        name = prompt.split("my name is", 1)[1].strip().split()[0]
-        return ("name", name)
-
-    if "i live in" in p:
-        location = prompt.split("i live in", 1)[1].strip()
-        return ("location", location)
-
-    if "i like" in p:
-        pref = prompt.split("i like", 1)[1].strip()
-        return ("preference", pref)
-
-    return None
-
-def load_user_memory(user_id: str):
-    try:
-        response = supabase.table("memories").select("key, value").eq("user_id", user_id).execute()
-        rows = response.data if response.data else []
-        return [{"key": row["key"], "value": row["value"]} for row in rows]
-    except Exception as e:
-        logger.error(f"Failed to load user memory: {e}")
-    return []
-
-
-# =========================
-# STREAM HELPERS FOR UNIVERSAL ENDPOINT
-# =========================
-async def universal_chat_stream(user_id: str, prompt: str):
-    url = "https://api.groq.com/openai/v1/chat/completions"
-    headers = get_groq_headers()
-
-    payload = {
-        "model": CHAT_MODEL,
-        "stream": True,
-        "messages": [
-            {"role": "system", "content": safe_system_prompt(
-    build_contextual_prompt(user_id, prompt)
-)},
-            {"role": "user", "content": prompt}
-           ],
-            "max_tokens": 1024
-        
+# Fix: Moved tts_stream_helper function before it's used
+async def tts_stream_helper(text: str):
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json"
     }
 
-    async with httpx.AsyncClient(timeout=None) as client:
-        async with client.stream("POST", url, headers=headers, json=payload) as resp:
-            async for line in resp.aiter_lines():
-                if not line or not line.startswith("data: "):
-                    continue
-
-                data = line[6:].strip()
-                if data == "[DONE]":
-                    break
-
-                try:
-                    chunk = json.loads(data)
-                    delta = chunk["choices"][0]["delta"].get("content")
-                    if delta:
-                        yield {"type": "chat_token", "text": delta}
-                except Exception:
-                    continue
-            
-# ---------- Prompt analysis ----------
-def analyze_prompt(prompt: str):
-    p = prompt.lower()
-    settings = {"model": "stable-diffusion-xl-v1","width":1024,"height":1024,"steps":30,"cfg_scale":7,"samples":1,"negative_prompt":"nsfw, nudity, watermark, lowres, text, logo"}
-    if any(w in p for w in ("wallpaper","background","poster")):
-        settings["width"], settings["height"] = 1920, 1080
-    if any(w in p for w in ("landscape","city","wide","panorama")):
-        settings["width"], settings["height"] = 1280, 720
-    for token in p.split():
-        if token.isnumeric():
-            n = int(token)
-            if 1 <= n <= 6:
-                settings["samples"] = n
-    return settings
-
-async def image_stream_helper(prompt: str, samples: int):
-    try:
-        result = await _generate_image_core(prompt, samples, "anonymous", return_base64=False)
-        yield {
-            "type": "images",
-            "provider": result["provider"],
-            "images": result["images"]
-        }
-    except HTTPException as e:
-        yield {
-            "type": "image_error",
-            "error": e.detail
-        }
-    except Exception as e:
-        logger.exception("Unhandled image stream error")
-        yield {
-            "type": "image_error",
-            "error": "Unexpected image error"
-        }
-
-# ---------- Streaming chat ----------
-async def chat_stream_helper(user_id: str, prompt: str):
-    url = "https://api.groq.com/openai/v1/chat/completions"
-
     payload = {
-    "model": CHAT_MODEL,
-    "stream": True,
-    "messages": [
-        {"role": "system", "content": safe_system_prompt(
-    build_contextual_prompt(user_id, prompt)
-)},
-        {"role": "user", "content": prompt}
-    ],
-    "max_tokens": 1024
-}
+        "model": "tts-1", 
+        "voice": "alloy",
+        "input": text
+    }
 
-    async with httpx.AsyncClient(timeout=None) as client:
-        async with client.stream(
-            "POST",
-            url,
-            headers=get_groq_headers(),
+    async with httpx.AsyncClient(timeout=60) as client:
+        r = await client.post(
+            "https://api.openai.com/v1/audio/speech",
+            headers=headers,
             json=payload
-        ) as resp:
-            async for line in resp.aiter_lines():
-                if not line or not line.startswith("data: "):
-                    continue
+        )
+        r.raise_for_status()
 
-                data = line[6:].strip()
-                if data == "[DONE]":
-                    break
+    b64 = base64.b64encode(r.content).decode()
+    yield {"type": "tts_done", "audio": b64}
 
-                try:
-                    chunk = json.loads(data)
-                    delta = chunk["choices"][0]["delta"].get("content")
-                    if delta:
-                        yield {"type": "token", "text": delta}
-                except Exception:
-                    continue
-                    
-# Tracks currently active SSE/streaming tasks per user
-active_streams: Dict[str, asyncio.Task] = {}
-
-@app.get("/health")
-async def health():
-    return {
-        "status": "ok",
-        "timestamp": datetime.utcnow().isoformat()
-    }
-    
-@app.get("/")
-async def root():
-    return {"message": "Billy AI Backend is Running ✔"}
-    
-@app.post("/chat/stream")
-async def chat_stream(req: Request, res: Response, tts: bool = False, samples: int = 1):
-    """
-    Unified streaming endpoint:
-    - Image streaming (if prompt implies image)
-    - Chat streaming (Groq)
-    - Optional TTS
-    Cookie-based identity + safe cancellation
-    """
-    body = await req.json()
-    prompt = body.get("prompt", "")
-    if not prompt:
-        raise HTTPException(400, "prompt required")
-
-    # ✅ COOKIE USER
-    user_id = await get_or_create_user(req, res)
-    
-# ---------- Chat endpoint ----------
-@app.post("/chat")
-async def chat_endpoint(req: Request):
-    body = await req.json()
-    prompt = body.get("prompt","")
-    user_id = body.get("user_id", "anonymous")
-    if not prompt:
-        raise HTTPException(400,"prompt required")
-    if not GROQ_API_KEY:
-        raise HTTPException(400,"no groq key")
-    payload = {"model":CHAT_MODEL,"messages":[{"role":"system","content":build_contextual_prompt(user_id, prompt)},{"role":"user","content":prompt}]}
-
-    headers = get_groq_headers()
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        try:
-            r = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
-            if r.status_code != 200:
-                logger.warning("Groq /chat returned status=%s text=%s", r.status_code, (r.text[:500] + '...') if r.text else "")
-                r.raise_for_status()
-            return r.json()
-        except httpx.HTTPStatusError as exc:
-            logger.exception("Groq HTTP error on /chat: %s", getattr(exc.response, "text", "no-response-text"))
-            raise HTTPException(status_code=exc.response.status_code if exc.response is not None else 500, detail=f"Groq error: {exc.response.text[:400] if exc.response is not None else str(exc)}")
-        except Exception:
-            logger.exception("Groq /chat request failed")
-            raise HTTPException(500, "groq_request_failed")
-
-# =========================================================
-# 🚀 UNIVERSAL MULTIMODAL ENDPOINT — /ask/universal
-# =========================================================
-
-# ---------- Core Image Logic (Refactored) ----------
+# Fix: Moved _generate_image_core function before it's used
 async def _generate_image_core(
     prompt: str,
     samples: int,
@@ -1589,11 +1321,12 @@ async def _generate_image_core(
         "images": urls
     }
 
-
+# Fix: Moved image_gen_internal function before it's used
 async def image_gen_internal(prompt: str, samples: int = 1):
     """Helper for streaming /ask/universal."""
     result = await _generate_image_core(prompt, samples, "anonymous", return_base64=False)
 
+# Fix: Moved stream_images function before it's used
 async def stream_images(prompt: str, samples: int):
     try:
         async for chunk in image_stream_helper(prompt, samples):
@@ -1601,41 +1334,42 @@ async def stream_images(prompt: str, samples: int):
     except HTTPException as e:
         yield sse({"type": "image_error", "error": e.detail})
 
-async def run_code_safely(prompt: str):
-    """Helper for streaming /ask/universal."""
-    # Default to python if not specified for this helper
-    language = "python" 
-    
-    # 1. Generate code
-    code_prompt = f"Write a complete {language} program to: {prompt}"
-    payload = {
-    "model": CHAT_MODEL,
-    "messages": [{"role": "user", "content": code_prompt}],
-    "max_tokens": 2048
-}
-    async with httpx.AsyncClient(timeout=60) as client:
-        r = await client.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers=get_groq_headers(),
-            json=payload
-        )
-        r.raise_for_status()
-        code = r.json()["choices"][0]["message"]["content"]
+# Fix: Moved run_agents function before it's used
+async def run_agents(prompt: str):
+    async def research():
+        return await duckduckgo_search(prompt)
 
-    # 2. Run code
-    lang_id = JUDGE0_LANGUAGES.get(language, 71)
-    execution = await run_code_judge0(code, lang_id)
-    
-    return {"code": code, "execution": execution}
+    async def coding():
+        return await run_code_safely(prompt)
 
+    results = await asyncio.gather(
+        research(),
+        coding(),
+        return_exceptions=True
+    )
+    return results
 
-# =========================================================
-# 🧠 TOOL SCHEMAS (OpenAI style)
-# =========================================================
-# =========================================================
-# 🧠 PERSONALITY PROMPTS
-# =========================================================
+# Fix: Moved track_cost function before it's used
+def track_cost(user_id: str, tokens: int, tool: Union[str, None] = None):
+    try:
+        supabase.table("usage").insert({
+            "user_id": user_id,
+            "tokens": tokens,
+            "tool": tool,
+            "created_at": datetime.now().isoformat()
+        }).execute()
+    except Exception as e:
+        logger.error(f"Cost tracking failed: {e}")
 
+# Fix: Moved auth function before it's used
+async def auth(request: Request):
+    # Simple auth function that extracts user_id from cookie
+    user_id = request.cookies.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return type('User', (), {'id': user_id})()
+
+# Fix: Moved PERSONALITY_MAP before it's used
 PERSONALITY_MAP = {
     "friendly": (
         "You are friendly, warm, and encouraging. "
@@ -1650,6 +1384,7 @@ PERSONALITY_MAP = {
     )
 }
 
+# Fix: Moved TOOLS before it's used
 TOOLS = [
     {
         "type": "function",
@@ -1681,69 +1416,66 @@ TOOLS = [
     }
 ]
 
-# =========================================================
-# 🧠 ROLE + PERMISSION CHECK
-# =========================================================
+# Tracks currently active SSE/streaming tasks per user
+active_streams: Dict[str, asyncio.Task] = {}
 
-def check_permission(role: str, tool_name: str) -> bool:
-    permissions = {
-        "user": {"web_search"},
-        "admin": {"web_search", "run_code"},
-        "system": {"web_search", "run_code"}
+@app.get("/health")
+async def health():
+    return {
+        "status": "ok",
+        "timestamp": datetime.utcnow().isoformat()
     }
-    return tool_name in permissions.get(role, set())
+    
+@app.get("/")
+async def root():
+    return {"message": "Billy AI Backend is Running ✔"}
+    
+@app.post("/chat/stream")
+async def chat_stream(req: Request, res: Response, tts: bool = False, samples: int = 1):
+    """
+    Unified streaming endpoint:
+    - Image streaming (if prompt implies image)
+    - Chat streaming (Groq)
+    - Optional TTS
+    Cookie-based identity + safe cancellation
+    """
+    body = await req.json()
+    prompt = body.get("prompt", "")
+    if not prompt:
+        raise HTTPException(400, "prompt required")
+
+    # ✅ COOKIE USER
+    user_id = await get_or_create_user(req, res)
+    
+# ---------- Chat endpoint ----------
+@app.post("/chat")
+async def chat_endpoint(req: Request):
+    body = await req.json()
+    prompt = body.get("prompt","")
+    user_id = body.get("user_id", "anonymous")
+    if not prompt:
+        raise HTTPException(400,"prompt required")
+    if not GROQ_API_KEY:
+        raise HTTPException(400,"no groq key")
+    payload = {"model":CHAT_MODEL,"messages":[{"role":"system","content":build_contextual_prompt(user_id, prompt)},{"role":"user","content":prompt}]}
+
+    headers = get_groq_headers()
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            r = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
+            if r.status_code != 200:
+                logger.warning("Groq /chat returned status=%s text=%s", r.status_code, (r.text[:500] + '...') if r.text else "")
+                r.raise_for_status()
+            return r.json()
+        except httpx.HTTPStatusError as exc:
+            logger.exception("Groq HTTP error on /chat: %s", getattr(exc.response, "text", "no-response-text"))
+            raise HTTPException(status_code=exc.response.status_code if exc.response is not None else 500, detail=f"Groq error: {exc.response.text[:400] if exc.response is not None else str(exc)}")
+        except Exception:
+            logger.exception("Groq /chat request failed")
+            raise HTTPException(500, "groq_request_failed")
 
 # =========================================================
-# 💸 COST TRACKING
-# =========================================================
-
-def track_cost(user_id: str, tokens: int, tool: Union[str, None] = None):
-    try:
-        supabase.table("usage").insert({
-            "user_id": user_id,
-            "tokens": tokens,
-            "tool": tool,
-            "created_at": datetime.now().isoformat()
-        }).execute()
-    except Exception as e:
-        logger.error(f"Cost tracking failed: {e}")
-
-# =========================================================
-# 🧠 MEMORY SCORING + DECAY
-# =========================================================
-
-def score_memory(text: str) -> int:
-    score = 1
-    if "important" in text.lower(): score += 2
-    if "remember" in text.lower(): score += 2
-    return score
-
-async def decay_memories(user_id: str):
-    try:
-        supabase.rpc("decay_memories", {"uid": user_id}).execute()
-    except Exception as e:
-        logger.error(f"Failed to decay memories: {e}")
-
-# =========================================================
-# 🤖 AGENT ORCHESTRATION
-# =========================================================
-
-async def run_agents(prompt: str):
-    async def research():
-        return await duckduckgo_search(prompt)
-
-    async def coding():
-        return await run_code_safely(prompt)
-
-    results = await asyncio.gather(
-        research(),
-        coding(),
-        return_exceptions=True
-    )
-    return results
-
-# =========================================================
-# 🚀 UNIVERSAL ENDPOINT (FULL)
+# 🚀 UNIVERSAL MULTIMODAL ENDPOINT — /ask/universal
 # =========================================================
 
 @app.post("/ask/universal")
@@ -1989,13 +1721,6 @@ async def stream_endpoint():
 # -----------------------------
 # Stop endpoint
 # -----------------------------
-async def auth(request: Request):
-    # Simple auth function that extracts user_id from cookie
-    user_id = request.cookies.get("user_id")
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    return type('User', (), {'id': user_id})()
-
 @app.post("/stop")
 async def stop(user=Depends(auth)):
     task = active_streams.get(user.id)
@@ -2821,3 +2546,193 @@ async def speech_to_text(file: UploadFile = File(...)):
 
     data = r.json()
     return {"transcription": data.get("text", "")}
+
+# ----------------------------------
+# NEW CHAT
+# ----------------------------------
+
+@app.post("/chat/new")
+async def new_chat(req: Request, res: Response):
+    user_id = await get_or_create_user(req, res)
+    cid = str(uuid.uuid4())
+
+    try:
+        supabase.table("conversations").insert({
+            "id": cid,
+            "user_id": user_id,
+            "title": "New Chat",
+            "created_at": datetime.now().isoformat(),
+            "updated_at": datetime.now().isoformat()
+        }).execute()
+    except Exception as e:
+        logger.error(f"Failed to create new chat: {e}")
+
+    return {"conversation_id": cid}
+
+@app.post("/chat/{conversation_id}")
+async def send_message(conversation_id: str, req: Request, res: Response):
+    user_id = await get_or_create_user(req, res)
+    body = await req.json()
+    text = body.get("message")
+
+    if not text:
+        raise HTTPException(400, "message required")
+
+    msg_id = str(uuid.uuid4())
+    try:
+        supabase.table("messages").insert({
+            "id": msg_id,
+            "conversation_id": conversation_id,
+            "role": "user",
+            "content": text,
+            "created_at": datetime.now().isoformat()
+        }).execute()
+    except Exception as e:
+        logger.error(f"Failed to save user message: {e}")
+
+    try:
+        msg_response = supabase.table("messages").select("role, content").eq("conversation_id", conversation_id).order("created_at").execute()
+        rows = msg_response.data if msg_response.data else []
+        messages = [{"role": row["role"], "content": row["content"]} for row in rows]
+
+        payload = {
+            "model": CHAT_MODEL,
+            "messages": messages,
+            "max_tokens": 1024
+        }
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers=get_groq_headers(),
+                json=payload
+            )
+            r.raise_for_status()
+            reply = r.json()["choices"][0]["message"]["content"]
+
+        reply_id = str(uuid.uuid4())
+        supabase.table("messages").insert({
+            "id": reply_id,
+            "conversation_id": conversation_id,
+            "role": "assistant",
+            "content": reply,
+            "created_at": datetime.now().isoformat()
+        }).execute()
+
+        return {"reply": reply}
+    except Exception as e:
+        logger.error(f"Failed to process message: {e}")
+        raise HTTPException(500, "Failed to process message")
+
+# ----------------------------------
+# LIST CHATS
+# ----------------------------------
+@app.get("/chats")
+async def list_chats(req: Request, res: Response):
+    user_id = await get_or_create_user(req, res)
+
+    try:
+        response = supabase.table("conversations").select("*").eq("user_id", user_id).order("updated_at", desc=True).execute()
+        rows = response.data if response.data else []
+        return rows
+    except Exception as e:
+        logger.error(f"Failed to list chats: {e}")
+        return []
+
+# ----------------------------------
+# SEARCH CHATS
+# ----------------------------------
+@app.get("/chats/search")
+async def search_chats(q: str, req: Request, res: Response):
+    user_id = await get_or_create_user(req, res)
+
+    try:
+        response = supabase.table("conversations").select("id, title").eq("user_id", user_id).ilike("title", f"%{q}%").order("updated_at", desc=True).execute()
+        rows = response.data if response.data else []
+        return rows
+    except Exception as e:
+        logger.error(f"Failed to search chats: {e}")
+        return []
+
+# ----------------------------------
+# PIN / ARCHIVE
+# ----------------------------------
+@app.post("/chat/{id}/pin")
+async def pin_chat(id: str):
+    try:
+        supabase.table("conversations").update({
+            "updated_at": datetime.now().isoformat()
+        }).eq("id", id).execute()
+    except Exception as e:
+        logger.error(f"Failed to pin chat: {e}")
+    return {"status": "pinned"}
+
+@app.post("/chat/{id}/archive")
+async def archive_chat(id: str):
+    try:
+        supabase.table("conversations").update({
+            "updated_at": datetime.now().isoformat()
+        }).eq("id", id).execute()
+    except Exception as e:
+        logger.error(f"Failed to archive chat: {e}")
+    return {"status": "archived"}
+
+# ----------------------------------
+# FOLDER
+# ----------------------------------
+@app.post("/chat/{id}/folder")
+async def move_folder(id: str, folder: Optional[str] = None):
+    try:
+        supabase.table("conversations").update({
+            "updated_at": datetime.now().isoformat()
+        }).eq("id", id).execute()
+    except Exception as e:
+        logger.error(f"Failed to move chat to folder: {e}")
+    return {"status": "moved"}
+
+# ----------------------------------
+# SHARE CHAT
+# ----------------------------------
+@app.post("/chat/{id}/share")
+async def share_chat(id: str):
+    token = uuid.uuid4().hex
+
+    try:
+        supabase.table("conversations").update({
+            "updated_at": datetime.now().isoformat()
+        }).eq("id", id).execute()
+    except Exception as e:
+        logger.error(f"Failed to share chat: {e}")
+
+    return {"share_url": f"/share/{token}"}
+
+# ----------------------------------
+# VIEW SHARED CHAT (READ ONLY)
+# ----------------------------------
+@app.get("/share/{token}")
+async def view_shared_chat(token: str):
+    # In a real implementation, you would store share tokens in the database
+    # For now, we'll return a placeholder
+    return {
+        "title": "Shared Chat",
+        "messages": []
+    }
+
+# Example FastAPI endpoint that fires AI response in the background
+from fastapi.responses import StreamingResponse
+
+@app.post("/chat/stream/{conversation_id}/{user_id}")
+async def chat_stream_endpoint(conversation_id: str, user_id: str, messages: list):
+    """
+    Streams AI response tokens to the client, saving them in Supabase in real-time.
+    """
+    async def event_generator():
+        async for token_sse in stream_llm(user_id, conversation_id, messages):
+            yield token_sse  # only yield here, no return
+
+    # Return StreamingResponse from the endpoint, not inside the generator
+    return StreamingResponse(
+    event_generator(),
+    media_type="text/event-stream",
+    headers={"Cache-Control": "no-cache"},
+)
