@@ -534,17 +534,18 @@ async def stream_llm(user_id, conversation_id, messages):
     asyncio.create_task(generate_ai_response(conversation_id, user_id, messages))
 
 # Example FastAPI endpoint that fires AI response in the background
-@app.post("/chat/{conversation_id}/{user_id}")
-async def chat_endpoint(conversation_id: str, user_id: str, messages: list, background_tasks: BackgroundTasks):
+from fastapi.responses import StreamingResponse
+
+@app.post("/chat/stream/{conversation_id}/{user_id}")
+async def chat_stream_endpoint(conversation_id: str, user_id: str, messages: list):
     """
-    Accepts messages from the user and triggers AI response in the background.
+    Streams AI tokens to client.
     """
+    async def event_generator():
+        async for token in stream_llm(user_id, conversation_id, messages):
+            yield token
 
-    # Fire-and-forget: background task runs asynchronously
-    background_tasks.add_task(generate_ai_response, conversation_id, user_id, messages)
-
-    return {"status": "AI response generation started in background"}
-
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
     try:
         async with httpx.AsyncClient(timeout=None) as client:
             resp = await client.post(
