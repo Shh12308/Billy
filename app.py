@@ -546,7 +546,11 @@ async def chat_stream_endpoint(conversation_id: str, user_id: str, messages: lis
             yield token_sse  # only yield here, no return
 
     # Return StreamingResponse from the endpoint, not inside the generator
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
+    return StreamingResponse(
+    event_generator(),
+    media_type="text/event-stream",
+    headers={"Cache-Control": "no-cache"},
+)
     
     try:
         async with httpx.AsyncClient(timeout=None) as client:
