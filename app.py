@@ -1536,9 +1536,15 @@ async def ask_universal(request: Request, background_tasks: BackgroundTasks):
     # -------------------------
     # Non-stream mode: just run background task
     # -------------------------
-    if not stream:
-        background_tasks.add_task(generate_ai_response, conversation_id, user_id, messages)
-        return {"status": "processing", "conversation_id": conversation_id}
+    if stream:
+    # streaming generator
+    async def event_generator():
+        ...
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+else:
+    # background task only
+    background_tasks.add_task(generate_ai_response, conversation_id, user_id, messages)
+    return {"status": "processing", "conversation_id": conversation_id}
 
     # -------------------------
     # Stream generator
