@@ -539,13 +539,15 @@ from fastapi.responses import StreamingResponse
 @app.post("/chat/stream/{conversation_id}/{user_id}")
 async def chat_stream_endpoint(conversation_id: str, user_id: str, messages: list):
     """
-    Streams AI tokens to client.
+    Streams AI response tokens to the client, saving them in Supabase in real-time.
     """
     async def event_generator():
-        async for token in stream_llm(user_id, conversation_id, messages):
-            yield token
+        async for token_sse in stream_llm(user_id, conversation_id, messages):
+            yield token_sse  # only yield here, no return
 
+    # Return StreamingResponse from the endpoint, not inside the generator
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+    
     try:
         async with httpx.AsyncClient(timeout=None) as client:
             resp = await client.post(
