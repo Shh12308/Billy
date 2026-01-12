@@ -503,40 +503,35 @@ async def stream_llm(user_id, conversation_id, messages):
         "max_tokens": 1500
     }
 
-    async def generate_ai_response(
-    conversation_id: str,
-    user_id: str,
-    messages: list
-):
-    """
-    Generates an AI response using Groq API in the background.
-    """
+    async def generate_ai_response(conversation_id: str, user_id: str, messages: list):
+        """
+        Generates an AI response using Groq API in the background.
+        """
+        payload_inner = {
+            "model": CHAT_MODEL,
+            "messages": messages,
+            "max_tokens": 1500
+        }
 
-    payload = {
-        "model": CHAT_MODEL,
-        "messages": messages,
-        "max_tokens": 1500
-    }
+        headers = {
+            "Authorization": f"Bearer {GROQ_API_KEY}",
+            "Content-Type": "application/json"
+        }
 
-    headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
-        "Content-Type": "application/json"
-    }
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(GROQ_URL, json=payload_inner, headers=headers) as resp:
+                    resp.raise_for_status()
+                    data = await resp.json()
+                    ai_message = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                    print(f"[Conversation {conversation_id}] AI response: {ai_message}")
+                    return ai_message
+        except Exception as e:
+            print(f"Error generating AI response: {e}")
+            return "Sorry, I couldn't generate a response at this time."
 
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(GROQ_URL, json=payload, headers=headers) as resp:
-                resp.raise_for_status()
-                data = await resp.json()
-                ai_message = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-                # Here you can save ai_message to your DB or notify the user
-                print(f"[Conversation {conversation_id}] AI response: {ai_message}")
-                return ai_message
-
-    except Exception as e:
-        print(f"Error generating AI response for conversation {conversation_id}: {e}")
-        return "Sorry, I couldn't generate a response at this time."
-
+    # Fire-and-forget
+    asyncio.create_task(generate_ai_response(conversation_id, user_id, messages))
 
 # Example FastAPI endpoint that fires AI response in the background
 @app.post("/chat/{conversation_id}/{user_id}")
