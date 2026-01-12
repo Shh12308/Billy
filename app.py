@@ -13,6 +13,7 @@ from torchvision import models, transforms
 import asyncio
 import base64
 import time
+import aiohttp
 import logging
 import subprocess
 import tempfile
