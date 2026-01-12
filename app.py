@@ -508,8 +508,7 @@ async def stream_llm(user_id, conversation_id, messages):
     messages: list
 ):
     """
-    Runs the AI completion fully in the background.
-    Safe to run even if user disconnects.
+    Generates an AI response using Groq API in the background.
     """
 
     payload = {
@@ -517,6 +516,38 @@ async def stream_llm(user_id, conversation_id, messages):
         "messages": messages,
         "max_tokens": 1500
     }
+
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(GROQ_URL, json=payload, headers=headers) as resp:
+                resp.raise_for_status()
+                data = await resp.json()
+                ai_message = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                # Here you can save ai_message to your DB or notify the user
+                print(f"[Conversation {conversation_id}] AI response: {ai_message}")
+                return ai_message
+
+    except Exception as e:
+        print(f"Error generating AI response for conversation {conversation_id}: {e}")
+        return "Sorry, I couldn't generate a response at this time."
+
+
+# Example FastAPI endpoint that fires AI response in the background
+@app.post("/chat/{conversation_id}/{user_id}")
+async def chat_endpoint(conversation_id: str, user_id: str, messages: list, background_tasks: BackgroundTasks):
+    """
+    Accepts messages from the user and triggers AI response in the background.
+    """
+
+    # Fire-and-forget: background task runs asynchronously
+    background_tasks.add_task(generate_ai_response, conversation_id, user_id, messages)
+
+    return {"status": "AI response generation started in background"}
 
     try:
         async with httpx.AsyncClient(timeout=None) as client:
