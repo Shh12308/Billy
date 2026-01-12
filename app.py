@@ -41,6 +41,7 @@ def get_yolo_faces():
     return YOLO_FACES
 
 import httpx
+from fastapi import BackgroundTasks
 from fastapi import FastAPI, Request, Header, UploadFile, File, HTTPException, Query, Form, Depends
 from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse, FileResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -500,6 +501,44 @@ async def stream_llm(user_id, conversation_id, messages):
         "stream": True,
         "max_tokens": 1500
     }
+
+    async def generate_ai_response(
+    conversation_id: str,
+    user_id: str,
+    messages: list
+):
+    """
+    Runs the AI completion fully in the background.
+    Safe to run even if user disconnects.
+    """
+
+    payload = {
+        "model": CHAT_MODEL,
+        "messages": messages,
+        "max_tokens": 1500
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=None) as client:
+            resp = await client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers=get_groq_headers(),
+                json=payload
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+        assistant_reply = data["choices"][0]["message"]["content"]
+
+        # Save assistant message
+        supabase.table("messages").insert({
+            "conversation_id": conversation_id,
+            "role": "assistant",
+            "content": assistant_reply
+        }).execute()
+
+    except Exception as e:
+        logger.error(f"Background AI failed: {e}") 
 
     async with httpx.AsyncClient(timeout=None) as client:
         async with client.stream(
@@ -1168,29 +1207,63 @@ async def generate_video_internal(prompt: str, samples: int = 1, user_id: str = 
 
 # ---------- Intent Detection ----------
 def detect_intent(prompt: str) -> str:
+    if not prompt:
+        return "chat"
+
     p = prompt.lower()
 
-    # Image requests
-    if any(w in p for w in ["image of", "draw", "picture of", "generate image", "make me an image", "photo of", "art of"]):
+    # 🖼 Image generation
+    if any(w in p for w in [
+        "image of", "draw", "picture of", "generate image",
+        "make me an image", "photo of", "art of"
+    ]):
         return "image"
 
-    # Video generation (placeholder – uses your future DreamWAN integration)
-    if any(w in p for w in ["video of", "make a video", "animation of", "clip of"]):
-        return "video"
+    # 🖼 Image → Image
+    if any(w in p for w in [
+        "edit this image", "change this image",
+        "modify image", "img2img"
+    ]):
+        return "img2img"
 
-    # TTS
-    if any(w in p for w in ["say this", "speak", "tts", "read this", "read aloud"]):
+    # 👁 Vision / analysis
+    if any(w in p for w in [
+        "analyze this image", "what is in this image",
+        "describe this image", "vision"
+    ]):
+        return "vision"
+
+    # 🎙 Speech → Text
+    if any(w in p for w in [
+        "transcribe", "speech to text", "stt"
+    ]):
+        return "stt"
+
+    # 🔊 Text → Speech
+    if any(w in p for w in [
+        "say this", "speak", "tts", "read this", "read aloud"
+    ]):
         return "tts"
 
-    # Code generation
-    if any(w in p for w in ["write code", "generate code", "python code", "javascript code", "fix this code"]):
+    # 🎥 Video (future-ready)
+    if any(w in p for w in [
+        "video of", "make a video", "animation of", "clip of"
+    ]):
+        return "video"
+
+    # 💻 Code
+    if any(w in p for w in [
+        "write code", "generate code", "python code",
+        "javascript code", "fix this code"
+    ]):
         return "code"
 
-    # Search / info lookup
-    if any(w in p for w in ["search", "look up", "find info", "who is", "what is"]):
+    # 🔍 Search
+    if any(w in p for w in [
+        "search", "look up", "find info", "who is", "what is"
+    ]):
         return "search"
 
-    # Default → Chat model
     return "chat"
 
 def extract_memory_from_prompt(prompt: str):
@@ -1640,10 +1713,17 @@ async def run_agents(prompt: str):
 # =========================================================
 
 @app.post("/ask/universal")
-async def ask_universal(request: Request):
+async def ask_universal(
+    request: Request,
+    background_tasks: BackgroundTasks
+):
     body = await request.json()
+
     prompt = body.get("prompt", "").strip()
-    user_id = body.get("user_id")
+
+    # ✅ ALWAYS guarantee user_id
+    user_id = body.get("user_id") or str(uuid.uuid4())
+
     role = body.get("role", "user")
     stream = bool(body.get("stream", False))
 
@@ -1651,7 +1731,7 @@ async def ask_universal(request: Request):
         raise HTTPException(400, "prompt required")
 
     # -------------------------
-    # Load conversation
+    # Load or create conversation
     # -------------------------
     conversation_id = get_or_create_conversation_id(
         supabase=supabase,
@@ -1661,7 +1741,7 @@ async def ask_universal(request: Request):
     history = await load_history(user_id)
 
     # -------------------------
-    # Load personality
+    # Load personality (SAFE)
     # -------------------------
     personality = "friendly"
     nickname = ""
@@ -1672,14 +1752,21 @@ async def ask_universal(request: Request):
             .table("profiles")
             .select("nickname, personality")
             .eq("id", user_id)
-            .single()
+            .maybe_single()   # ✅ IMPORTANT (no crash if missing)
             .execute()
         )
-        personality = profile.data.get("personality", "friendly")
-        nickname = profile.data.get("nickname", "")
+
+        if profile.data:
+            personality = profile.data.get("personality", "friendly")
+            nickname = profile.data.get("nickname", "")
+
     except Exception:
+        # profiles table optional — ignore safely
         pass
 
+    # -------------------------
+    # System prompt
+    # -------------------------
     system_prompt = (
         PERSONALITY_MAP.get(personality, PERSONALITY_MAP["friendly"])
         + f"\nUser nickname: {nickname}\n"
@@ -1691,6 +1778,22 @@ async def ask_universal(request: Request):
     messages = [{"role": "system", "content": system_prompt}]
     messages.extend(history)
     messages.append({"role": "user", "content": prompt})
+
+    # -------------------------
+    # 🔥 BACKGROUND AI TASK
+    # -------------------------
+    background_tasks.add_task(
+        generate_ai_response,
+        conversation_id,
+        user_id,
+        messages
+    )
+
+    # Respond immediately (frontend polls later)
+    return {
+        "status": "processing",
+        "conversation_id": conversation_id
+    }
 
     # -------------------------
     # STREAM GENERATOR
