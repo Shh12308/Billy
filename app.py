@@ -365,6 +365,54 @@ async def run_code_judge0(code: str, language_id: int):
         submit.raise_for_status()
         return submit.json()
 
+asyncio.create_task(
+    generate_ai_response(
+        conversation_id=conversation_id,
+        user_id=user_id,
+        messages=messages
+    )
+)
+
+async def generate_ai_response(conversation_id, user_id, messages):
+    assistant_reply = ""
+
+    async with httpx.AsyncClient(timeout=None) as client:
+        async with client.stream(
+            "POST",
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers=get_groq_headers(),
+            json={
+                "model": CHAT_MODEL,
+                "messages": messages,
+                "stream": True
+            }
+        ) as resp:
+
+            async for line in resp.aiter_lines():
+                if not line.startswith("data:"):
+                    continue
+                if line.strip() == "data: [DONE]":
+                    break
+
+                chunk = json.loads(line[5:])
+                content = chunk["choices"][0]["delta"].get("content")
+
+                if content:
+                    assistant_reply += content
+                    # 🔹 SAVE PARTIAL TOKENS
+                    supabase.table("message_chunks").insert({
+                        "conversation_id": conversation_id,
+                        "content": content,
+                        "created_at": datetime.utcnow().isoformat()
+                    }).execute()
+
+    # 🔹 SAVE FINAL MESSAGE
+    supabase.table("messages").insert({
+        "conversation_id": conversation_id,
+        "role": "assistant",
+        "content": assistant_reply
+    }).execute()
+
 async def get_or_create_user(req: Request, res: Response) -> str:
     user_id = req.cookies.get("user_id")
     if not user_id:
