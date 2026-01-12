@@ -1582,18 +1582,8 @@ async def ask_universal(request: Request):
     conversation_id = get_or_create_conversation_id(supabase, user_id)
     history = await load_history(user_id)
 
-    # 🎭 Personality from Supabase
-    profile = (
-        supabase.table("profiles")
-        .select("nickname, personality")
-        .eq("id", user_id)
-        .single()
-        .execute()
-        .data or {}
-    )
-
-    nickname = profile.get("nickname", "User")
-    personality = profile.get("personality", "friendly")
+nickname = "User"
+personality = body.get("personality", "friendly")
 
     personality_map = {
         "friendly": "Be warm, encouraging, and supportive.",
