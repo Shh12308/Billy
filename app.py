@@ -424,8 +424,14 @@ async def stream_llm(user_id, conversation_id, messages):
             headers=get_groq_headers(),
             json=payload
         ) as resp:
-            async for line in resp.aiter_lines():
+            async for line in some_source:
     if not line.startswith("data:"):
+        continue  # skip lines that don't start with "data:"
+    
+    # Process the line if it does start with "data:"
+    data = line[len("data:"):].strip()
+    # Do something with `data`
+    print(data)  # or your actual processing logic
         continue
 
     data = line[5:].strip()
