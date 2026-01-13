@@ -406,8 +406,6 @@ async def generate_ai_response(conversation_id: str, user_id: str, messages: lis
 
 # Fix: Moved stream_llm function before it's used
 async def stream_llm(user_id, conversation_id, messages):
-    assistant_reply = ""
-
     payload = {
         "model": CHAT_MODEL,
         "messages": messages,
