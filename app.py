@@ -438,7 +438,11 @@ async def stream_llm(user_id, conversation_id, messages):
                     async for item in handle_tools(user_id, messages, delta):
                         yield item
 
-                if content = delta.get("content")
+               content = delta.get("content")
+if content:
+    assistant_reply += content
+    yield sse({"type": "token", "text": content})
+    
 if content:
     # 🔥 BLOCK tool leakage
     if "<function=" in content:
