@@ -425,37 +425,41 @@ async def stream_llm(user_id, conversation_id, messages):
             json=payload
         ) as resp:
             async for line in resp.aiter_lines():
-                if not line.startswith("data:"):
-                    continue
-                data = line[5:].strip()
-                if data == "[DONE]":
-                    break
-
-                chunk = json.loads(data)
-                delta = chunk["choices"][0]["delta"]
-
-                if "tool_calls" in delta:
-                    async for item in handle_tools(user_id, messages, delta):
-                        yield item
-
-               content = delta.get("content")
-if content:
-    assistant_reply += content
-    yield sse({"type": "token", "text": content})
-    
-if content:
-    # 🔥 BLOCK tool leakage
-    if "<function=" in content:
+    if not line.startswith("data:"):
         continue
 
-    assistant_reply += content
-    yield sse({"type": "token", "text": content})
+    data = line[5:].strip()
+    if data == "[DONE]":
+        break
 
-    await persist_reply(user_id, conversation_id, assistant_reply)
+    try:
+        chunk = json.loads(data)
+    except json.JSONDecodeError:
+        continue
 
-# Fix: Moved handle_tools function before it's used
-async def handle_tools(user_id, messages, delta):
-    calls = delta["tool_calls"]
+    delta = chunk["choices"][0]["delta"]
+
+    # -------------------------
+    # TOOL CALLS
+    # -------------------------
+    if "tool_calls" in delta:
+        async for item in handle_tools(user_id, messages, delta):
+            yield item
+
+    # -------------------------
+    # TEXT TOKENS
+    # -------------------------
+    content = delta.get("content")
+    if content:
+        # 🚫 Prevent tool leakage into frontend
+        if "<function=" in content:
+            continue
+
+        assistant_reply += content
+        yield sse({
+            "type": "token",
+            "text": content
+        })
 
     async def run(call):
         name = call["function"]["name"]
