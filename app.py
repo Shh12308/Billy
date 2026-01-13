@@ -424,7 +424,7 @@ async def stream_llm(user_id, conversation_id, messages):
             headers=get_groq_headers(),
             json=payload
         ) as resp:
-            async for line in response.iter_lines():
+            for line in response.iter_lines():
     if not line:
         continue
 
@@ -434,14 +434,14 @@ async def stream_llm(user_id, conversation_id, messages):
         continue
 
     data = line.replace("data:", "", 1).strip()
+
     if not data:
         continue
 
-    print(data)
-
-    data = line[5:].strip()
     if data == "[DONE]":
         break
+
+    print(data)
 
     try:
         chunk = json.loads(data)
