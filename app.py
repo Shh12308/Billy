@@ -414,7 +414,7 @@ async def stream_llm(user_id, conversation_id, messages):
         "tools": TOOLS,
         "tool_choice": "auto",
         "stream": True,
-        "max_tokens": 1500
+        "max_tokens": 1500,
     }
 
     async with httpx.AsyncClient(timeout=None) as client:
@@ -422,40 +422,38 @@ async def stream_llm(user_id, conversation_id, messages):
             "POST",
             GROQ_URL,
             headers=get_groq_headers(),
-            json=payload
+            json=payload,
         ) as resp:
-            for line in response.iter_lines():
-    if not line:
-        continue
 
-    line = line.decode("utf-8")
+            async for line in resp.aiter_lines():
+                if not line:
+                    continue
 
-    if not line.startswith("data:"):
-        continue
+                if not line.startswith("data:"):
+                    continue
 
-    data = line.replace("data:", "", 1).strip()
+                data = line.replace("data:", "", 1).strip()
 
-    if not data:
-        continue
+                if not data:
+                    continue
 
-    if data == "[DONE]":
-        break
+                if data == "[DONE]":
+                    break
 
-    print(data)
+                try:
+                    chunk = json.loads(data)
+                except json.JSONDecodeError:
+                    continue
 
-    try:
-        chunk = json.loads(data)
-    except json.JSONDecodeError:
-        continue
+                delta = chunk["choices"][0]["delta"]
 
-    delta = chunk["choices"][0]["delta"]
-
-    # -------------------------
-    # TOOL CALLS
-    # -------------------------
-    if "tool_calls" in delta:
-        async for item in handle_tools(user_id, messages, delta):
-            yield item
+                # -------------------------
+                # TOOL CALLS
+                # -------------------------
+                if "tool_calls" in delta:
+                    async for item in handle_tools(user_id, messages, delta):
+                        yield item
+                        
 
     # -------------------------
     # TEXT TOKENS
