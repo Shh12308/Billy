@@ -20,7 +20,7 @@ last_ping = time.monotonic()
 
 async def event_generator():            # ← line ~15–18
     async for line in resp.aiter_lines():  # ← line 21 is NOW valid
-    if time.monotonic() - last_ping > 10:
+        if time.monotonic() - last_ping > 10:
         yield ": heartbeat\n\n"
         last_ping = time.monotonic()
         
