@@ -460,13 +460,13 @@ async def stream_llm(user_id, conversation_id, messages):
 if content:
     # 🚫 Prevent tool leakage into frontend
     if "<function=" in content:
-        return
-
-    assistant_reply += content
-    yield sse({
-        "type": "token",
-        "text": content
-    })
+        pass
+    else:
+        assistant_reply += content
+        yield sse({
+            "type": "token",
+            "text": content
+        })
 
     async def run(call):
         name = call["function"]["name"]
