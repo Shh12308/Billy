@@ -406,6 +406,8 @@ async def generate_ai_response(conversation_id: str, user_id: str, messages: lis
 
 # Fix: Moved stream_llm function before it's used
 async def stream_llm(user_id, conversation_id, messages):
+    assistant_reply = ""
+
     payload = {
         "model": CHAT_MODEL,
         "messages": messages,
@@ -421,9 +423,9 @@ async def stream_llm(user_id, conversation_id, messages):
             GROQ_URL,
             headers=get_groq_headers(),
             json=payload,
-        ) as resp:
+        ) as response:
 
-            async for line in resp.aiter_lines():
+            async for line in response.aiter_lines():
                 if not line:
                     continue
 
@@ -451,22 +453,22 @@ async def stream_llm(user_id, conversation_id, messages):
                 if "tool_calls" in delta:
                     async for item in handle_tools(user_id, messages, delta):
                         yield item
-                        
+                    continue
 
-    # -------------------------
-    # TEXT TOKENS
-    # -------------------------
-    content = delta.get("content")
-if content:
-    # 🚫 Prevent tool leakage into frontend
-    if "<function=" in content:
-        pass
-    else:
-        assistant_reply += content
-        yield sse({
-            "type": "token",
-            "text": content
-        })
+                # -------------------------
+                # NORMAL TEXT STREAMING
+                # -------------------------
+                content = delta.get("content")
+                if content:
+                    # 🚫 Prevent tool leakage
+                    if "<function=" in content:
+                        pass
+                    else:
+                        assistant_reply += content
+                        yield sse({
+                            "type": "token",
+                            "text": content
+                        })
 
     async def run(call):
         name = call["function"]["name"]
