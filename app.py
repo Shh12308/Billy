@@ -1557,86 +1557,62 @@ async def ask_universal(request: Request, background_tasks: BackgroundTasks):
     if stream:
 
         async def event_generator():
-            assistant_reply = ""
-            yield sse({"type": "starting"})
+    assistant_reply = ""
+    yield sse({"type": "starting"})
+    yield ": heartbeat\n\n"
 
-            payload = {
-                "model": CHAT_MODEL,
-                "messages": messages,
-                "tools": TOOLS,
-                "tool_choice": "auto",
-                "stream": True,
-                "max_tokens": 1500
-            }
+    payload = {
+        "model": CHAT_MODEL,
+        "messages": messages,
+        "tools": TOOLS,
+        "tool_choice": "auto",
+        "stream": True,
+        "max_tokens": 1500
+    }
 
-            try:
-                async with httpx.AsyncClient(timeout=None) as client:
-                    async with client.stream(
-                        "POST",
-                        "https://api.groq.com/openai/v1/chat/completions",
-                        headers=get_groq_headers(),
-                        json=payload
-                    ) as resp:
+    try:
+        async with httpx.AsyncClient(timeout=None) as client:
+            async with client.stream(
+                "POST",
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers=get_groq_headers(),
+                json=payload
+            ) as resp:
 
-                        async for line in resp.aiter_lines():
-                            if not line.startswith("data:"):
-                                continue
+                async for line in resp.aiter_lines():
+                    if not line:
+                        continue
 
-                            data = line[5:].strip()
-                            if data == "[DONE]":
-                                break
+                    if not line.startswith("data:"):
+                        continue
 
-                            chunk = json.loads(data)
-                            delta = chunk["choices"][0]["delta"]
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
 
-                            # TOOL CALLS
-                            if "tool_calls" in delta:
-                                for call in delta["tool_calls"]:
-                                    name = call["function"]["name"]
-                                    args = json.loads(call["function"]["arguments"])
+                    chunk = json.loads(data)
+                    delta = chunk["choices"][0]["delta"]
 
-                                    if not check_permission(role, name):
-                                        yield sse({"type": "error", "error": "Permission denied"})
-                                        continue
+                    if "tool_calls" in delta:
+                        ...
+                    
+                    content = delta.get("content")
+                    if content:
+                        assistant_reply += content
+                        yield sse({"type": "token", "text": content})
 
-                                    if name == "web_search":
-                                        result = await duckduckgo_search(args["query"])
-                                    elif name == "run_code":
-                                        result = await run_code_safely(args["task"])
-                                    else:
-                                        continue
+    except asyncio.CancelledError:
+        yield sse({"type": "cancelled"})
 
-                                    yield sse({
-                                        "type": "tool",
-                                        "tool": name,
-                                        "result": result
-                                    })
+    finally:
+        if assistant_reply.strip():
+            supabase.table("messages").insert({
+                "conversation_id": conversation_id,
+                "role": "assistant",
+                "content": assistant_reply
+            }).execute()
 
-                                    messages.append({
-                                        "role": "tool",
-                                        "tool_name": name,
-                                        "content": json.dumps(result)
-                                    })
-
-                            # TEXT TOKENS
-                            content = delta.get("content")
-                            if content:
-                                assistant_reply += content
-                                yield sse({"type": "token", "text": content})
-
-            except asyncio.CancelledError:
-                logger.info("Stream cancelled by user")
-                yield sse({"type": "cancelled"})
-
-            finally:
-                if assistant_reply.strip():
-                    supabase.table("messages").insert({
-                        "conversation_id": conversation_id,
-                        "role": "assistant",
-                        "content": assistant_reply
-                    }).execute()
-
-                yield sse({"type": "done"})
+        yield sse({"type": "done"})
 
         return StreamingResponse(
             event_generator(),
