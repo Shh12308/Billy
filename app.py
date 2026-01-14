@@ -14,7 +14,15 @@ import requests
 from datetime import datetime
 from typing import Optional, Dict, Any, List, Union
 from io import BytesIO
+import time
 
+last_ping = time.monotonic()
+
+async for line in resp.aiter_lines():
+    if time.monotonic() - last_ping > 10:
+        yield ": heartbeat\n\n"
+        last_ping = time.monotonic()
+        
 import httpx
 import aiohttp
 import torch
