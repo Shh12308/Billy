@@ -457,16 +457,16 @@ async def stream_llm(user_id, conversation_id, messages):
     # TEXT TOKENS
     # -------------------------
     content = delta.get("content")
-    if content:
-        # 🚫 Prevent tool leakage into frontend
-        if "<function=" in content:
-            continue
+if content:
+    # 🚫 Prevent tool leakage into frontend
+    if "<function=" in content:
+        return
 
-        assistant_reply += content
-        yield sse({
-            "type": "token",
-            "text": content
-        })
+    assistant_reply += content
+    yield sse({
+        "type": "token",
+        "text": content
+    })
 
     async def run(call):
         name = call["function"]["name"]
