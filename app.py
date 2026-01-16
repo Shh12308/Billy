@@ -1566,7 +1566,7 @@ async def ask_universal(request: Request, background_tasks: BackgroundTasks):
     if stream:
 
        async def event_generator():
-    assistant_reply = ""
+           assistant_reply = ""
 
     yield sse({"type": "starting"})
     yield ": heartbeat\n\n"
