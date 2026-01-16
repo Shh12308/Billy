@@ -1565,111 +1565,122 @@ async def ask_universal(request: Request, background_tasks: BackgroundTasks):
     # ======================================================
     if stream:
 
-       async def event_generator():
-           assistant_reply = ""
+        async def event_generator():
+            assistant_reply = ""
 
-    yield sse({"type": "starting"})
-    yield ": heartbeat\n\n"
+            yield sse({"type": "starting"})
+            yield ": heartbeat\n\n"
 
-    payload = {
-        "model": CHAT_MODEL,
-        "messages": messages,
-        "tools": TOOLS,
-        "tool_choice": "auto",
-        "stream": True,
-        "max_tokens": 1500
-    }
+            payload = {
+                "model": CHAT_MODEL,
+                "messages": messages,
+                "tools": TOOLS,
+                "tool_choice": "auto",
+                "stream": True,
+                "max_tokens": 1500
+            }
 
-    try:
-        async with httpx.AsyncClient(timeout=None) as client:
-            async with client.stream(
-                "POST",
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers=get_groq_headers(),
-                json=payload
-            ) as resp:
+            try:
+                async with httpx.AsyncClient(timeout=None) as client:
+                    async with client.stream(
+                        "POST",
+                        "https://api.groq.com/openai/v1/chat/completions",
+                        headers=get_groq_headers(),
+                        json=payload
+                    ) as resp:
 
-                async for line in resp.aiter_lines():
-                    if not line or not line.startswith("data:"):
-                        continue
-
-                    data = line[5:].strip()
-                    if data == "[DONE]":
-                        break
-
-                    try:
-                        chunk = json.loads(data)
-                    except json.JSONDecodeError:
-                        continue
-
-                    if "error" in chunk:
-                        logger.error(f"Groq error: {chunk['error']}")
-                        yield sse({"type": "error", "error": chunk["error"]})
-                        break
-
-                    choices = chunk.get("choices")
-                    if not choices:
-                        continue
-
-                    delta = choices[0].get("delta")
-                    if not delta:
-                        continue
-
-                    if "tool_calls" in delta:
-                        for call in delta["tool_calls"]:
-                            fn = call.get("function")
-                            if not fn:
+                        async for line in resp.aiter_lines():
+                            if not line or not line.startswith("data:"):
                                 continue
 
-                            name = fn.get("name")
-                            raw_args = fn.get("arguments", "")
+                            data = line[5:].strip()
+                            if data == "[DONE]":
+                                break
 
                             try:
-                                args = json.loads(raw_args)
+                                chunk = json.loads(data)
                             except json.JSONDecodeError:
                                 continue
 
-                            if not check_permission(role, name):
-                                yield sse({"type": "error", "error": "Permission denied"})
+                            if "error" in chunk:
+                                logger.error(chunk["error"])
+                                yield sse({"type": "error", "error": chunk["error"]})
+                                break
+
+                            choices = chunk.get("choices")
+                            if not choices:
                                 continue
 
-                            if name == "web_search":
-                                result = await duckduckgo_search(args["query"])
-                            elif name == "run_code":
-                                result = await run_code_safely(args["task"])
-                            else:
+                            delta = choices[0].get("delta")
+                            if not delta:
                                 continue
 
-                            yield sse({
-                                "type": "tool",
-                                "tool": name,
-                                "result": result
-                            })
+                            if "tool_calls" in delta:
+                                for call in delta["tool_calls"]:
+                                    fn = call.get("function")
+                                    if not fn:
+                                        continue
 
-                            messages.append({
-                                "role": "tool",
-                                "tool_name": name,
-                                "content": json.dumps(result)
-                            })
+                                    name = fn.get("name")
+                                    raw_args = fn.get("arguments", "")
 
-                    content = delta.get("content")
-                    if content:
-                        assistant_reply += content
-                        yield sse({"type": "token", "text": content})
+                                    try:
+                                        args = json.loads(raw_args)
+                                    except json.JSONDecodeError:
+                                        continue
 
-    except asyncio.CancelledError:
-        logger.info("Stream cancelled by user")
-        yield sse({"type": "cancelled"})
+                                    if not check_permission(role, name):
+                                        yield sse({"type": "error", "error": "Permission denied"})
+                                        continue
 
-    finally:
-        if assistant_reply.strip():
-            supabase.table("messages").insert({
-                "conversation_id": conversation_id,
-                "role": "assistant",
-                "content": assistant_reply
-            }).execute()
+                                    if name == "web_search":
+                                        result = await duckduckgo_search(args["query"])
+                                    elif name == "run_code":
+                                        result = await run_code_safely(args["task"])
+                                    else:
+                                        continue
 
-        yield sse({"type": "done"})
+                                    yield sse({
+                                        "type": "tool",
+                                        "tool": name,
+                                        "result": result
+                                    })
+
+                                    messages.append({
+                                        "role": "tool",
+                                        "tool_name": name,
+                                        "content": json.dumps(result)
+                                    })
+
+                            content = delta.get("content")
+                            if content:
+                                assistant_reply += content
+                                yield sse({"type": "token", "text": content})
+
+            except asyncio.CancelledError:
+                logger.info("Stream cancelled by user")
+                yield sse({"type": "cancelled"})
+
+            finally:
+                if assistant_reply.strip():
+                    supabase.table("messages").insert({
+                        "conversation_id": conversation_id,
+                        "role": "assistant",
+                        "content": assistant_reply
+                    }).execute()
+
+                yield sse({"type": "done"})
+                return  # ✅ bare return only
+
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
 
     # ======================================================
     # NON-STREAM MODE
