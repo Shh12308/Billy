@@ -1566,101 +1566,115 @@ async def ask_universal(request: Request, background_tasks: BackgroundTasks):
     if stream:
 
        async def event_generator():
-        assistant_reply = ""
+    assistant_reply = ""
 
-        yield sse({"type": "starting"})
-        yield ": heartbeat\n\n"
+    yield sse({"type": "starting"})
+    yield ": heartbeat\n\n"
 
-        payload = {
-            "model": CHAT_MODEL,
-            "messages": messages,
-            "tools": TOOLS,
-            "tool_choice": "auto",
-            "stream": True,
-            "max_tokens": 1500
-        }
+    payload = {
+        "model": CHAT_MODEL,
+        "messages": messages,
+        "tools": TOOLS,
+        "tool_choice": "auto",
+        "stream": True,
+        "max_tokens": 1500
+    }
 
-        try:
-            async with httpx.AsyncClient(timeout=None) as client:
-                async with client.stream(
-                    "POST",
-                    "https://api.groq.com/openai/v1/chat/completions",
-                    headers=get_groq_headers(),
-                    json=payload
-                ) as resp:
+    try:
+        async with httpx.AsyncClient(timeout=None) as client:
+            async with client.stream(
+                "POST",
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers=get_groq_headers(),
+                json=payload
+            ) as resp:
 
-                    async for line in resp.aiter_lines():
-                        if not line:
-                            continue
+                async for line in resp.aiter_lines():
+                    if not line or not line.startswith("data:"):
+                        continue
 
-                        if not line.startswith("data:"):
-                            continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
 
-                        data = line[5:].strip()
-                        if data == "[DONE]":
-                            break
-
+                    try:
                         chunk = json.loads(data)
-                        delta = chunk["choices"][0]["delta"]
+                    except json.JSONDecodeError:
+                        continue
 
-                        # TOOL CALLS
-                        if "tool_calls" in delta:
-                            for call in delta["tool_calls"]:
-                                name = call["function"]["name"]
-                                args = json.loads(call["function"]["arguments"])
+                    # 🔴 HANDLE GROQ ERRORS
+                    if "error" in chunk:
+                        logger.error(f"Groq error: {chunk['error']}")
+                        yield sse({"type": "error", "error": chunk["error"]})
+                        break
 
-                                if not check_permission(role, name):
-                                    yield sse({"type": "error", "error": "Permission denied"})
-                                    continue
+                    # 🟡 GUARD: choices
+                    choices = chunk.get("choices")
+                    if not choices:
+                        continue
 
-                                if name == "web_search":
-                                    result = await duckduckgo_search(args["query"])
-                                elif name == "run_code":
-                                    result = await run_code_safely(args["task"])
-                                else:
-                                    continue
+                    delta = choices[0].get("delta")
+                    if not delta:
+                        continue
 
-                                yield sse({
-                                    "type": "tool",
-                                    "tool": name,
-                                    "result": result
-                                })
+                    # 🔧 TOOL CALLS
+                    if "tool_calls" in delta:
+                        for call in delta["tool_calls"]:
+                            fn = call.get("function")
+                            if not fn:
+                                continue
 
-                                messages.append({
-                                    "role": "tool",
-                                    "tool_name": name,
-                                    "content": json.dumps(result)
-                                })
+                            name = fn.get("name")
+                            raw_args = fn.get("arguments", "")
 
-                        # TEXT TOKENS
-                        content = delta.get("content")
-                        if content:
-                            assistant_reply += content
-                            yield sse({"type": "token", "text": content})
+                            # arguments may stream → only process when valid JSON
+                            try:
+                                args = json.loads(raw_args)
+                            except json.JSONDecodeError:
+                                continue
 
-        except asyncio.CancelledError:
-            logger.info("Stream cancelled by user")
-            yield sse({"type": "cancelled"})
+                            if not check_permission(role, name):
+                                yield sse({"type": "error", "error": "Permission denied"})
+                                continue
 
-        finally:
-            if assistant_reply.strip():
-                supabase.table("messages").insert({
-                    "conversation_id": conversation_id,
-                    "role": "assistant",
-                    "content": assistant_reply
-                }).execute()
+                            if name == "web_search":
+                                result = await duckduckgo_search(args["query"])
+                            elif name == "run_code":
+                                result = await run_code_safely(args["task"])
+                            else:
+                                continue
 
-            yield sse({"type": "done"})
+                            yield sse({
+                                "type": "tool",
+                                "tool": name,
+                                "result": result
+                            })
 
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"
-        }
-    )
+                            messages.append({
+                                "role": "tool",
+                                "tool_name": name,
+                                "content": json.dumps(result)
+                            })
+
+                    # 📝 TEXT TOKENS
+                    content = delta.get("content")
+                    if content:
+                        assistant_reply += content
+                        yield sse({"type": "token", "text": content})
+
+    except asyncio.CancelledError:
+        logger.info("Stream cancelled by user")
+        yield sse({"type": "cancelled"})
+
+    finally:
+        if assistant_reply.strip():
+            supabase.table("messages").insert({
+                "conversation_id": conversation_id,
+                "role": "assistant",
+                "content": assistant_reply
+            }).execute()
+
+        yield sse({"type": "done"})
 
     # ======================================================
     # NON-STREAM MODE
