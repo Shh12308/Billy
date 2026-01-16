@@ -1602,13 +1602,11 @@ async def ask_universal(request: Request, background_tasks: BackgroundTasks):
                     except json.JSONDecodeError:
                         continue
 
-                    # 🔴 HANDLE GROQ ERRORS
                     if "error" in chunk:
                         logger.error(f"Groq error: {chunk['error']}")
                         yield sse({"type": "error", "error": chunk["error"]})
                         break
 
-                    # 🟡 GUARD: choices
                     choices = chunk.get("choices")
                     if not choices:
                         continue
@@ -1617,7 +1615,6 @@ async def ask_universal(request: Request, background_tasks: BackgroundTasks):
                     if not delta:
                         continue
 
-                    # 🔧 TOOL CALLS
                     if "tool_calls" in delta:
                         for call in delta["tool_calls"]:
                             fn = call.get("function")
@@ -1627,7 +1624,6 @@ async def ask_universal(request: Request, background_tasks: BackgroundTasks):
                             name = fn.get("name")
                             raw_args = fn.get("arguments", "")
 
-                            # arguments may stream → only process when valid JSON
                             try:
                                 args = json.loads(raw_args)
                             except json.JSONDecodeError:
@@ -1656,7 +1652,6 @@ async def ask_universal(request: Request, background_tasks: BackgroundTasks):
                                 "content": json.dumps(result)
                             })
 
-                    # 📝 TEXT TOKENS
                     content = delta.get("content")
                     if content:
                         assistant_reply += content
