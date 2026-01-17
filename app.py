@@ -13,8 +13,10 @@ import cv2
 import requests
 from datetime import datetime
 from typing import Optional, Dict, Any, List, Union
-from io import BytesIO
+from io import BytesIO, StringIO
 import time
+import re
+import math
 
 last_ping = time.monotonic()
 
@@ -36,6 +38,16 @@ from sse_starlette.sse import EventSourceResponse
 from supabase import create_client
 from ultralytics import YOLO
 from torchvision import models, transforms
+from pydantic import BaseModel
+import matplotlib.pyplot as plt
+import seaborn as sns
+import pandas as pd
+from transformers import pipeline, AutoTokenizer, AutoModelForSequenceClassification
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+import networkx as nx
+import plotly.graph_objects as go
+import plotly.express as px
 
 # Fix: Import utils with proper error handling
 try:
@@ -140,6 +152,42 @@ def init_supabase_tables():
     try:
         # Create usage table
         supabase.rpc("create_usage_table").execute()
+    except:
+        pass  # Table might already exist
+    
+    # New tables for advanced features
+    try:
+        supabase.rpc("create_knowledge_graphs_table").execute()
+    except:
+        pass  # Table might already exist
+    
+    try:
+        supabase.rpc("create_model_training_jobs_table").execute()
+    except:
+        pass  # Table might already exist
+    
+    try:
+        supabase.rpc("create_code_reviews_table").execute()
+    except:
+        pass  # Table might already exist
+    
+    try:
+        supabase.rpc("create_multimodal_searches_table").execute()
+    except:
+        pass  # Table might already exist
+    
+    try:
+        supabase.rpc("create_profiles_table").execute()
+    except:
+        pass  # Table might already exist
+    
+    try:
+        supabase.rpc("create_data_visualizations_table").execute()
+    except:
+        pass  # Table might already exist
+    
+    try:
+        supabase.rpc("create_voice_profiles_table").execute()
     except:
         pass  # Table might already exist
 
@@ -358,6 +406,238 @@ if not JUDGE0_KEY:
 if not JUDGE0_KEY:
     logger.warning("Code execution disabled (missing Judge0 API key)")
 
+# ---------- Pydantic Models ----------
+class DocumentAnalysisRequest(BaseModel):
+    text: str
+    analysis_type: str = "summary"  # summary, entities, sentiment, keywords
+
+class TranslationRequest(BaseModel):
+    text: str
+    source_lang: str = "auto"
+    target_lang: str = "en"
+
+class SentimentAnalysisRequest(BaseModel):
+    text: str
+    model: str = "default"
+
+class KnowledgeGraphRequest(BaseModel):
+    entities: List[str]
+    relationship_type: str = "related"
+
+class CustomModelRequest(BaseModel):
+    training_data: str
+    model_type: str = "classification"
+    hyperparameters: Dict[str, Any] = {}
+
+class CodeReviewRequest(BaseModel):
+    code: str
+    language: str = "python"
+    focus_areas: List[str] = ["security", "performance", "style"]
+
+class MultimodalSearchRequest(BaseModel):
+    query: str
+    search_types: List[str] = ["text", "image", "video"]
+    filters: Dict[str, Any] = {}
+
+class PersonalizationRequest(BaseModel):
+    user_preferences: Dict[str, Any]
+    behavior_patterns: Dict[str, Any] = {}
+
+class DataVisualizationRequest(BaseModel):
+    data: str  # JSON or CSV format
+    chart_type: str = "auto"  # auto, bar, line, pie, scatter, heatmap
+    options: Dict[str, Any] = {}
+
+class VoiceCloningRequest(BaseModel):
+    voice_sample: str  # Base64 encoded audio
+    text: str
+    voice_name: str
+
+# ---------- Utility Functions ----------
+def extract_entities(text):
+    """Extract entities from text using regex patterns"""
+    entities = {
+        "emails": re.findall(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', text),
+        "phones": re.findall(r'(\d{3}[-.\s]??\d{3}[-.\s]??\d{4}|\(\d{3}\)\s*\d{3}[-.\s]??\d{4})', text),
+        "urls": re.findall(r'(https?://[^\s]+)', text),
+        "dates": re.findall(r'\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b|\b\d{4}[/-]\d{1,2}[/-]\d{1,2}\b', text),
+        "numbers": re.findall(r'\b\d+(?:\.\d+)?\b', text),
+        "money": re.findall(r'\$\d+(?:\.\d+)?|\d+(?:\.\d+)?\s*(?:USD|EUR|GBP|dollars?|euros?|pounds?)', text)
+    }
+    return {k: v for k, v in entities.items() if v}  # Remove empty lists
+
+def extract_keywords(text, num_keywords=10):
+    """Extract keywords from text using TF-IDF"""
+    try:
+        vectorizer = TfidfVectorizer(max_features=num_keywords, stop_words='english')
+        tfidf_matrix = vectorizer.fit_transform([text])
+        feature_names = vectorizer.get_feature_names_out()
+        tfidf_scores = tfidf_matrix.toarray()[0]
+        
+        # Get top keywords
+        top_indices = tfidf_scores.argsort()[-num_keywords:][::-1]
+        keywords = [(feature_names[i], tfidf_scores[i]) for i in top_indices]
+        
+        return keywords
+    except Exception as e:
+        logger.error(f"Error extracting keywords: {e}")
+        return []
+
+def create_knowledge_graph(entities, relationship_type="related"):
+    """Create a simple knowledge graph from entities"""
+    G = nx.Graph()
+    
+    # Add nodes
+    for entity in entities:
+        G.add_node(entity)
+    
+    # Add edges (simple example - in a real implementation, you'd use NLP to find relationships)
+    for i, entity1 in enumerate(entities):
+        for entity2 in entities[i+1:]:
+            # Simple similarity based on string overlap
+            similarity = len(set(entity1.lower().split()) & set(entity2.lower().split()))
+            if similarity > 0:
+                G.add_edge(entity1, entity2, weight=similarity, type=relationship_type)
+    
+    return G
+
+def visualize_graph(G):
+    """Create a visualization of the knowledge graph"""
+    pos = nx.spring_layout(G)
+    
+    # Create a plotly figure
+    edge_x = []
+    edge_y = []
+    for edge in G.edges():
+        x0, y0 = pos[edge[0]]
+        x1, y1 = pos[edge[1]]
+        edge_x.extend([x0, x1, None])
+        edge_y.extend([y0, y1, None])
+    
+    edge_trace = go.Scatter(
+        x=edge_x, y=edge_y,
+        line=dict(width=0.5, color='#888'),
+        hoverinfo='none',
+        mode='lines')
+    
+    node_x = []
+    node_y = []
+    for node in G.nodes():
+        x, y = pos[node]
+        node_x.append(x)
+        node_y.append(y)
+    
+    node_trace = go.Scatter(
+        x=node_x, y=node_y,
+        mode='markers+text',
+        text=list(G.nodes()),
+        textposition="top center",
+        hoverinfo='text',
+        marker=dict(
+            showscale=True,
+            colorscale='YlGnBu',
+            size=10,
+            color=[],
+            line_width=2))
+    
+    fig = go.Figure(data=[edge_trace, node_trace],
+                 layout=go.Layout(
+                    title='Knowledge Graph',
+                    titlefont_size=16,
+                    showlegend=False,
+                    hovermode='closest',
+                    margin=dict(b=20,l=5,r=5,t=40),
+                    xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+                    yaxis=dict(showgrid=False, zeroline=False, showticklabels=False))
+                    )
+    return fig.to_html(full_html=False)
+
+def analyze_code_quality(code, language, focus_areas):
+    """Analyze code quality based on focus areas"""
+    results = {
+        "security": [],
+        "performance": [],
+        "style": [],
+        "overall_score": 0
+    }
+    
+    # Security checks
+    if "security" in focus_areas:
+        # Check for common security issues
+        if language == "python":
+            if "eval(" in code:
+                results["security"].append("Use of eval() function detected - potential security risk")
+            if "exec(" in code:
+                results["security"].append("Use of exec() function detected - potential security risk")
+            if "pickle.loads(" in code:
+                results["security"].append("Use of pickle.loads() detected - potential security risk")
+        elif language == "javascript":
+            if "eval(" in code:
+                results["security"].append("Use of eval() function detected - potential security risk")
+            if "innerHTML" in code:
+                results["security"].append("Direct innerHTML manipulation detected - potential XSS risk")
+    
+    # Performance checks
+    if "performance" in focus_areas:
+        if language == "python":
+            if "for i in range(len(" in code:
+                results["performance"].append("Consider using enumerate() instead of range(len())")
+            if code.count("for ") > 5:
+                results["performance"].append("Multiple nested loops detected - consider optimizing")
+        elif language == "javascript":
+            if "for (var i = 0; i <" in code:
+                results["performance"].append("Consider using forEach() or map() instead of for loops")
+    
+    # Style checks
+    if "style" in focus_areas:
+        if language == "python":
+            if not re.search(r'^\s*def \w+\([^)]*\):\s*"""', code, re.MULTILINE):
+                results["style"].append("Missing docstrings for functions")
+            if code.count("    ") > 0 and code.count("\t") > 0:
+                results["style"].append("Mixed tabs and spaces detected")
+        elif language == "javascript":
+            if "var " in code:
+                results["style"].append("Consider using let or const instead of var")
+    
+    # Calculate overall score
+    total_issues = sum(len(issues) for issues in results.values() if isinstance(issues, list))
+    results["overall_score"] = max(0, 100 - (total_issues * 10))
+    
+    return results
+
+def create_chart(data, chart_type, options):
+    """Create a chart from data"""
+    try:
+        # Parse data
+        if data.strip().startswith('{'):
+            # JSON data
+            df = pd.read_json(data)
+        else:
+            # CSV data
+            df = pd.read_csv(StringIO(data))
+        
+        # Create chart based on type
+        if chart_type == "auto" or chart_type == "bar":
+            fig = px.bar(df, **options)
+        elif chart_type == "line":
+            fig = px.line(df, **options)
+        elif chart_type == "pie":
+            fig = px.pie(df, **options)
+        elif chart_type == "scatter":
+            fig = px.scatter(df, **options)
+        elif chart_type == "heatmap":
+            fig = px.imshow(df.corr(), **options)
+        else:
+            # Default to bar chart
+            fig = px.bar(df, **options)
+        
+        # Convert to HTML
+        return fig.to_html(full_html=False)
+    except Exception as e:
+        logger.error(f"Error creating chart: {e}")
+        return f"<p>Error creating chart: {str(e)}</p>"
+
+# ---------- Helper Functions ----------
 async def run_code_judge0(code: str, language_id: int):
     payload = {
         "language_id": language_id,
@@ -385,7 +665,6 @@ async def run_code_judge0(code: str, language_id: int):
         submit.raise_for_status()
         return submit.json()
 
-# Fix: Moved generate_ai_response function before it's used
 async def generate_ai_response(conversation_id: str, user_id: str, messages: list):
     """
     Generates an AI response using Groq API in the background.
@@ -413,7 +692,6 @@ async def generate_ai_response(conversation_id: str, user_id: str, messages: lis
         print(f"Error generating AI response: {e}")
         return "Sorry, I couldn't generate a response at this time."
 
-# Fix: Moved stream_llm function before it's used
 async def stream_llm(user_id, conversation_id, messages):
     assistant_reply = ""
 
@@ -498,7 +776,6 @@ async def stream_llm(user_id, conversation_id, messages):
         })
         yield sse({"type": "tool", "tool": name, "result": result})
 
-# Fix: Moved persist_reply function before it's used
 async def persist_reply(user_id, conversation_id, text):
     try:
         supabase.table("messages").insert({
@@ -521,27 +798,23 @@ async def persist_reply(user_id, conversation_id, text):
     except Exception as e:
         logger.error(f"Failed to persist reply: {e}")
 
-# Fix: Moved score_memory function before it's used
 def score_memory(text: str) -> int:
     if any(k in text.lower() for k in ["name", "preference", "goal"]):
         return 5
     return 2
 
-# Fix: Moved decay_memories function before it's used
 async def decay_memories(user_id):
     try:
         supabase.rpc("decay_memories", {"uid": user_id}).execute()
     except Exception as e:
         logger.error(f"Failed to decay memories: {e}")
 
-# Fix: Moved get_groq_headers function before it's used
 def get_groq_headers():
     return {
         "Authorization": f"Bearer {GROQ_API_KEY}",
         "Content-Type": "application/json"
     }
 
-# Fix: Moved run_code_safely function before it's used
 async def run_code_safely(prompt: str):
     """Helper for streaming /ask/universal."""
     # Default to python if not specified for this helper
@@ -569,7 +842,6 @@ async def run_code_safely(prompt: str):
     
     return {"code": code, "execution": execution}
 
-# Fix: Moved duckduckgo_search function before it's used
 async def duckduckgo_search(q: str):
     """
     Use DuckDuckGo Instant Answer API (no API key required).
@@ -604,7 +876,6 @@ async def duckduckgo_search(q: str):
             "results": results
             }
 
-# Fix: Moved get_or_create_user function before it's used
 async def get_or_create_user(req: Request, res: Response) -> str:
     user_id = req.cookies.get("user_id")
     if not user_id:
@@ -617,7 +888,6 @@ async def get_or_create_user(req: Request, res: Response) -> str:
         )
     return user_id
 
-# Fix: Moved cache_result function before it's used
 def cache_result(prompt: str, provider: str, result: dict):
     # Store cache in Supabase
     try:
@@ -630,7 +900,6 @@ def cache_result(prompt: str, provider: str, result: dict):
     except Exception as e:
         logger.error(f"Failed to cache result: {e}")
 
-# Fix: Moved get_cached_result function before it's used
 def get_cached_result(prompt: str, provider: str) -> Optional[dict]:
     try:
         response = supabase.table("cache").select("result").eq("prompt", prompt).eq("provider", provider).order("created_at", desc=True).limit(1).execute()
@@ -640,14 +909,12 @@ def get_cached_result(prompt: str, provider: str) -> Optional[dict]:
         logger.error(f"Failed to get cached result: {e}")
     return None
 
-# Fix: Moved get_system_prompt function before it's used
 def get_system_prompt(user_message: Optional[str] = None) -> str:
     base = "You are ZynaraAI1.0: helpful, concise, friendly, and focus entirely on what the user asks. Do not reference your creator or yourself unless explicitly asked."
     if user_message:
         base += f" The user said: \"{user_message}\". Tailor your response to this."
     return base
 
-# Fix: Moved build_contextual_prompt function before it's used
 def build_contextual_prompt(user_id: str, message: str) -> str:
     try:
         # Get user memory
@@ -678,7 +945,6 @@ User message: {message}"""
         logger.error(f"Failed to build contextual prompt: {e}")
         return f"You are ZyNaraAI1.0: helpful, concise, friendly. Focus on exactly what the user wants.\n\nUser message: {message}"
 
-# Fix: Moved check_permission function before it's used
 def check_permission(role: str, tool_name: str) -> bool:
     permissions = {
         "user": {"web_search"},
@@ -687,7 +953,6 @@ def check_permission(role: str, tool_name: str) -> bool:
     }
     return tool_name in permissions.get(role, set())
 
-# Fix: Moved get_or_create_conversation_id function before it's used
 def get_or_create_conversation_id(supabase, user_id: str) -> str:
     # Try to get most recent conversation
     res = (
@@ -713,7 +978,6 @@ def get_or_create_conversation_id(supabase, user_id: str) -> str:
 
     return conversation_id
 
-# Fix: Moved build_system_prompt function before it's used
 def build_system_prompt(artifact: Union[str, None]):
     base = """
 You are a helpful AI assistant.
@@ -739,11 +1003,9 @@ Return the FULL updated version.
 """
     return base
 
-# Fix: Moved unique_filename function before it's used
 def unique_filename(ext="png"):
     return f"{int(time.time())}-{uuid.uuid4().hex[:10]}.{ext}"
 
-# Fix: Moved upload_to_supabase function before it's used
 def upload_to_supabase(
     file_bytes: bytes,
     filename: str,
@@ -760,7 +1022,6 @@ def upload_to_supabase(
     )
     return filename
 
-# Fix: Moved upload_image_to_supabase function before it's used
 def upload_image_to_supabase(image_bytes: bytes, filename: str):
     upload = supabase.storage.from_("ai-images").upload(
         filename,
@@ -773,7 +1034,6 @@ def upload_image_to_supabase(image_bytes: bytes, filename: str):
 
     return upload
 
-# Fix: Moved save_image_record function before it's used
 def save_image_record(user_id, prompt, path, is_nsfw):
     try:
         supabase.table("images").insert({
@@ -787,7 +1047,6 @@ def save_image_record(user_id, prompt, path, is_nsfw):
     except Exception as e:
         logger.error(f"Failed to save image record: {e}")
 
-# Fix: Moved route_query function before it's used
 async def route_query(user_id: str, query: str):
     q = query.lower()
 
@@ -809,11 +1068,9 @@ async def route_query(user_id: str, query: str):
 
     return "search"
 
-# Fix: Moved get_user_id_from_cookie function before it's used
 async def get_user_id_from_cookie(request: Request, response: Response) -> str:
     return await get_or_create_user(request, response)
 
-# Fix: Moved nsfw_check function before it's used
 async def nsfw_check(prompt: str) -> bool:
     if not OPENAI_API_KEY: return False
     async with httpx.AsyncClient(timeout=15) as client:
@@ -829,7 +1086,6 @@ async def nsfw_check(prompt: str) -> bool:
         result = r.json()["results"][0]
         return result["flagged"]
 
-# Fix: Moved get_or_create_conversation function before it's used
 async def get_or_create_conversation(user_id: str, conversation_id: Union[str, None]):
     if conversation_id:
         return conversation_id
@@ -848,7 +1104,6 @@ async def get_or_create_conversation(user_id: str, conversation_id: Union[str, N
     
     return conv_id
 
-# Fix: Moved load_artifact function before it's used
 async def load_artifact(conversation_id: str):
     try:
         response = supabase.table("artifacts").select("*").eq("conversation_id", conversation_id).limit(1).execute()
@@ -864,7 +1119,6 @@ async def load_artifact(conversation_id: str):
         logger.error(f"Failed to load artifact: {e}")
     return None
 
-# Fix: Moved summarize_conversation function before it's used
 async def summarize_conversation(conversation_id: str):
     try:
         response = supabase.table("messages").select("role, content").eq("conversation_id", conversation_id).order("created_at").limit(40).execute()
@@ -906,7 +1160,6 @@ async def summarize_conversation(conversation_id: str):
     except Exception as e:
         logger.error(f"Failed to summarize conversation: {e}")
 
-# Fix: Moved get_user_from_request function before it's used
 def get_user_from_request(request: Request) -> dict:
     auth = request.headers.get("authorization")
 
@@ -928,7 +1181,6 @@ def get_user_from_request(request: Request) -> dict:
 
     return res.json()
 
-# Fix: Moved save_artifact function before it's used
 async def save_artifact(conversation_id: str, type_: str, content: str):
     try:
         existing = await load_artifact(conversation_id)
@@ -949,7 +1201,6 @@ async def save_artifact(conversation_id: str, type_: str, content: str):
     except Exception as e:
         logger.error(f"Failed to save artifact: {e}")
 
-# Fix: Moved detect_artifact function before it's used
 def detect_artifact(text: str):
     t = text.lower()
 
@@ -968,7 +1219,6 @@ def detect_artifact(text: str):
 
     return None
 
-# Fix: Moved load_history function before it's used
 async def load_history(user_id: str, limit: int = 20):
     try:
         conv_response = supabase.table("conversations").select("id").eq("user_id", user_id).order("updated_at", desc=True).limit(1).execute()
@@ -981,7 +1231,6 @@ async def load_history(user_id: str, limit: int = 20):
         logger.error(f"Failed to load history: {e}")
     return []
 
-# Fix: Moved load_memory function before it's used
 def load_memory(conversation_id: str, limit: int = 20):
     try:
         response = supabase.table("messages").select("role, content").eq("conversation_id", conversation_id).order("created_at").limit(limit).execute()
@@ -991,7 +1240,6 @@ def load_memory(conversation_id: str, limit: int = 20):
         logger.error(f"Failed to load memory: {e}")
     return []
 
-# Fix: Moved extract_memory_from_prompt function before it's used
 def extract_memory_from_prompt(prompt: str):
     p = prompt.lower()
 
@@ -1009,7 +1257,6 @@ def extract_memory_from_prompt(prompt: str):
 
     return None
 
-# Fix: Moved load_user_memory function before it's used
 def load_user_memory(user_id: str):
     try:
         response = supabase.table("memories").select("key, value").eq("user_id", user_id).execute()
@@ -1019,7 +1266,6 @@ def load_user_memory(user_id: str):
         logger.error(f"Failed to load user memory: {e}")
     return []
 
-# Fix: Moved universal_chat_stream function before it's used
 async def universal_chat_stream(user_id: str, prompt: str):
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = get_groq_headers()
@@ -1055,7 +1301,6 @@ async def universal_chat_stream(user_id: str, prompt: str):
                 except Exception:
                     continue
 
-# Fix: Moved analyze_prompt function before it's used
 def analyze_prompt(prompt: str):
     p = prompt.lower()
     settings = {"model": "stable-diffusion-xl-v1","width":1024,"height":1024,"steps":30,"cfg_scale":7,"samples":1,"negative_prompt":"nsfw, nudity, watermark, lowres, text, logo"}
@@ -1070,7 +1315,6 @@ def analyze_prompt(prompt: str):
                 settings["samples"] = n
     return settings
 
-# Fix: Moved image_stream_helper function before it's used
 async def image_stream_helper(prompt: str, samples: int):
     try:
         result = await _generate_image_core(prompt, samples, "anonymous", return_base64=False)
@@ -1091,7 +1335,6 @@ async def image_stream_helper(prompt: str, samples: int):
             "error": "Unexpected image error"
         }
 
-# Fix: Moved chat_stream_helper function before it's used
 async def chat_stream_helper(user_id: str, prompt: str):
     url = "https://api.groq.com/openai/v1/chat/completions"
 
@@ -1130,7 +1373,6 @@ async def chat_stream_helper(user_id: str, prompt: str):
                 except Exception:
                     continue
 
-# Fix: Moved enhance_prompt_with_groq function before it's used
 async def enhance_prompt_with_groq(prompt: str) -> str:
     if not GROQ_API_KEY:
         return prompt
@@ -1151,7 +1393,6 @@ async def enhance_prompt_with_groq(prompt: str) -> str:
         logger.exception("Prompt enhancer failed")
     return prompt
 
-# Fix: Moved generate_video_internal function before it's used
 async def generate_video_internal(prompt: str, samples: int = 1, user_id: str = "anonymous") -> dict:
     """
     Generate video (stub). Stores video files in Supabase storage like images.
@@ -1179,7 +1420,6 @@ async def generate_video_internal(prompt: str, samples: int = 1, user_id: str = 
 
     return {"provider": "stub", "videos": urls}
 
-# Fix: Moved detect_intent function before it's used
 def detect_intent(prompt: str) -> str:
     if not prompt:
         return "chat"
@@ -1238,9 +1478,70 @@ def detect_intent(prompt: str) -> str:
     ]):
         return "search"
 
+    # 📄 Document Analysis
+    if any(w in p for w in [
+        "analyze document", "extract information", "summarize document",
+        "document analysis", "extract entities", "find keywords"
+    ]):
+        return "document_analysis"
+    
+    # 🌐 Translation
+    if any(w in p for w in [
+        "translate", "translation", "translate to", "in spanish", "in french",
+        "in german", "in japanese", "in chinese"
+    ]):
+        return "translation"
+    
+    # 😊 Sentiment Analysis
+    if any(w in p for w in [
+        "sentiment", "emotion", "feeling", "analyze sentiment", "mood"
+    ]):
+        return "sentiment_analysis"
+    
+    # 🕸️ Knowledge Graph
+    if any(w in p for w in [
+        "knowledge graph", "relationship map", "entity graph", "concept map"
+    ]):
+        return "knowledge_graph"
+    
+    # 🤖 Custom Model Training
+    if any(w in p for w in [
+        "train model", "custom model", "fine-tune", "model training"
+    ]):
+        return "custom_model"
+    
+    # 🔍 Code Review
+    if any(w in p for w in [
+        "review code", "code review", "analyze code", "code quality"
+    ]):
+        return "code_review"
+    
+    # 🔍 Multi-modal Search
+    if any(w in p for w in [
+        "search everything", "multimodal search", "search all", "comprehensive search"
+    ]):
+        return "multimodal_search"
+    
+    # 🧠 AI Personalization
+    if any(w in p for w in [
+        "personalize ai", "ai personality", "custom ai behavior", "ai preferences"
+    ]):
+        return "ai_personalization"
+    
+    # 📊 Data Visualization
+    if any(w in p for w in [
+        "create chart", "visualize data", "make graph", "data visualization"
+    ]):
+        return "data_visualization"
+    
+    # 🎤 Voice Cloning
+    if any(w in p for w in [
+        "clone voice", "custom voice", "voice profile", "voice synthesis"
+    ]):
+        return "voice_cloning"
+
     return "chat"
 
-# Fix: Moved tts_stream_helper function before it's used
 async def tts_stream_helper(text: str):
     headers = {
         "Authorization": f"Bearer {OPENAI_API_KEY}",
@@ -1264,7 +1565,6 @@ async def tts_stream_helper(text: str):
     b64 = base64.b64encode(r.content).decode()
     yield {"type": "tts_done", "audio": b64}
 
-# Fix: Moved _generate_image_core function before it's used
 async def _generate_image_core(
     prompt: str,
     samples: int,
@@ -1352,12 +1652,10 @@ async def _generate_image_core(
         "images": urls
     }
 
-# Fix: Moved image_gen_internal function before it's used
 async def image_gen_internal(prompt: str, samples: int = 1):
     """Helper for streaming /ask/universal."""
     result = await _generate_image_core(prompt, samples, "anonymous", return_base64=False)
 
-# Fix: Moved stream_images function before it's used
 async def stream_images(prompt: str, samples: int):
     try:
         async for chunk in image_stream_helper(prompt, samples):
@@ -1365,7 +1663,6 @@ async def stream_images(prompt: str, samples: int):
     except HTTPException as e:
         yield sse({"type": "image_error", "error": e.detail})
 
-# Fix: Moved run_agents function before it's used
 async def run_agents(prompt: str):
     async def research():
         return await duckduckgo_search(prompt)
@@ -1380,7 +1677,6 @@ async def run_agents(prompt: str):
     )
     return results
 
-# Fix: Moved track_cost function before it's used
 def track_cost(user_id: str, tokens: int, tool: Union[str, None] = None):
     try:
         supabase.table("usage").insert({
@@ -1392,7 +1688,6 @@ def track_cost(user_id: str, tokens: int, tool: Union[str, None] = None):
     except Exception as e:
         logger.error(f"Cost tracking failed: {e}")
 
-# Fix: Moved auth function before it's used
 async def auth(request: Request):
     # Simple auth function that extracts user_id from cookie
     user_id = request.cookies.get("user_id")
@@ -1400,7 +1695,6 @@ async def auth(request: Request):
         raise HTTPException(status_code=401, detail="Not authenticated")
     return type('User', (), {'id': user_id})()
 
-# Fix: Moved PERSONALITY_MAP before it's used
 PERSONALITY_MAP = {
     "friendly": (
         "You are friendly, warm, and encouraging. "
@@ -1415,7 +1709,6 @@ PERSONALITY_MAP = {
     )
 }
 
-# Fix: Moved TOOLS before it's used
 TOOLS = [
     {
         "type": "function",
@@ -1450,6 +1743,1033 @@ TOOLS = [
 # Tracks currently active SSE/streaming tasks per user
 active_streams: Dict[str, asyncio.Task] = {}
 
+# ---------- Advanced Feature Implementations ----------
+async def document_analysis(prompt: str, user_id: str, stream: bool = False):
+    """Analyze documents for key information"""
+    # Extract text from prompt
+    text_match = re.search(r'document[:\s]+(.*?)(?:\n\n|\n$|$)', prompt, re.DOTALL | re.IGNORECASE)
+    if not text_match:
+        raise HTTPException(400, "No document text found in prompt")
+    
+    text = text_match.group(1).strip()
+    
+    # Determine analysis type
+    analysis_type = "summary"
+    if "entities" in prompt.lower():
+        analysis_type = "entities"
+    elif "sentiment" in prompt.lower():
+        analysis_type = "sentiment"
+    elif "keywords" in prompt.lower():
+        analysis_type = "keywords"
+    
+    if stream:
+        async def event_generator():
+            yield sse({"type": "starting", "message": "Analyzing document..."})
+            
+            # Extract entities
+            if analysis_type in ["summary", "entities"]:
+                yield sse({"type": "progress", "message": "Extracting entities..."})
+                entities = extract_entities(text)
+                yield sse({"type": "entities", "data": entities})
+            
+            # Extract keywords
+            if analysis_type in ["summary", "keywords"]:
+                yield sse({"type": "progress", "message": "Extracting keywords..."})
+                keywords = extract_keywords(text)
+                yield sse({"type": "keywords", "data": keywords})
+            
+            # Generate summary
+            if analysis_type in ["summary", "sentiment"]:
+                yield sse({"type": "progress", "message": "Generating summary..."})
+                
+                summary_prompt = f"Summarize the following text in a concise way:\n\n{text}"
+                payload = {
+                    "model": CHAT_MODEL,
+                    "messages": [{"role": "user", "content": summary_prompt}],
+                    "max_tokens": 500
+                }
+                
+                async with httpx.AsyncClient(timeout=30) as client:
+                    r = await client.post(
+                        "https://api.groq.com/openai/v1/chat/completions",
+                        headers=get_groq_headers(),
+                        json=payload
+                    )
+                    r.raise_for_status()
+                    summary = r.json()["choices"][0]["message"]["content"]
+                    yield sse({"type": "summary", "data": summary})
+            
+            # Analyze sentiment
+            if analysis_type in ["summary", "sentiment"]:
+                yield sse({"type": "progress", "message": "Analyzing sentiment..."})
+                
+                sentiment_prompt = f"Analyze the sentiment of the following text and provide a score from -1 (very negative) to 1 (very positive):\n\n{text}"
+                payload = {
+                    "model": CHAT_MODEL,
+                    "messages": [{"role": "user", "content": sentiment_prompt}],
+                    "max_tokens": 200
+                }
+                
+                async with httpx.AsyncClient(timeout=30) as client:
+                    r = await client.post(
+                        "https://api.groq.com/openai/v1/chat/completions",
+                        headers=get_groq_headers(),
+                        json=payload
+                    )
+                    r.raise_for_status()
+                    sentiment = r.json()["choices"][0]["message"]["content"]
+                    yield sse({"type": "sentiment", "data": sentiment})
+            
+            yield sse({"type": "done"})
+        
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
+    else:
+        # Non-streaming version
+        result = {
+            "entities": extract_entities(text),
+            "keywords": extract_keywords(text),
+        }
+        
+        # Generate summary
+        summary_prompt = f"Summarize the following text in a concise way:\n\n{text}"
+        payload = {
+            "model": CHAT_MODEL,
+            "messages": [{"role": "user", "content": summary_prompt}],
+            "max_tokens": 500
+        }
+        
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers=get_groq_headers(),
+                json=payload
+            )
+            r.raise_for_status()
+            result["summary"] = r.json()["choices"][0]["message"]["content"]
+        
+        # Analyze sentiment
+        sentiment_prompt = f"Analyze the sentiment of the following text and provide a score from -1 (very negative) to 1 (very positive):\n\n{text}"
+        payload = {
+            "model": CHAT_MODEL,
+            "messages": [{"role": "user", "content": sentiment_prompt}],
+            "max_tokens": 200
+        }
+        
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers=get_groq_headers(),
+                json=payload
+            )
+            r.raise_for_status()
+            result["sentiment"] = r.json()["choices"][0]["message"]["content"]
+        
+        return result
+
+async def translate_text(prompt: str, user_id: str, stream: bool = False):
+    """Translate text between languages"""
+    # Extract text and languages from prompt
+    text_match = re.search(r'translate[:\s]+(.*?)(?:\s+to\s+|\s+in\s+)(.*?)(?:\n\n|\n$|$)', prompt, re.DOTALL | re.IGNORECASE)
+    if not text_match:
+        raise HTTPException(400, "Could not extract text and target language from prompt")
+    
+    text = text_match.group(1).strip()
+    target_lang = text_match.group(2).strip()
+    
+    # Map common language names to language codes
+    lang_map = {
+        "english": "en",
+        "spanish": "es",
+        "french": "fr",
+        "german": "de",
+        "italian": "it",
+        "portuguese": "pt",
+        "russian": "ru",
+        "chinese": "zh",
+        "japanese": "ja",
+        "korean": "ko",
+        "arabic": "ar",
+        "hindi": "hi"
+    }
+    
+    target_lang_code = lang_map.get(target_lang.lower(), target_lang)
+    
+    if stream:
+        async def event_generator():
+            yield sse({"type": "starting", "message": f"Translating to {target_lang}..."})
+            
+            # Use Groq for translation
+            translation_prompt = f"Translate the following text to {target_lang}:\n\n{text}"
+            payload = {
+                "model": CHAT_MODEL,
+                "messages": [{"role": "user", "content": translation_prompt}],
+                "max_tokens": 1000,
+                "stream": True
+            }
+            
+            async with httpx.AsyncClient(timeout=None) as client:
+                async with client.stream(
+                    "POST",
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers=get_groq_headers(),
+                    json=payload
+                ) as resp:
+                    async for line in resp.aiter_lines():
+                        if not line or not line.startswith("data:"):
+                            continue
+                        
+                        data = line[5:].strip()
+                        if data == "[DONE]":
+                            break
+                        
+                        try:
+                            chunk = json.loads(data)
+                            delta = chunk["choices"][0]["delta"].get("content")
+                            if delta:
+                                yield sse({"type": "token", "text": delta})
+                        except Exception:
+                            continue
+            
+            yield sse({"type": "done"})
+        
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
+    else:
+        # Non-streaming version
+        translation_prompt = f"Translate the following text to {target_lang}:\n\n{text}"
+        payload = {
+            "model": CHAT_MODEL,
+            "messages": [{"role": "user", "content": translation_prompt}],
+            "max_tokens": 1000
+        }
+        
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers=get_groq_headers(),
+                json=payload
+            )
+            r.raise_for_status()
+            translation = r.json()["choices"][0]["message"]["content"]
+        
+        return {
+            "original_text": text,
+            "translated_text": translation,
+            "target_language": target_lang
+        }
+
+async def analyze_sentiment(prompt: str, user_id: str, stream: bool = False):
+    """Analyze sentiment of text"""
+    # Extract text from prompt
+    text_match = re.search(r'sentiment[:\s]+(.*?)(?:\n\n|\n$|$)', prompt, re.DOTALL | re.IGNORECASE)
+    if not text_match:
+        # If no explicit text, use the whole prompt
+        text = prompt
+    else:
+        text = text_match.group(1).strip()
+    
+    if stream:
+        async def event_generator():
+            yield sse({"type": "starting", "message": "Analyzing sentiment..."})
+            
+            # Use Groq for sentiment analysis
+            sentiment_prompt = f"Analyze the sentiment of the following text. Provide a score from -1 (very negative) to 1 (very positive) and explain your reasoning:\n\n{text}"
+            payload = {
+                "model": CHAT_MODEL,
+                "messages": [{"role": "user", "content": sentiment_prompt}],
+                "max_tokens": 500,
+                "stream": True
+            }
+            
+            async with httpx.AsyncClient(timeout=None) as client:
+                async with client.stream(
+                    "POST",
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers=get_groq_headers(),
+                    json=payload
+                ) as resp:
+                    async for line in resp.aiter_lines():
+                        if not line or not line.startswith("data:"):
+                            continue
+                        
+                        data = line[5:].strip()
+                        if data == "[DONE]":
+                            break
+                        
+                        try:
+                            chunk = json.loads(data)
+                            delta = chunk["choices"][0]["delta"].get("content")
+                            if delta:
+                                yield sse({"type": "token", "text": delta})
+                        except Exception:
+                            continue
+            
+            yield sse({"type": "done"})
+        
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
+    else:
+        # Non-streaming version
+        sentiment_prompt = f"Analyze the sentiment of the following text. Provide a score from -1 (very negative) to 1 (very positive) and explain your reasoning:\n\n{text}"
+        payload = {
+            "model": CHAT_MODEL,
+            "messages": [{"role": "user", "content": sentiment_prompt}],
+            "max_tokens": 500
+        }
+        
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers=get_groq_headers(),
+                json=payload
+            )
+            r.raise_for_status()
+            sentiment = r.json()["choices"][0]["message"]["content"]
+        
+        return {
+            "text": text,
+            "sentiment_analysis": sentiment
+        }
+
+async def create_knowledge_graph_endpoint(prompt: str, user_id: str, stream: bool = False):
+    """Create and visualize a knowledge graph"""
+    # Extract entities from prompt
+    entities_match = re.search(r'entities[:\s]+(.*?)(?:\n\n|\n$|$)', prompt, re.DOTALL | re.IGNORECASE)
+    if not entities_match:
+        raise HTTPException(400, "Could not extract entities from prompt")
+    
+    entities_text = entities_match.group(1).strip()
+    entities = [e.strip() for e in entities_text.split(',')]
+    
+    # Extract relationship type
+    relationship_type = "related"
+    rel_match = re.search(r'relationship[:\s]+(.*?)(?:\n\n|\n$|$)', prompt, re.DOTALL | re.IGNORECASE)
+    if rel_match:
+        relationship_type = rel_match.group(1).strip()
+    
+    if stream:
+        async def event_generator():
+            yield sse({"type": "starting", "message": "Creating knowledge graph..."})
+            
+            # Create knowledge graph
+            yield sse({"type": "progress", "message": "Building graph structure..."})
+            G = create_knowledge_graph(entities, relationship_type)
+            
+            # Generate visualization
+            yield sse({"type": "progress", "message": "Generating visualization..."})
+            graph_html = visualize_graph(G)
+            
+            # Save to Supabase
+            yield sse({"type": "progress", "message": "Saving graph..."})
+            graph_id = str(uuid.uuid4())
+            try:
+                supabase.table("knowledge_graphs").insert({
+                    "id": graph_id,
+                    "user_id": user_id,
+                    "entities": entities,
+                    "relationship_type": relationship_type,
+                    "graph_data": nx.node_link_data(G),
+                    "created_at": datetime.now().isoformat()
+                }).execute()
+            except Exception as e:
+                logger.error(f"Failed to save knowledge graph: {e}")
+            
+            yield sse({"type": "graph_html", "data": graph_html})
+            yield sse({"type": "graph_id", "data": graph_id})
+            yield sse({"type": "done"})
+        
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
+    else:
+        # Non-streaming version
+        G = create_knowledge_graph(entities, relationship_type)
+        graph_html = visualize_graph(G)
+        
+        # Save to Supabase
+        graph_id = str(uuid.uuid4())
+        try:
+            supabase.table("knowledge_graphs").insert({
+                "id": graph_id,
+                "user_id": user_id,
+                "entities": entities,
+                "relationship_type": relationship_type,
+                "graph_data": nx.node_link_data(G),
+                "created_at": datetime.now().isoformat()
+            }).execute()
+        except Exception as e:
+            logger.error(f"Failed to save knowledge graph: {e}")
+        
+        return {
+            "entities": entities,
+            "relationship_type": relationship_type,
+            "graph_html": graph_html,
+            "graph_id": graph_id
+        }
+
+async def train_custom_model(prompt: str, user_id: str, stream: bool = False):
+    """Train a custom model"""
+    # Extract training data from prompt
+    data_match = re.search(r'data[:\s]+(.*?)(?:\n\n|\n$|$)', prompt, re.DOTALL | re.IGNORECASE)
+    if not data_match:
+        raise HTTPException(400, "Could not extract training data from prompt")
+    
+    training_data = data_match.group(1).strip()
+    
+    # Extract model type
+    model_type = "classification"
+    type_match = re.search(r'type[:\s]+(.*?)(?:\n\n|\n$|$)', prompt, re.DOTALL | re.IGNORECASE)
+    if type_match:
+        model_type = type_match.group(1).strip()
+    
+    if stream:
+        async def event_generator():
+            yield sse({"type": "starting", "message": "Preparing model training..."})
+            
+            # Create a model training job
+            yield sse({"type": "progress", "message": "Creating training job..."})
+            job_id = str(uuid.uuid4())
+            
+            # Save job to Supabase
+            try:
+                supabase.table("model_training_jobs").insert({
+                    "id": job_id,
+                    "user_id": user_id,
+                    "model_type": model_type,
+                    "training_data": training_data,
+                    "status": "queued",
+                    "created_at": datetime.now().isoformat()
+                }).execute()
+            except Exception as e:
+                logger.error(f"Failed to save training job: {e}")
+            
+            yield sse({"type": "job_id", "data": job_id})
+            yield sse({"type": "message", "data": "Model training job created. You will be notified when training is complete."})
+            yield sse({"type": "done"})
+        
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
+    else:
+        # Non-streaming version
+        job_id = str(uuid.uuid4())
+        
+        # Save job to Supabase
+        try:
+            supabase.table("model_training_jobs").insert({
+                "id": job_id,
+                "user_id": user_id,
+                "model_type": model_type,
+                "training_data": training_data,
+                "status": "queued",
+                "created_at": datetime.now().isoformat()
+            }).execute()
+        except Exception as e:
+            logger.error(f"Failed to save training job: {e}")
+        
+        return {
+            "job_id": job_id,
+            "model_type": model_type,
+            "status": "queued",
+            "message": "Model training job created. You will be notified when training is complete."
+        }
+
+async def review_code(prompt: str, user_id: str, stream: bool = False):
+    """Review code for issues and improvements"""
+    # Extract code from prompt
+    code_match = re.search(r'code[:\s]+```(.*?)```', prompt, re.DOTALL | re.IGNORECASE)
+    if not code_match:
+        raise HTTPException(400, "Could not extract code from prompt")
+    
+    code = code_match.group(1).strip()
+    
+    # Extract language
+    language = "python"
+    lang_match = re.search(r'language[:\s]+(.*?)(?:\n\n|\n$|$)', prompt, re.DOTALL | re.IGNORECASE)
+    if lang_match:
+        language = lang_match.group(1).strip()
+    
+    # Extract focus areas
+    focus_areas = ["security", "performance", "style"]
+    focus_match = re.search(r'focus[:\s]+(.*?)(?:\n\n|\n$|$)', prompt, re.DOTALL | re.IGNORECASE)
+    if focus_match:
+        focus_text = focus_match.group(1).strip()
+        focus_areas = [a.strip() for a in focus_text.split(',')]
+    
+    if stream:
+        async def event_generator():
+            yield sse({"type": "starting", "message": "Analyzing code..."})
+            
+            # Analyze code
+            yield sse({"type": "progress", "message": "Checking code quality..."})
+            results = analyze_code_quality(code, language, focus_areas)
+            
+            # Generate suggestions
+            yield sse({"type": "progress", "message": "Generating suggestions..."})
+            suggestions_prompt = f"Review the following {language} code and provide specific suggestions for improvement:\n\n```{language}\n{code}\n```"
+            payload = {
+                "model": CHAT_MODEL,
+                "messages": [{"role": "user", "content": suggestions_prompt}],
+                "max_tokens": 1000,
+                "stream": True
+            }
+            
+            async with httpx.AsyncClient(timeout=None) as client:
+                async with client.stream(
+                    "POST",
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers=get_groq_headers(),
+                    json=payload
+                ) as resp:
+                    async for line in resp.aiter_lines():
+                        if not line or not line.startswith("data:"):
+                            continue
+                        
+                        data = line[5:].strip()
+                        if data == "[DONE]":
+                            break
+                        
+                        try:
+                            chunk = json.loads(data)
+                            delta = chunk["choices"][0]["delta"].get("content")
+                            if delta:
+                                yield sse({"type": "suggestion", "text": delta})
+                        except Exception:
+                            continue
+            
+            # Save review to Supabase
+            yield sse({"type": "progress", "message": "Saving review..."})
+            review_id = str(uuid.uuid4())
+            try:
+                supabase.table("code_reviews").insert({
+                    "id": review_id,
+                    "user_id": user_id,
+                    "language": language,
+                    "code": code,
+                    "focus_areas": focus_areas,
+                    "results": results,
+                    "created_at": datetime.now().isoformat()
+                }).execute()
+            except Exception as e:
+                logger.error(f"Failed to save code review: {e}")
+            
+            yield sse({"type": "results", "data": results})
+            yield sse({"type": "review_id", "data": review_id})
+            yield sse({"type": "done"})
+        
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
+    else:
+        # Non-streaming version
+        results = analyze_code_quality(code, language, focus_areas)
+        
+        # Generate suggestions
+        suggestions_prompt = f"Review the following {language} code and provide specific suggestions for improvement:\n\n```{language}\n{code}\n```"
+        payload = {
+            "model": CHAT_MODEL,
+            "messages": [{"role": "user", "content": suggestions_prompt}],
+            "max_tokens": 1000
+        }
+        
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers=get_groq_headers(),
+                json=payload
+            )
+            r.raise_for_status()
+            suggestions = r.json()["choices"][0]["message"]["content"]
+        
+        # Save review to Supabase
+        review_id = str(uuid.uuid4())
+        try:
+            supabase.table("code_reviews").insert({
+                "id": review_id,
+                "user_id": user_id,
+                "language": language,
+                "code": code,
+                "focus_areas": focus_areas,
+                "results": results,
+                "created_at": datetime.now().isoformat()
+            }).execute()
+        except Exception as e:
+            logger.error(f"Failed to save code review: {e}")
+        
+        return {
+            "language": language,
+            "code": code,
+            "focus_areas": focus_areas,
+            "analysis_results": results,
+            "suggestions": suggestions,
+            "review_id": review_id
+        }
+
+async def multimodal_search(prompt: str, user_id: str, stream: bool = False):
+    """Search across text, images, and videos"""
+    # Extract query from prompt
+    query_match = re.search(r'query[:\s]+(.*?)(?:\n\n|\n$|$)', prompt, re.DOTALL | re.IGNORECASE)
+    if not query_match:
+        # If no explicit query, use the whole prompt
+        query = prompt
+    else:
+        query = query_match.group(1).strip()
+    
+    # Extract search types
+    search_types = ["text", "image", "video"]
+    types_match = re.search(r'types[:\s]+(.*?)(?:\n\n|\n$|$)', prompt, re.DOTALL | re.IGNORECASE)
+    if types_match:
+        types_text = types_match.group(1).strip()
+        search_types = [t.strip() for t in types_text.split(',')]
+    
+    if stream:
+        async def event_generator():
+            yield sse({"type": "starting", "message": "Starting multimodal search..."})
+            
+            # Text search
+            if "text" in search_types:
+                yield sse({"type": "progress", "message": "Searching text..."})
+                text_results = await duckduckgo_search(query)
+                yield sse({"type": "text_results", "data": text_results})
+            
+            # Image search
+            if "image" in search_types:
+                yield sse({"type": "progress", "message": "Searching images..."})
+                # This is a placeholder - in a real implementation, you'd use an image search API
+                image_results = {
+                    "query": query,
+                    "results": [
+                        {"url": f"https://example.com/image1.jpg?query={query}", "title": f"Image 1 for {query}"},
+                        {"url": f"https://example.com/image2.jpg?query={query}", "title": f"Image 2 for {query}"}
+                    ]
+                }
+                yield sse({"type": "image_results", "data": image_results})
+            
+            # Video search
+            if "video" in search_types:
+                yield sse({"type": "progress", "message": "Searching videos..."})
+                # This is a placeholder - in a real implementation, you'd use a video search API
+                video_results = {
+                    "query": query,
+                    "results": [
+                        {"url": f"https://example.com/video1.mp4?query={query}", "title": f"Video 1 for {query}"},
+                        {"url": f"https://example.com/video2.mp4?query={query}", "title": f"Video 2 for {query}"}
+                    ]
+                }
+                yield sse({"type": "video_results", "data": video_results})
+            
+            # Save search to Supabase
+            yield sse({"type": "progress", "message": "Saving search..."})
+            search_id = str(uuid.uuid4())
+            try:
+                supabase.table("multimodal_searches").insert({
+                    "id": search_id,
+                    "user_id": user_id,
+                    "query": query,
+                    "search_types": search_types,
+                    "created_at": datetime.now().isoformat()
+                }).execute()
+            except Exception as e:
+                logger.error(f"Failed to save search: {e}")
+            
+            yield sse({"type": "search_id", "data": search_id})
+            yield sse({"type": "done"})
+        
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
+    else:
+        # Non-streaming version
+        results = {}
+        
+        # Text search
+        if "text" in search_types:
+            results["text"] = await duckduckgo_search(query)
+        
+        # Image search
+        if "image" in search_types:
+            # This is a placeholder - in a real implementation, you'd use an image search API
+            results["image"] = {
+                "query": query,
+                "results": [
+                    {"url": f"https://example.com/image1.jpg?query={query}", "title": f"Image 1 for {query}"},
+                    {"url": f"https://example.com/image2.jpg?query={query}", "title": f"Image 2 for {query}"}
+                ]
+            }
+        
+        # Video search
+        if "video" in search_types:
+            # This is a placeholder - in a real implementation, you'd use a video search API
+            results["video"] = {
+                "query": query,
+                "results": [
+                    {"url": f"https://example.com/video1.mp4?query={query}", "title": f"Video 1 for {query}"},
+                    {"url": f"https://example.com/video2.mp4?query={query}", "title": f"Video 2 for {query}"}
+                ]
+            }
+        
+        # Save search to Supabase
+        search_id = str(uuid.uuid4())
+        try:
+            supabase.table("multimodal_searches").insert({
+                "id": search_id,
+                "user_id": user_id,
+                "query": query,
+                "search_types": search_types,
+                "created_at": datetime.now().isoformat()
+            }).execute()
+        except Exception as e:
+            logger.error(f"Failed to save search: {e}")
+        
+        return {
+            "query": query,
+            "search_types": search_types,
+            "results": results,
+            "search_id": search_id
+        }
+
+async def personalize_ai(prompt: str, user_id: str, stream: bool = False):
+    """Customize AI behavior based on user preferences"""
+    # Extract preferences from prompt
+    prefs_match = re.search(r'preferences[:\s]+(.*?)(?:\n\n|\n$|$)', prompt, re.DOTALL | re.IGNORECASE)
+    if not prefs_match:
+        raise HTTPException(400, "Could not extract preferences from prompt")
+    
+    preferences_text = prefs_match.group(1).strip()
+    
+    # Parse preferences
+    preferences = {}
+    for line in preferences_text.split('\n'):
+        if ':' in line:
+            key, value = line.split(':', 1)
+            preferences[key.strip()] = value.strip()
+    
+    if stream:
+        async def event_generator():
+            yield sse({"type": "starting", "message": "Updating AI preferences..."})
+            
+            # Save preferences to Supabase
+            yield sse({"type": "progress", "message": "Saving preferences..."})
+            try:
+                # Check if user profile exists
+                profile_response = supabase.table("profiles").select("*").eq("id", user_id).execute()
+                
+                if profile_response.data:
+                    # Update existing profile
+                    supabase.table("profiles").update({
+                        "preferences": preferences,
+                        "updated_at": datetime.now().isoformat()
+                    }).eq("id", user_id).execute()
+                else:
+                    # Create new profile
+                    supabase.table("profiles").insert({
+                        "id": user_id,
+                        "preferences": preferences,
+                        "created_at": datetime.now().isoformat()
+                    }).execute()
+            except Exception as e:
+                logger.error(f"Failed to save preferences: {e}")
+            
+            yield sse({"type": "message", "data": "AI preferences updated successfully"})
+            yield sse({"type": "done"})
+        
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
+    else:
+        # Non-streaming version
+        try:
+            # Check if user profile exists
+            profile_response = supabase.table("profiles").select("*").eq("id", user_id).execute()
+            
+            if profile_response.data:
+                # Update existing profile
+                supabase.table("profiles").update({
+                    "preferences": preferences,
+                    "updated_at": datetime.now().isoformat()
+                }).eq("id", user_id).execute()
+            else:
+                # Create new profile
+                supabase.table("profiles").insert({
+                    "id": user_id,
+                    "preferences": preferences,
+                    "created_at": datetime.now().isoformat()
+                }).execute()
+        except Exception as e:
+            logger.error(f"Failed to save preferences: {e}")
+        
+        return {
+            "preferences": preferences,
+            "message": "AI preferences updated successfully"
+        }
+
+async def visualize_data(prompt: str, user_id: str, stream: bool = False):
+    """Generate charts and graphs from data"""
+    # Extract data from prompt
+    data_match = re.search(r'data[:\s]+(.*?)(?:\n\n|\n$|$)', prompt, re.DOTALL | re.IGNORECASE)
+    if not data_match:
+        raise HTTPException(400, "Could not extract data from prompt")
+    
+    data = data_match.group(1).strip()
+    
+    # Extract chart type
+    chart_type = "auto"
+    type_match = re.search(r'chart[:\s]+(.*?)(?:\n\n|\n$|$)', prompt, re.DOTALL | re.IGNORECASE)
+    if type_match:
+        chart_type = type_match.group(1).strip()
+    
+    # Extract options
+    options = {}
+    options_match = re.search(r'options[:\s]+(.*?)(?:\n\n|\n$|$)', prompt, re.DOTALL | re.IGNORECASE)
+    if options_match:
+        options_text = options_match.group(1).strip()
+        for line in options_text.split('\n'):
+            if ':' in line:
+                key, value = line.split(':', 1)
+                options[key.strip()] = value.strip()
+    
+    if stream:
+        async def event_generator():
+            yield sse({"type": "starting", "message": "Creating visualization..."})
+            
+            # Create chart
+            yield sse({"type": "progress", "message": "Generating chart..."})
+            chart_html = create_chart(data, chart_type, options)
+            
+            # Save visualization to Supabase
+            yield sse({"type": "progress", "message": "Saving visualization..."})
+            viz_id = str(uuid.uuid4())
+            try:
+                supabase.table("data_visualizations").insert({
+                    "id": viz_id,
+                    "user_id": user_id,
+                    "data": data,
+                    "chart_type": chart_type,
+                    "options": options,
+                    "created_at": datetime.now().isoformat()
+                }).execute()
+            except Exception as e:
+                logger.error(f"Failed to save visualization: {e}")
+            
+            yield sse({"type": "chart_html", "data": chart_html})
+            yield sse({"type": "viz_id", "data": viz_id})
+            yield sse({"type": "done"})
+        
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
+    else:
+        # Non-streaming version
+        chart_html = create_chart(data, chart_type, options)
+        
+        # Save visualization to Supabase
+        viz_id = str(uuid.uuid4())
+        try:
+            supabase.table("data_visualizations").insert({
+                "id": viz_id,
+                "user_id": user_id,
+                "data": data,
+                "chart_type": chart_type,
+                "options": options,
+                "created_at": datetime.now().isoformat()
+            }).execute()
+        except Exception as e:
+            logger.error(f"Failed to save visualization: {e}")
+        
+        return {
+            "data": data,
+            "chart_type": chart_type,
+            "options": options,
+            "chart_html": chart_html,
+            "viz_id": viz_id
+        }
+
+async def clone_voice(prompt: str, user_id: str, stream: bool = False):
+    """Create custom voice profiles for TTS"""
+    # Extract voice sample from prompt
+    sample_match = re.search(r'sample[:\s]+(.*?)(?:\n\n|\n$|$)', prompt, re.DOTALL | re.IGNORECASE)
+    if not sample_match:
+        raise HTTPException(400, "Could not extract voice sample from prompt")
+    
+    voice_sample = sample_match.group(1).strip()
+    
+    # Extract text to synthesize
+    text_match = re.search(r'text[:\s]+(.*?)(?:\n\n|\n$|$)', prompt, re.DOTALL | re.IGNORECASE)
+    if not text_match:
+        raise HTTPException(400, "Could not extract text to synthesize from prompt")
+    
+    text = text_match.group(1).strip()
+    
+    # Extract voice name
+    voice_name = "custom_voice"
+    name_match = re.search(r'name[:\s]+(.*?)(?:\n\n|\n$|$)', prompt, re.DOTALL | re.IGNORECASE)
+    if name_match:
+        voice_name = name_match.group(1).strip()
+    
+    if stream:
+        async def event_generator():
+            yield sse({"type": "starting", "message": "Creating voice profile..."})
+            
+            # Create voice profile
+            yield sse({"type": "progress", "message": "Analyzing voice sample..."})
+            voice_id = str(uuid.uuid4())
+            
+            # Save voice profile to Supabase
+            try:
+                supabase.table("voice_profiles").insert({
+                    "id": voice_id,
+                    "user_id": user_id,
+                    "name": voice_name,
+                    "sample": voice_sample,
+                    "created_at": datetime.now().isoformat()
+                }).execute()
+            except Exception as e:
+                logger.error(f"Failed to save voice profile: {e}")
+            
+            # Synthesize speech
+            yield sse({"type": "progress", "message": "Synthesizing speech..."})
+            
+            # Use OpenAI TTS with a standard voice (voice cloning would require a specialized API)
+            headers = {
+                "Authorization": f"Bearer {OPENAI_API_KEY}",
+                "Content-Type": "application/json"
+            }
+            
+            payload = {
+                "model": "tts-1",
+                "voice": "alloy",  # Default voice - in a real implementation, you'd use the cloned voice
+                "input": text
+            }
+            
+            async with httpx.AsyncClient(timeout=60) as client:
+                r = await client.post(
+                    "https://api.openai.com/v1/audio/speech",
+                    headers=headers,
+                    json=payload
+                )
+                r.raise_for_status()
+            
+            # Convert to base64
+            audio_b64 = base64.b64encode(r.content).decode()
+            
+            yield sse({"type": "audio", "data": audio_b64})
+            yield sse({"type": "voice_id", "data": voice_id})
+            yield sse({"type": "done"})
+        
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
+    else:
+        # Non-streaming version
+        voice_id = str(uuid.uuid4())
+        
+        # Save voice profile to Supabase
+        try:
+            supabase.table("voice_profiles").insert({
+                "id": voice_id,
+                "user_id": user_id,
+                "name": voice_name,
+                "sample": voice_sample,
+                "created_at": datetime.now().isoformat()
+            }).execute()
+        except Exception as e:
+            logger.error(f"Failed to save voice profile: {e}")
+        
+        # Synthesize speech
+        headers = {
+            "Authorization": f"Bearer {OPENAI_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        payload = {
+            "model": "tts-1",
+            "voice": "alloy",  # Default voice - in a real implementation, you'd use the cloned voice
+            "input": text
+        }
+        
+        async with httpx.AsyncClient(timeout=60) as client:
+            r = await client.post(
+                "https://api.openai.com/v1/audio/speech",
+                headers=headers,
+                json=payload
+            )
+            r.raise_for_status()
+        
+        # Convert to base64
+        audio_b64 = base64.b64encode(r.content).decode()
+        
+        return {
+            "voice_name": voice_name,
+            "text": text,
+            "audio": audio_b64,
+            "voice_id": voice_id
+        }
+
+# ---------- API Endpoints ----------
 @app.get("/health")
 async def health():
     return {
@@ -1509,9 +2829,6 @@ async def chat_endpoint(req: Request):
 # 🚀 UNIVERSAL MULTIMODAL ENDPOINT — /ask/universal
 # =========================================================
 
-def sse(payload: dict) -> str:
-    return f"data: {json.dumps(payload)}\n\n"
-
 @app.post("/ask/universal")
 async def ask_universal(request: Request, background_tasks: BackgroundTasks):
     body = await request.json()
@@ -1524,6 +2841,32 @@ async def ask_universal(request: Request, background_tasks: BackgroundTasks):
     if not prompt:
         raise HTTPException(400, "prompt required")
 
+    # Detect intent
+    intent = detect_intent(prompt)
+    
+    # Handle new intents
+    if intent == "document_analysis":
+        return await document_analysis(prompt, user_id, stream)
+    elif intent == "translation":
+        return await translate_text(prompt, user_id, stream)
+    elif intent == "sentiment_analysis":
+        return await analyze_sentiment(prompt, user_id, stream)
+    elif intent == "knowledge_graph":
+        return await create_knowledge_graph_endpoint(prompt, user_id, stream)
+    elif intent == "custom_model":
+        return await train_custom_model(prompt, user_id, stream)
+    elif intent == "code_review":
+        return await review_code(prompt, user_id, stream)
+    elif intent == "multimodal_search":
+        return await multimodal_search(prompt, user_id, stream)
+    elif intent == "ai_personalization":
+        return await personalize_ai(prompt, user_id, stream)
+    elif intent == "data_visualization":
+        return await visualize_data(prompt, user_id, stream)
+    elif intent == "voice_cloning":
+        return await clone_voice(prompt, user_id, stream)
+    
+    # Original code continues...
     conversation_id = get_or_create_conversation_id(
         supabase=supabase,
         user_id=user_id
@@ -1702,7 +3045,6 @@ async def ask_universal(request: Request, background_tasks: BackgroundTasks):
         "conversation_id": conversation_id
     }
     
-    
 @app.post("/message/{message_id}/edit")
 async def edit_message(
     message_id: str,
@@ -1758,7 +3100,6 @@ async def stream_endpoint():
         yield "data: [DONE]\n\n"
     
     return StreamingResponse(event_generator(), media_type="text/event-stream")
-
 
 # -----------------------------
 # Stop endpoint
@@ -1932,7 +3273,6 @@ async def regenerate(req: Request, res: Response, tts: bool = False, samples: in
         }
     )
 
-   
 @app.post("/video")
 async def generate_video(request: Request):
     """
@@ -2348,7 +3688,6 @@ async def tts_stream(req: Request, res: Response):
         }
     )
 
-
 # ---------- Vision analyze ----------
 @app.post("/vision/analyze")
 async def vision_analyze(
@@ -2493,7 +3832,6 @@ async def vision_history(req: Request, res: Response):
         logger.error(f"Failed to get vision history: {e}")
         return []
 
-    
 # ---------- Code generation ----------
 @app.post("/code")
 async def code_gen(req: Request):
@@ -2778,3 +4116,101 @@ async def chat_stream_endpoint(conversation_id: str, user_id: str, messages: lis
     media_type="text/event-stream",
     headers={"Cache-Control": "no-cache"},
 )
+
+# ---------- Dedicated Endpoints for Advanced Features ----------
+@app.post("/document/analyze")
+async def document_analysis_endpoint(request: DocumentAnalysisRequest, user_id: str = Depends(get_user_id_from_cookie)):
+    """Analyze documents for key information"""
+    return await document_analysis(
+        f"document: {request.text}\nanalysis_type: {request.analysis_type}",
+        user_id,
+        False
+    )
+
+@app.post("/translation")
+async def translation_endpoint(request: TranslationRequest, user_id: str = Depends(get_user_id_from_cookie)):
+    """Translate text between languages"""
+    return await translate_text(
+        f"translate: {request.text} to {request.target_lang}",
+        user_id,
+        False
+    )
+
+@app.post("/sentiment/analyze")
+async def sentiment_analysis_endpoint(request: SentimentAnalysisRequest, user_id: str = Depends(get_user_id_from_cookie)):
+    """Analyze sentiment of text"""
+    return await analyze_sentiment(
+        f"sentiment: {request.text}",
+        user_id,
+        False
+    )
+
+@app.post("/knowledge/graph")
+async def knowledge_graph_endpoint(request: KnowledgeGraphRequest, user_id: str = Depends(get_user_id_from_cookie)):
+    """Create and visualize a knowledge graph"""
+    entities_str = ", ".join(request.entities)
+    return await create_knowledge_graph_endpoint(
+        f"entities: {entities_str}\nrelationship: {request.relationship_type}",
+        user_id,
+        False
+    )
+
+@app.post("/model/train")
+async def custom_model_endpoint(request: CustomModelRequest, user_id: str = Depends(get_user_id_from_cookie)):
+    """Train a custom model"""
+    return await train_custom_model(
+        f"data: {request.training_data}\ntype: {request.model_type}",
+        user_id,
+        False
+    )
+
+@app.post("/code/review")
+async def code_review_endpoint(request: CodeReviewRequest, user_id: str = Depends(get_user_id_from_cookie)):
+    """Review code for issues and improvements"""
+    focus_str = ", ".join(request.focus_areas)
+    return await review_code(
+        f"code: ```{request.code}``\nlanguage: {request.language}\nfocus: {focus_str}",
+        user_id,
+        False
+    )
+
+@app.post("/search/multimodal")
+async def multimodal_search_endpoint(request: MultimodalSearchRequest, user_id: str = Depends(get_user_id_from_cookie)):
+    """Search across text, images, and videos"""
+    types_str = ", ".join(request.search_types)
+    filters_str = ", ".join(f"{k}: {v}" for k, v in request.filters.items())
+    return await multimodal_search(
+        f"query: {request.query}\ntypes: {types_str}\nfilters: {filters_str}",
+        user_id,
+        False
+    )
+
+@app.post("/ai/personalize")
+async def ai_personalization_endpoint(request: PersonalizationRequest, user_id: str = Depends(get_user_id_from_cookie)):
+    """Customize AI behavior based on user preferences"""
+    prefs_str = ", ".join(f"{k}: {v}" for k, v in request.user_preferences.items())
+    behavior_str = ", ".join(f"{k}: {v}" for k, v in request.behavior_patterns.items())
+    return await personalize_ai(
+        f"preferences: {prefs_str}\nbehavior: {behavior_str}",
+        user_id,
+        False
+    )
+
+@app.post("/data/visualize")
+async def data_visualization_endpoint(request: DataVisualizationRequest, user_id: str = Depends(get_user_id_from_cookie)):
+    """Generate charts and graphs from data"""
+    options_str = ", ".join(f"{k}: {v}" for k, v in request.options.items())
+    return await visualize_data(
+        f"data: {request.data}\nchart: {request.chart_type}\noptions: {options_str}",
+        user_id,
+        False
+    )
+
+@app.post("/voice/clone")
+async def voice_cloning_endpoint(request: VoiceCloningRequest, user_id: str = Depends(get_user_id_from_cookie)):
+    """Create custom voice profiles for TTS"""
+    return await clone_voice(
+        f"sample: {request.voice_sample}\ntext: {request.text}\nname: {request.voice_name}",
+        user_id,
+        False
+    )
