@@ -44,7 +44,6 @@ plotly==5.22.0
 networkx==3.3
 
 # ---------------------- OPTIONAL: UTILITIES / SYSTEM ----------------------
-logging
 subprocess
 tempfile
 time
