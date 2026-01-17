@@ -2829,7 +2829,7 @@ async def chat_endpoint(req: Request):
 # 🚀 UNIVERSAL MULTIMODAL ENDPOINT — /ask/universal
 # =========================================================
 
-@app.post("/ask/universal")
+app.post("/ask/universal")
 async def ask_universal(request: Request, background_tasks: BackgroundTasks):
     body = await request.json()
 
@@ -2844,29 +2844,26 @@ async def ask_universal(request: Request, background_tasks: BackgroundTasks):
     # Detect intent
     intent = detect_intent(prompt)
     
-    # Handle new intents
-    if intent == "document_analysis":
-        return await document_analysis(prompt, user_id, stream)
-    elif intent == "translation":
-        return await translate_text(prompt, user_id, stream)
-    elif intent == "sentiment_analysis":
-        return await analyze_sentiment(prompt, user_id, stream)
-    elif intent == "knowledge_graph":
-        return await create_knowledge_graph_endpoint(prompt, user_id, stream)
-    elif intent == "custom_model":
-        return await train_custom_model(prompt, user_id, stream)
-    elif intent == "code_review":
-        return await review_code(prompt, user_id, stream)
-    elif intent == "multimodal_search":
-        return await multimodal_search(prompt, user_id, stream)
-    elif intent == "ai_personalization":
-        return await personalize_ai(prompt, user_id, stream)
-    elif intent == "data_visualization":
-        return await visualize_data(prompt, user_id, stream)
-    elif intent == "voice_cloning":
-        return await clone_voice(prompt, user_id, stream)
-    
-    # Original code continues...
+    # Handle special intents immediately
+    intent_map = {
+        "document_analysis": document_analysis,
+        "translation": translate_text,
+        "sentiment_analysis": analyze_sentiment,
+        "knowledge_graph": create_knowledge_graph_endpoint,
+        "custom_model": train_custom_model,
+        "code_review": review_code,
+        "multimodal_search": multimodal_search,
+        "ai_personalization": personalize_ai,
+        "data_visualization": visualize_data,
+        "voice_cloning": clone_voice
+    }
+
+    if intent in intent_map:
+        return await intent_map[intent](prompt, user_id, stream)
+
+    # ======================================================
+    # Load conversation
+    # ======================================================
     conversation_id = get_or_create_conversation_id(
         supabase=supabase,
         user_id=user_id
@@ -2877,6 +2874,7 @@ async def ask_universal(request: Request, background_tasks: BackgroundTasks):
     personality = "friendly"
     nickname = ""
 
+    # Safe Supabase profile fetch
     try:
         profile = (
             supabase.table("profiles")
@@ -2886,21 +2884,21 @@ async def ask_universal(request: Request, background_tasks: BackgroundTasks):
             .execute()
         )
         if profile.data:
-            personality = profile.data.get("personality", "friendly")
-            nickname = profile.data.get("nickname", "")
-    except Exception:
-        pass
+            personality = profile.data.get("personality") or personality
+            nickname = profile.data.get("nickname") or nickname
+    except Exception as e:
+        logger.warning(f"Supabase profile fetch failed for {user_id}: {e}")
 
     system_prompt = (
         PERSONALITY_MAP.get(personality, PERSONALITY_MAP["friendly"])
         + f"\nUser nickname: {nickname}\n"
         "You are a ChatGPT-style multimodal assistant.\n"
         "You can call tools when useful.\n"
-"RULES:\n"
-"- web_search is ONLY for real-world information lookup\n"
-"- run_code is ONLY for Python, math, or text processing\n"
-"- NEVER use run_code for images, media, or creative generation\n"
-"- If the user asks for images, respond with text only\n"
+        "RULES:\n"
+        "- web_search is ONLY for real-world information lookup\n"
+        "- run_code is ONLY for Python, math, or text processing\n"
+        "- NEVER use run_code for images, media, or creative generation\n"
+        "- If the user asks for images, respond with text only\n"
         "Maintain memory and context.\n"
     )
 
@@ -2912,10 +2910,8 @@ async def ask_universal(request: Request, background_tasks: BackgroundTasks):
     # STREAM MODE
     # ======================================================
     if stream:
-
         async def event_generator():
             assistant_reply = ""
-
             yield sse({"type": "starting"})
             yield ": heartbeat\n\n"
 
@@ -2940,11 +2936,9 @@ async def ask_universal(request: Request, background_tasks: BackgroundTasks):
                         async for line in resp.aiter_lines():
                             if not line or not line.startswith("data:"):
                                 continue
-
                             data = line[5:].strip()
                             if data == "[DONE]":
                                 break
-
                             try:
                                 chunk = json.loads(data)
                             except json.JSONDecodeError:
@@ -2955,51 +2949,49 @@ async def ask_universal(request: Request, background_tasks: BackgroundTasks):
                                 yield sse({"type": "error", "error": chunk["error"]})
                                 break
 
-                            choices = chunk.get("choices")
+                            choices = chunk.get("choices") or []
                             if not choices:
                                 continue
 
-                            delta = choices[0].get("delta")
-                            if not delta:
-                                continue
+                            delta = choices[0].get("delta") or {}
 
-                            if "tool_calls" in delta:
-                                for call in delta["tool_calls"]:
-                                    fn = call.get("function")
-                                    if not fn:
-                                        continue
+                            # Tool calls
+                            for call in delta.get("tool_calls", []):
+                                fn = call.get("function") or {}
+                                name = fn.get("name")
+                                raw_args = fn.get("arguments", "{}")
+                                try:
+                                    args = json.loads(raw_args)
+                                except json.JSONDecodeError:
+                                    args = {}
 
-                                    name = fn.get("name")
-                                    raw_args = fn.get("arguments", "")
+                                if not check_permission(role, name):
+                                    yield sse({"type": "error", "error": "Permission denied"})
+                                    continue
 
-                                    try:
-                                        args = json.loads(raw_args)
-                                    except json.JSONDecodeError:
-                                        continue
-
-                                    if not check_permission(role, name):
-                                        yield sse({"type": "error", "error": "Permission denied"})
-                                        continue
-
-                                    if name == "web_search":
+                                # Safe tool execution
+                                try:
+                                    if name == "web_search" and "query" in args:
                                         result = await duckduckgo_search(args["query"])
-                                    elif name == "run_code":
-                                        result = await run_code_safely(args["task"])
+                                    elif name == "run_code" and "task" in args:
+                                        task = args["task"]
+                                        if not isinstance(task, str) or not task.strip():
+                                            result = {"error": "Invalid task"}
+                                        else:
+                                            result = await run_code_safely(task)
                                     else:
-                                        continue
+                                        result = {"error": f"Unsupported tool or missing args: {name}"}
+                                except Exception as e:
+                                    result = {"error": str(e)}
 
-                                    yield sse({
-                                        "type": "tool",
-                                        "tool": name,
-                                        "result": result
-                                    })
+                                yield sse({"type": "tool", "tool": name, "result": result})
+                                messages.append({
+                                    "role": "tool",
+                                    "tool_name": name,
+                                    "content": json.dumps(result)
+                                })
 
-                                    messages.append({
-                                        "role": "tool",
-                                        "tool_name": name,
-                                        "content": json.dumps(result)
-                                    })
-
+                            # Assistant text
                             content = delta.get("content")
                             if content:
                                 assistant_reply += content
@@ -3008,17 +3000,17 @@ async def ask_universal(request: Request, background_tasks: BackgroundTasks):
             except asyncio.CancelledError:
                 logger.info("Stream cancelled by user")
                 yield sse({"type": "cancelled"})
-
             finally:
                 if assistant_reply.strip():
-                    supabase.table("messages").insert({
-                        "conversation_id": conversation_id,
-                        "role": "assistant",
-                        "content": assistant_reply
-                    }).execute()
-
+                    try:
+                        supabase.table("messages").insert({
+                            "conversation_id": conversation_id,
+                            "role": "assistant",
+                            "content": assistant_reply
+                        }).execute()
+                    except Exception as e:
+                        logger.error(f"Failed to save assistant reply: {e}")
                 yield sse({"type": "done"})
-                return  # ✅ bare return only
 
         return StreamingResponse(
             event_generator(),
@@ -3033,12 +3025,13 @@ async def ask_universal(request: Request, background_tasks: BackgroundTasks):
     # ======================================================
     # NON-STREAM MODE
     # ======================================================
-    background_tasks.add_task(
-        generate_ai_response,
-        conversation_id,
-        user_id,
-        messages
-    )
+    def safe_generate():
+        try:
+            generate_ai_response(conversation_id, user_id, messages)
+        except Exception as e:
+            logger.error(f"Background AI generation failed: {e}")
+
+    background_tasks.add_task(safe_generate)
 
     return {
         "status": "processing",
