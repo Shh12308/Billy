@@ -1553,6 +1553,11 @@ async def ask_universal(request: Request, background_tasks: BackgroundTasks):
         + f"\nUser nickname: {nickname}\n"
         "You are a ChatGPT-style multimodal assistant.\n"
         "You can call tools when useful.\n"
+"RULES:\n"
+"- web_search is ONLY for real-world information lookup\n"
+"- run_code is ONLY for Python, math, or text processing\n"
+"- NEVER use run_code for images, media, or creative generation\n"
+"- If the user asks for images, respond with text only\n"
         "Maintain memory and context.\n"
     )
 
