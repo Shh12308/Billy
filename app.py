@@ -11,10 +11,10 @@ import subprocess
 import tempfile
 import cv2
 import requests
+import random
 from datetime import datetime
 from typing import Optional, Dict, Any, List, Union
 from io import BytesIO, StringIO
-import time
 import re
 import math
 
@@ -482,11 +482,6 @@ def extract_keywords(text, num_keywords=10):
     except Exception as e:
         logger.error(f"Error extracting keywords: {e}")
         return []
-
-def generate_random_nickname():
-    adjectives = ["Happy", "Brave", "Clever", "Friendly", "Gentle", "Kind", "Lucky", "Proud", "Smart", "Wise"]
-    nouns = ["Bear", "Eagle", "Fox", "Lion", "Tiger", "Wolf", "Dolphin", "Eagle", "Hawk", "Owl"]
-    return f"{random.choice(adjectives)}{random.choice(nouns)}"
 
 def create_knowledge_graph(entities, relationship_type="related"):
     """Create a simple knowledge graph from entities"""
@@ -1748,6 +1743,12 @@ TOOLS = [
 # Tracks currently active SSE/streaming tasks per user
 active_streams: Dict[str, asyncio.Task] = {}
 
+# ---------- Utility Functions ----------
+def generate_random_nickname():
+    adjectives = ["Happy", "Brave", "Clever", "Friendly", "Gentle", "Kind", "Lucky", "Proud", "Smart", "Wise"]
+    nouns = ["Bear", "Eagle", "Fox", "Lion", "Tiger", "Wolf", "Dolphin", "Hawk", "Owl"]
+    return f"{random.choice(adjectives)}{random.choice(nouns)}"
+
 # ---------- Advanced Feature Implementations ----------
 async def document_analysis(prompt: str, user_id: str, stream: bool = False):
     """Analyze documents for key information"""
@@ -2884,62 +2885,40 @@ async def ask_universal(request: Request, background_tasks: BackgroundTasks):
     # -------------------------------
     # SAFE PROFILE FETCH / CREATE
     # -------------------------------
-    # -------------------------------
-# SAFE PROFILE FETCH / CREATE
-# -------------------------------
-personality = "friendly"
-nickname = ""
+    personality = "friendly"
+    nickname = ""
 
-try:
-    profile_resp = await asyncio.to_thread(
-        lambda: supabase.table("profiles")
-        .select("nickname, personality")
-        .eq("id", user_id)
-        .maybe_single()
-        .execute()
-    )
-
-    if profile_resp.data:
-        personality = profile_resp.data.get("personality") or personality
-        nickname = profile_resp.data.get("nickname") or generate_random_nickname()
-    else:
-        # Default profile if no data
-        default_profile = {
-            "id": user_id,
-            "nickname": generate_random_nickname(),
-            "personality": personality
-        }
-
-        await asyncio.to_thread(
-            lambda: supabase.table("profiles")
-            .insert(default_profile)
-            .execute()
-        )
-
-        nickname = default_profile["nickname"]
-
-except Exception as e:
-    # Handle or log the error
-    print(f"Error fetching profile: {e}")
-    # Optionally fallback to default
-    default_profile = {
-        "id": user_id,
-        "nickname": generate_random_nickname(),
-        "personality": personality
-    }
-    
     try:
-        await asyncio.to_thread(
+        profile_resp = await asyncio.to_thread(
             lambda: supabase.table("profiles")
-            .insert(default_profile)
+            .select("nickname, personality")
+            .eq("id", user_id)
+            .maybe_single()
             .execute()
         )
-        nickname = default_profile["nickname"]
-    except Exception as insert_error:
-        logger.warning(f"Profile insert failed: {insert_error}")
+
+        if profile_resp.data:
+            personality = profile_resp.data.get("personality") or personality
+            nickname = profile_resp.data.get("nickname") or generate_random_nickname()
+        else:
+            # Default profile if no data
+            default_profile = {
+                "id": user_id,
+                "nickname": generate_random_nickname(),
+                "personality": personality
+            }
+
+            await asyncio.to_thread(
+                lambda: supabase.table("profiles")
+                .insert(default_profile)
+                .execute()
+            )
+
+            nickname = default_profile["nickname"]
+
+    except Exception as e:
+        logger.warning(f"Profile fetch/create failed: {e}")
         nickname = generate_random_nickname()
-        
-    # personality already exists, so keep it
 
     # -------------------------------
     # Prepare system prompt
@@ -3034,7 +3013,7 @@ except Exception as e:
     # -------------------------------
     def safe_generate():
         try:
-            generate_ai_response(conversation_id, user_id, messages)
+            asyncio.run(generate_ai_response(conversation_id, user_id, messages))
         except Exception as e:
             logger.error(f"Background generation failed: {e}")
 
