@@ -2839,10 +2839,14 @@ async def chat_endpoint(req: Request):
 # 🚀 UNIVERSAL MULTIMODAL ENDPOINT — /ask/universal
 # =========================================================
 
+
 @app.post("/ask/universal")
 async def ask_universal(request: Request, background_tasks: BackgroundTasks):
     body = await request.json()
 
+    # -------------------------------
+    # Extract request data
+    # -------------------------------
     prompt = body.get("prompt", "").strip()
     user_id = body.get("user_id") or str(uuid.uuid4())
     role = body.get("role", "user")
@@ -2851,10 +2855,11 @@ async def ask_universal(request: Request, background_tasks: BackgroundTasks):
     if not prompt:
         raise HTTPException(400, "prompt required")
 
+    # -------------------------------
     # Detect intent
+    # -------------------------------
     intent = detect_intent(prompt)
     
-    # Handle special intents immediately
     intent_map = {
         "document_analysis": document_analysis,
         "translation": translate_text,
@@ -2871,9 +2876,9 @@ async def ask_universal(request: Request, background_tasks: BackgroundTasks):
     if intent in intent_map:
         return await intent_map[intent](prompt, user_id, stream)
 
-    # ======================================================
+    # -------------------------------
     # Load conversation
-    # ======================================================
+    # -------------------------------
     conversation_id = get_or_create_conversation_id(
         supabase=supabase,
         user_id=user_id
@@ -2881,24 +2886,28 @@ async def ask_universal(request: Request, background_tasks: BackgroundTasks):
 
     history = await load_history(user_id)
 
+    # -------------------------------
+    # SAFE PROFILE FETCH / CREATE
+    # -------------------------------
     personality = "friendly"
     nickname = ""
 
-    # Safe Supabase profile fetch
     try:
-        profile = (
-            supabase.table("profiles")
-            .select("nickname, personality")
-            .eq("id", user_id)
-            .maybe_single()
-            .execute()
-        )
-        if profile.data:
-            personality = profile.data.get("personality") or personality
-            nickname = profile.data.get("nickname") or nickname
+        profile_resp = supabase.table("profiles").select("nickname, personality").eq("id", user_id).maybe_single().execute()
+        if profile_resp.data:
+            personality = profile_resp.data.get("personality") or personality
+            nickname = profile_resp.data.get("nickname") or nickname
+        else:
+            # Create default profile if missing
+            default_profile = {"id": user_id, "nickname": "New User", "personality": personality}
+            supabase.table("profiles").insert(default_profile).execute()
+            nickname = default_profile["nickname"]
     except Exception as e:
         logger.warning(f"Supabase profile fetch failed for {user_id}: {e}")
 
+    # -------------------------------
+    # Prepare system prompt
+    # -------------------------------
     system_prompt = (
         PERSONALITY_MAP.get(personality, PERSONALITY_MAP["friendly"])
         + f"\nUser nickname: {nickname}\n"
@@ -2916,9 +2925,9 @@ async def ask_universal(request: Request, background_tasks: BackgroundTasks):
     messages.extend(history)
     messages.append({"role": "user", "content": prompt})
 
-    # ======================================================
+    # -------------------------------
     # STREAM MODE
-    # ======================================================
+    # -------------------------------
     if stream:
         async def event_generator():
             assistant_reply = ""
@@ -2979,7 +2988,6 @@ async def ask_universal(request: Request, background_tasks: BackgroundTasks):
                                     yield sse({"type": "error", "error": "Permission denied"})
                                     continue
 
-                                # Safe tool execution
                                 try:
                                     if name == "web_search" and "query" in args:
                                         result = await duckduckgo_search(args["query"])
@@ -3031,6 +3039,23 @@ async def ask_universal(request: Request, background_tasks: BackgroundTasks):
                 "X-Accel-Buffering": "no"
             }
         )
+
+    # -------------------------------
+    # NON-STREAM MODE
+    # -------------------------------
+    def safe_generate():
+        try:
+            generate_ai_response(conversation_id, user_id, messages)
+        except Exception as e:
+            logger.error(f"Background AI generation failed: {e}")
+
+    background_tasks.add_task(safe_generate)
+
+    return {
+        "status": "processing",
+        "conversation_id": conversation_id,
+        "user_id": user_id
+    }
 
     # ======================================================
     # NON-STREAM MODE
