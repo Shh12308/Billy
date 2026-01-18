@@ -2853,13 +2853,13 @@ async def ask_universal(request: Request, background_tasks: BackgroundTasks):
     stream = bool(body.get("stream", False))
 
     if not prompt:
-        raise HTTPException(400, "prompt required")
+        raise HTTPException(status_code=400, detail="prompt required")
 
     # -------------------------------
     # Detect intent
     # -------------------------------
     intent = detect_intent(prompt)
-    
+
     intent_map = {
         "document_analysis": document_analysis,
         "translation": translate_text,
@@ -2876,79 +2876,78 @@ async def ask_universal(request: Request, background_tasks: BackgroundTasks):
     if intent in intent_map:
         return await intent_map[intent](prompt, user_id, stream)
 
-  # -------------------------------
-# Load conversation
-# -------------------------------
-user_id = body.get("user_id") or str(uuid.uuid4())
-
-conversation_id = get_or_create_conversation_id(
-    supabase=supabase,
-    user_id=user_id
-)
-
-history = await load_history(user_id)
-
-# -------------------------------
-# SAFE PROFILE FETCH / CREATE
-# -------------------------------
-personality = "friendly"
-nickname = ""
-
-try:
-    # Async-safe call: wrap in thread if needed
-    profile_resp = await asyncio.to_thread(
-        lambda: supabase.table("profiles")
-        .select("nickname, personality")
-        .eq("id", user_id)
-        .maybe_single()
-        .execute()
+    # -------------------------------
+    # Load conversation
+    # -------------------------------
+    conversation_id = get_or_create_conversation_id(
+        supabase=supabase,
+        user_id=user_id
     )
 
-    if profile_resp.data:
-        personality = profile_resp.data.get("personality") or personality
-        nickname = profile_resp.data.get("nickname") or generate_random_nickname()
-    else:
-        # Create default profile if missing
-        default_profile = {
-            "id": user_id,
-            "nickname": generate_random_nickname(),
-            "personality": personality
-        }
-        insert_resp = await asyncio.to_thread(
-            lambda: supabase.table("profiles").insert(default_profile).execute()
+    history = await load_history(user_id)
+
+    # -------------------------------
+    # SAFE PROFILE FETCH / CREATE
+    # -------------------------------
+    personality = "friendly"
+    nickname = ""
+
+    try:
+        profile_resp = await asyncio.to_thread(
+            lambda: supabase.table("profiles")
+            .select("nickname, personality")
+            .eq("id", user_id)
+            .maybe_single()
+            .execute()
         )
-        if getattr(insert_resp, "status_code", None) not in [200, 201]:
-            logger.warning(f"Failed to create default profile for {user_id}")
-        nickname = default_profile["nickname"]
 
-except Exception as e:
-    logger.warning(f"Supabase profile fetch failed for {user_id}: {e}")
-    nickname = generate_random_nickname()
+        if profile_resp.data:
+            personality = profile_resp.data.get("personality") or personality
+            nickname = profile_resp.data.get("nickname") or generate_random_nickname()
+        else:
+            default_profile = {
+                "id": user_id,
+                "nickname": generate_random_nickname(),
+                "personality": personality
+            }
 
-# -------------------------------
-# Prepare system prompt
-# -------------------------------
-system_prompt = (
-    PERSONALITY_MAP.get(personality, PERSONALITY_MAP["friendly"])
-    + f"\nUser nickname: {nickname}\n"
-    "You are a ChatGPT-style multimodal assistant.\n"
-    "You can call tools when useful.\n"
-    "RULES:\n"
-    "- web_search is ONLY for real-world information lookup\n"
-    "- run_code is ONLY for Python, math, or text processing\n"
-    "- NEVER use run_code for images, media, or creative generation\n"
-    "- If the user asks for images, respond with text only\n"
-    "Maintain memory and context.\n"
-)
+            await asyncio.to_thread(
+                lambda: supabase.table("profiles")
+                .insert(default_profile)
+                .execute()
+            )
 
-messages = [{"role": "system", "content": system_prompt}]
-messages.extend(history)
-messages.append({"role": "user", "content": prompt})
+            nickname = default_profile["nickname"]
+
+    except Exception as e:
+        logger.warning(f"Profile fetch/create failed: {e}")
+        nickname = generate_random_nickname()
+
+    # -------------------------------
+    # Prepare system prompt
+    # -------------------------------
+    system_prompt = (
+        PERSONALITY_MAP.get(personality, PERSONALITY_MAP["friendly"])
+        + f"\nUser nickname: {nickname}\n"
+        "You are a ChatGPT-style multimodal assistant.\n"
+        "You can call tools when useful.\n"
+        "RULES:\n"
+        "- web_search is ONLY for real-world information lookup\n"
+        "- run_code is ONLY for Python, math, or text processing\n"
+        "- NEVER use run_code for images, media, or creative generation\n"
+        "- If the user asks for images, respond with text only\n"
+        "Maintain memory and context.\n"
+    )
+
+    messages = [{"role": "system", "content": system_prompt}]
+    messages.extend(history)
+    messages.append({"role": "user", "content": prompt})
 
     # -------------------------------
     # STREAM MODE
     # -------------------------------
     if stream:
+
         async def event_generator():
             assistant_reply = ""
             yield sse({"type": "starting"})
@@ -2975,81 +2974,31 @@ messages.append({"role": "user", "content": prompt})
                         async for line in resp.aiter_lines():
                             if not line or not line.startswith("data:"):
                                 continue
+
                             data = line[5:].strip()
                             if data == "[DONE]":
                                 break
-                            try:
-                                chunk = json.loads(data)
-                            except json.JSONDecodeError:
-                                continue
 
-                            if "error" in chunk:
-                                logger.error(chunk["error"])
-                                yield sse({"type": "error", "error": chunk["error"]})
-                                break
+                            chunk = json.loads(data)
+                            delta = chunk["choices"][0].get("delta", {})
 
-                            choices = chunk.get("choices") or []
-                            if not choices:
-                                continue
-
-                            delta = choices[0].get("delta") or {}
-
-                            # Tool calls
-                            for call in delta.get("tool_calls", []):
-                                fn = call.get("function") or {}
-                                name = fn.get("name")
-                                raw_args = fn.get("arguments", "{}")
-                                try:
-                                    args = json.loads(raw_args)
-                                except json.JSONDecodeError:
-                                    args = {}
-
-                                if not check_permission(role, name):
-                                    yield sse({"type": "error", "error": "Permission denied"})
-                                    continue
-
-                                try:
-                                    if name == "web_search" and "query" in args:
-                                        result = await duckduckgo_search(args["query"])
-                                    elif name == "run_code" and "task" in args:
-                                        task = args["task"]
-                                        if not isinstance(task, str) or not task.strip():
-                                            result = {"error": "Invalid task"}
-                                        else:
-                                            result = await run_code_safely(task)
-                                    else:
-                                        result = {"error": f"Unsupported tool or missing args: {name}"}
-                                except Exception as e:
-                                    result = {"error": str(e)}
-
-                                yield sse({"type": "tool", "tool": name, "result": result})
-                                messages.append({
-                                    "role": "tool",
-                                    "tool_name": name,
-                                    "content": json.dumps(result)
-                                })
-
-                            # Assistant text
                             content = delta.get("content")
                             if content:
                                 assistant_reply += content
                                 yield sse({"type": "token", "text": content})
 
-            except asyncio.CancelledError:
-                logger.info("Stream cancelled by user")
-                yield sse({"type": "cancelled"})
             finally:
                 if assistant_reply.strip():
-                    try:
-                        await asyncio.to_thread(
-                            supabase.table("messages").insert({
-                                "conversation_id": conversation_id,
-                                "role": "assistant",
-                                "content": assistant_reply
-                            }).execute
-                        )
-                    except Exception as e:
-                        logger.error(f"Failed to save assistant reply: {e}")
+                    await asyncio.to_thread(
+                        lambda: supabase.table("messages")
+                        .insert({
+                            "conversation_id": conversation_id,
+                            "role": "assistant",
+                            "content": assistant_reply
+                        })
+                        .execute()
+                    )
+
                 yield sse({"type": "done"})
 
         return StreamingResponse(
@@ -3069,7 +3018,7 @@ messages.append({"role": "user", "content": prompt})
         try:
             generate_ai_response(conversation_id, user_id, messages)
         except Exception as e:
-            logger.error(f"Background AI generation failed: {e}")
+            logger.error(f"Background generation failed: {e}")
 
     background_tasks.add_task(safe_generate)
 
