@@ -2893,17 +2893,31 @@ async def ask_universal(request: Request, background_tasks: BackgroundTasks):
     nickname = ""
 
     try:
-        profile_resp = supabase.table("profiles").select("nickname, personality").eq("id", user_id).maybe_single().execute()
+        # Async-safe call: wrap in thread if needed
+        profile_resp = await asyncio.to_thread(
+            supabase.table("profiles").select("nickname, personality").eq("id", user_id).maybe_single().execute
+        )
+
         if profile_resp.data:
             personality = profile_resp.data.get("personality") or personality
-            nickname = profile_resp.data.get("nickname") or nickname
+            nickname = profile_resp.data.get("nickname") or generate_random_nickname()
         else:
             # Create default profile if missing
-            default_profile = {"id": user_id, "nickname": "New User", "personality": personality}
-            supabase.table("profiles").insert(default_profile).execute()
+            default_profile = {
+                "id": user_id,
+                "nickname": generate_random_nickname(),
+                "personality": personality
+            }
+            insert_resp = await asyncio.to_thread(
+                supabase.table("profiles").insert(default_profile).execute
+            )
+            if insert_resp.status_code != 201:
+                logger.warning(f"Failed to create default profile for {user_id}")
             nickname = default_profile["nickname"]
+
     except Exception as e:
         logger.warning(f"Supabase profile fetch failed for {user_id}: {e}")
+        nickname = generate_random_nickname()
 
     # -------------------------------
     # Prepare system prompt
@@ -3021,11 +3035,13 @@ async def ask_universal(request: Request, background_tasks: BackgroundTasks):
             finally:
                 if assistant_reply.strip():
                     try:
-                        supabase.table("messages").insert({
-                            "conversation_id": conversation_id,
-                            "role": "assistant",
-                            "content": assistant_reply
-                        }).execute()
+                        await asyncio.to_thread(
+                            supabase.table("messages").insert({
+                                "conversation_id": conversation_id,
+                                "role": "assistant",
+                                "content": assistant_reply
+                            }).execute
+                        )
                     except Exception as e:
                         logger.error(f"Failed to save assistant reply: {e}")
                 yield sse({"type": "done"})
@@ -3055,22 +3071,6 @@ async def ask_universal(request: Request, background_tasks: BackgroundTasks):
         "status": "processing",
         "conversation_id": conversation_id,
         "user_id": user_id
-    }
-
-    # ======================================================
-    # NON-STREAM MODE
-    # ======================================================
-    def safe_generate():
-        try:
-            generate_ai_response(conversation_id, user_id, messages)
-        except Exception as e:
-            logger.error(f"Background AI generation failed: {e}")
-
-    background_tasks.add_task(safe_generate)
-
-    return {
-        "status": "processing",
-        "conversation_id": conversation_id
     }
     
 @app.post("/message/{message_id}/edit")
