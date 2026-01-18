@@ -2829,7 +2829,7 @@ async def chat_endpoint(req: Request):
 # 🚀 UNIVERSAL MULTIMODAL ENDPOINT — /ask/universal
 # =========================================================
 
-app.post("/ask/universal")
+@app.post("/ask/universal")
 async def ask_universal(request: Request, background_tasks: BackgroundTasks):
     body = await request.json()
 
