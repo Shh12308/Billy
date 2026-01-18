@@ -1335,6 +1335,13 @@ async def image_stream_helper(prompt: str, samples: int):
             "error": "Unexpected image error"
         }
 
+if profile_not_found:
+    supabase.table("profiles").insert({
+        "id": user_id,
+        "nickname": "User",
+        "personality": "default"
+    }).execute()
+
 async def chat_stream_helper(user_id: str, prompt: str):
     url = "https://api.groq.com/openai/v1/chat/completions"
 
