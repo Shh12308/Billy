@@ -483,6 +483,11 @@ def extract_keywords(text, num_keywords=10):
         logger.error(f"Error extracting keywords: {e}")
         return []
 
+def generate_random_nickname():
+    adjectives = ["Happy", "Brave", "Clever", "Friendly", "Gentle", "Kind", "Lucky", "Proud", "Smart", "Wise"]
+    nouns = ["Bear", "Eagle", "Fox", "Lion", "Tiger", "Wolf", "Dolphin", "Eagle", "Hawk", "Owl"]
+    return f"{random.choice(adjectives)}{random.choice(nouns)}"
+
 def create_knowledge_graph(entities, relationship_type="related"):
     """Create a simple knowledge graph from entities"""
     G = nx.Graph()
@@ -2879,11 +2884,14 @@ async def ask_universal(request: Request, background_tasks: BackgroundTasks):
     # -------------------------------
     # SAFE PROFILE FETCH / CREATE
     # -------------------------------
-    personality = "friendly"
-    nickname = ""
+    # -------------------------------
+# SAFE PROFILE FETCH / CREATE
+# -------------------------------
+personality = "friendly"
+nickname = ""
 
-    try:
-        profile_resp = await asyncio.to_thread(
+try:
+    profile_resp = await asyncio.to_thread(
         lambda: supabase.table("profiles")
         .select("nickname, personality")
         .eq("id", user_id)
@@ -2902,16 +2910,6 @@ async def ask_universal(request: Request, background_tasks: BackgroundTasks):
             "personality": personality
         }
 
-except Exception as e:
-    # Handle or log the error
-    print(f"Error fetching profile: {e}")
-    # Optionally fallback to default
-    default_profile = {
-        "id": user_id,
-        "nickname": generate_random_nickname(),
-        "personality": personality
-    }
-
         await asyncio.to_thread(
             lambda: supabase.table("profiles")
             .insert(default_profile)
@@ -2921,8 +2919,26 @@ except Exception as e:
         nickname = default_profile["nickname"]
 
 except Exception as e:
-    logger.warning(f"Profile fetch/create failed: {e}")
-    nickname = generate_random_nickname()
+    # Handle or log the error
+    print(f"Error fetching profile: {e}")
+    # Optionally fallback to default
+    default_profile = {
+        "id": user_id,
+        "nickname": generate_random_nickname(),
+        "personality": personality
+    }
+    
+    try:
+        await asyncio.to_thread(
+            lambda: supabase.table("profiles")
+            .insert(default_profile)
+            .execute()
+        )
+        nickname = default_profile["nickname"]
+    except Exception as insert_error:
+        logger.warning(f"Profile insert failed: {insert_error}")
+        nickname = generate_random_nickname()
+        
     # personality already exists, so keep it
 
     # -------------------------------
