@@ -1335,11 +1335,14 @@ async def image_stream_helper(prompt: str, samples: int):
             "error": "Unexpected image error"
         }
 
-if profile_not_found:
+profile = supabase.table("profiles").select("id, nickname, personality").eq("id", user_id).single().execute()
+
+if not profile.data:
+    # Profile missing → create it
     supabase.table("profiles").insert({
         "id": user_id,
-        "nickname": "User",
-        "personality": "default"
+        "nickname": "New User",
+        "personality": "friendly"
     }).execute()
 
 async def chat_stream_helper(user_id: str, prompt: str):
