@@ -2883,7 +2883,7 @@ async def ask_universal(request: Request, background_tasks: BackgroundTasks):
     nickname = ""
 
     try:
-    profile_resp = await asyncio.to_thread(
+        profile_resp = await asyncio.to_thread(
         lambda: supabase.table("profiles")
         .select("nickname, personality")
         .eq("id", user_id)
