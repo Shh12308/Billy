@@ -12,6 +12,11 @@ import tempfile
 import cv2
 import requests
 import random
+# Add this near the top of your file, after imports
+from pydantic import BaseModel
+
+# Set global configuration for all Pydantic models
+BaseModel.model_config["protected_namespaces"] = ()
 from datetime import datetime
 from typing import Optional, Dict, Any, List, Union
 from io import BytesIO, StringIO
