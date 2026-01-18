@@ -2894,17 +2894,19 @@ async def ask_universal(request: Request, background_tasks: BackgroundTasks):
     nickname = ""
 
     try:
+        # Fixed profile query - removed maybe_single() which was causing 406 error
         profile_resp = await asyncio.to_thread(
             lambda: supabase.table("profiles")
             .select("nickname, personality")
             .eq("id", user_id)
-            .maybe_single()
             .execute()
         )
 
-        if profile_resp.data:
-            personality = profile_resp.data.get("personality") or personality
-            nickname = profile_resp.data.get("nickname") or generate_random_nickname()
+        # Check if profile exists and has data
+        if profile_resp and profile_resp.data and len(profile_resp.data) > 0:
+            profile_data = profile_resp.data[0]
+            personality = profile_data.get("personality") or personality
+            nickname = profile_data.get("nickname") or generate_random_nickname()
         else:
             # Default profile if no data
             default_profile = {
@@ -2924,6 +2926,22 @@ async def ask_universal(request: Request, background_tasks: BackgroundTasks):
     except Exception as e:
         logger.warning(f"Profile fetch/create failed: {e}")
         nickname = generate_random_nickname()
+        
+        # Try to create a fallback profile
+        try:
+            default_profile = {
+                "id": user_id,
+                "nickname": nickname,
+                "personality": personality
+            }
+            
+            await asyncio.to_thread(
+                lambda: supabase.table("profiles")
+                .insert(default_profile)
+                .execute()
+            )
+        except Exception as fallback_error:
+            logger.error(f"Failed to create fallback profile: {fallback_error}")
 
     # -------------------------------
     # Prepare system prompt
@@ -2981,13 +2999,28 @@ async def ask_universal(request: Request, background_tasks: BackgroundTasks):
                             if data == "[DONE]":
                                 break
 
-                            chunk = json.loads(data)
-                            delta = chunk["choices"][0].get("delta", {})
-
-                            content = delta.get("content")
-                            if content:
-                                assistant_reply += content
-                                yield sse({"type": "token", "text": content})
+                            try:
+                                chunk = json.loads(data)
+                                
+                                # Fixed: Check if chunk has choices before accessing
+                                if "choices" in chunk and len(chunk["choices"]) > 0:
+                                    delta = chunk["choices"][0].get("delta", {})
+                                    content = delta.get("content")
+                                    if content:
+                                        assistant_reply += content
+                                        yield sse({"type": "token", "text": content})
+                                
+                                # Handle error messages in the stream
+                                elif "error" in chunk:
+                                    error_msg = chunk["error"].get("message", "Unknown error")
+                                    yield sse({"type": "error", "message": error_msg})
+                                    break
+                                    
+                            except json.JSONDecodeError:
+                                continue
+                            except Exception as e:
+                                logger.error(f"Error processing stream chunk: {e}")
+                                continue
 
             finally:
                 if assistant_reply.strip():
