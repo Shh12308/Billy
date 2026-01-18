@@ -2883,35 +2883,37 @@ async def ask_universal(request: Request, background_tasks: BackgroundTasks):
     nickname = ""
 
     try:
-        profile_resp = await asyncio.to_thread(
+        try:
+    profile_resp = await asyncio.to_thread(
+        lambda: supabase.table("profiles")
+        .select("nickname, personality")
+        .eq("id", user_id)
+        .maybe_single()
+        .execute()
+    )
+
+    if profile_resp.data:
+        personality = profile_resp.data.get("personality") or personality
+        nickname = profile_resp.data.get("nickname") or generate_random_nickname()
+    else:
+        default_profile = {
+            "id": user_id,
+            "nickname": generate_random_nickname(),
+            "personality": personality
+        }
+
+        await asyncio.to_thread(
             lambda: supabase.table("profiles")
-            .select("nickname, personality")
-            .eq("id", user_id)
-            .maybe_single()
+            .insert(default_profile)
             .execute()
         )
 
-        if profile_resp.data:
-            personality = profile_resp.data.get("personality") or personality
-            nickname = profile_resp.data.get("nickname") or generate_random_nickname()
-        else:
-            default_profile = {
-                "id": user_id,
-                "nickname": generate_random_nickname(),
-                "personality": personality
-            }
+        nickname = default_profile["nickname"]
 
-            await asyncio.to_thread(
-                lambda: supabase.table("profiles")
-                .insert(default_profile)
-                .execute()
-            )
-
-            nickname = default_profile["nickname"]
-
-    except Exception as e:
-        logger.warning(f"Profile fetch/create failed: {e}")
-        nickname = generate_random_nickname()
+except Exception as e:
+    logger.warning(f"Profile fetch/create failed: {e}")
+    nickname = generate_random_nickname()
+    # personality already exists, so keep it
 
     # -------------------------------
     # Prepare system prompt
