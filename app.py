@@ -2886,6 +2886,16 @@ async def ask_universal(request: Request, background_tasks: BackgroundTasks):
 
     history = await load_history(user_id)
 
+    user_id = body.get("user_id") or str(uuid.uuid4())
+
+profile_resp = await asyncio.to_thread(
+    supabase.table("profiles")
+    .select("nickname, personality")
+    .eq("id", user_id)
+    .maybe_single()
+    .execute
+)
+
     # -------------------------------
     # SAFE PROFILE FETCH / CREATE
     # -------------------------------
