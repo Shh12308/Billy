@@ -2883,24 +2883,34 @@ async def ask_universal(request: Request, background_tasks: BackgroundTasks):
     nickname = ""
 
     try:
-        try:
-            profile_resp = await asyncio.to_thread(
-                lambda: supabase.table("profiles")
-                .select("nickname, personality")
-                .eq("id", user_id)
-                .maybe_single()
-                .execute()
-            )
+    profile_resp = await asyncio.to_thread(
+        lambda: supabase.table("profiles")
+        .select("nickname, personality")
+        .eq("id", user_id)
+        .maybe_single()
+        .execute()
+    )
 
     if profile_resp.data:
         personality = profile_resp.data.get("personality") or personality
         nickname = profile_resp.data.get("nickname") or generate_random_nickname()
     else:
+        # Default profile if no data
         default_profile = {
             "id": user_id,
             "nickname": generate_random_nickname(),
             "personality": personality
         }
+
+except Exception as e:
+    # Handle or log the error
+    print(f"Error fetching profile: {e}")
+    # Optionally fallback to default
+    default_profile = {
+        "id": user_id,
+        "nickname": generate_random_nickname(),
+        "personality": personality
+    }
 
         await asyncio.to_thread(
             lambda: supabase.table("profiles")
