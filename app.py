@@ -101,6 +101,125 @@ supabase = create_client(
 # Initialize Supabase tables
 def init_supabase_tables():
     try:
+        # Create profiles table directly with SQL
+        supabase.rpc("execute_sql", {
+            "sql": """
+            CREATE TABLE IF NOT EXISTS profiles (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                nickname TEXT,
+                personality TEXT,
+                preferences JSONB,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT now()
+            );
+            """
+        }).execute()
+    except Exception as e:
+        logger.error(f"Failed to create profiles table: {e}")
+    
+    try:
+        # Create data_visualizations table directly with SQL
+        supabase.rpc("execute_sql", {
+            "sql": """
+            CREATE TABLE IF NOT EXISTS data_visualizations (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id TEXT NOT NULL,
+                data TEXT,
+                chart_type TEXT,
+                options JSONB,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT now()
+            );
+            """
+        }).execute()
+    except Exception as e:
+        logger.error(f"Failed to create data_visualizations table: {e}")
+    
+    try:
+        # Create knowledge_graphs table directly with SQL
+        supabase.rpc("execute_sql", {
+            "sql": """
+            CREATE TABLE IF NOT EXISTS knowledge_graphs (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id TEXT NOT NULL,
+                entities TEXT[],
+                relationship_type TEXT,
+                graph_data JSONB,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT now()
+            );
+            """
+        }).execute()
+    except Exception as e:
+        logger.error(f"Failed to create knowledge_graphs table: {e}")
+    
+    try:
+        # Create model_training_jobs table directly with SQL
+        supabase.rpc("execute_sql", {
+            "sql": """
+            CREATE TABLE IF NOT EXISTS model_training_jobs (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id TEXT NOT NULL,
+                model_type TEXT,
+                training_data TEXT,
+                status TEXT,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT now()
+            );
+            """
+        }).execute()
+    except Exception as e:
+        logger.error(f"Failed to create model_training_jobs table: {e}")
+    
+    try:
+        # Create code_reviews table directly with SQL
+        supabase.rpc("execute_sql", {
+            "sql": """
+            CREATE TABLE IF NOT EXISTS code_reviews (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id TEXT NOT NULL,
+                language TEXT,
+                code TEXT,
+                focus_areas TEXT[],
+                results JSONB,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT now()
+            );
+            """
+        }).execute()
+    except Exception as e:
+        logger.error(f"Failed to create code_reviews table: {e}")
+    
+    try:
+        # Create multimodal_searches table directly with SQL
+        supabase.rpc("execute_sql", {
+            "sql": """
+            CREATE TABLE IF NOT EXISTS multimodal_searches (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id TEXT NOT NULL,
+                query TEXT,
+                search_types TEXT[],
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT now()
+            );
+            """
+        }).execute()
+    except Exception as e:
+        logger.error(f"Failed to create multimodal_searches table: {e}")
+    
+    try:
+        # Create voice_profiles table directly with SQL
+        supabase.rpc("execute_sql", {
+            "sql": """
+            CREATE TABLE IF NOT EXISTS voice_profiles (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id TEXT NOT NULL,
+                name TEXT,
+                sample TEXT,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT now()
+            );
+            """
+        }).execute()
+    except Exception as e:
+        logger.error(f"Failed to create voice_profiles table: {e}")
+    
+    # Keep the existing table creation code for the basic tables
+    try:
         # Create memory table
         supabase.rpc("create_memory_table").execute()
     except:
@@ -158,43 +277,7 @@ def init_supabase_tables():
         # Create usage table
         supabase.rpc("create_usage_table").execute()
     except:
-        pass  # Table might already exist
-    
-    # New tables for advanced features
-    try:
-        supabase.rpc("create_knowledge_graphs_table").execute()
-    except:
-        pass  # Table might already exist
-    
-    try:
-        supabase.rpc("create_model_training_jobs_table").execute()
-    except:
-        pass  # Table might already exist
-    
-    try:
-        supabase.rpc("create_code_reviews_table").execute()
-    except:
-        pass  # Table might already exist
-    
-    try:
-        supabase.rpc("create_multimodal_searches_table").execute()
-    except:
-        pass  # Table might already exist
-    
-    try:
-        supabase.rpc("create_profiles_table").execute()
-    except:
-        pass  # Table might already exist
-    
-    try:
-        supabase.rpc("create_data_visualizations_table").execute()
-    except:
-        pass  # Table might already exist
-    
-    try:
-        supabase.rpc("create_voice_profiles_table").execute()
-    except:
-        pass  # Table might already exist
+        pass  # Table might already exist  # Table might already exist
 
 # Initialize tables on startup
 init_supabase_tables()
