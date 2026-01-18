@@ -2884,13 +2884,13 @@ async def ask_universal(request: Request, background_tasks: BackgroundTasks):
 
     try:
         try:
-           profile_resp = await asyncio.to_thread(
-        lambda: supabase.table("profiles")
-        .select("nickname, personality")
-        .eq("id", user_id)
-        .maybe_single()
-        .execute()
-    )
+            profile_resp = await asyncio.to_thread(
+                lambda: supabase.table("profiles")
+                .select("nickname, personality")
+                .eq("id", user_id)
+                .maybe_single()
+                .execute()
+            )
 
     if profile_resp.data:
         personality = profile_resp.data.get("personality") or personality
