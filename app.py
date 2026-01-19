@@ -132,78 +132,87 @@ async def get_or_create_user(req: Request, res: Response) -> User:
     if auth_header and auth_header.startswith("Bearer "):
         token = auth_header.split(" ")[1]
         try:
-            # Verify JWT token with frontend Supabase
             if frontend_supabase:
-                # Try to get user from frontend Supabase
                 user_response = frontend_supabase.auth.get_user(token)
                 if user_response.user:
-                    # User is authenticated, create or update in backend
                     user_id = user_response.user.id
                     email = user_response.user.email
-                    
-                    # Check if user exists in backend
+
                     try:
-                        existing_user = supabase.table("users").select("*").eq("id", user_id).execute()
+                        existing_user = (
+                            supabase.table("users")
+                            .select("*")
+                            .eq("id", user_id)
+                            .execute()
+                        )
+
                         if not existing_user.data:
-                            # Create user in backend without anonymous column
                             supabase.table("users").insert({
                                 "id": user_id,
                                 "email": email,
                                 "created_at": datetime.now().isoformat()
                             }).execute()
-                        
+
                         return User(id=user_id, email=email, anonymous=False)
+
                     except Exception as e:
                         logger.error(f"Error creating/updating user in backend: {e}")
+
         except Exception as e:
             logger.error(f"Error verifying JWT token: {e}")
-    
+
     # Check for session token in cookie
     session_token = req.cookies.get("session_token")
-    
     if session_token:
         try:
-            # Try to find user by session token
-            user_response = supabase.table("users").select("*").eq("session_token", session_token).execute()
+            user_response = (
+                supabase.table("users")
+                .select("*")
+                .eq("session_token", session_token)
+                .execute()
+            )
+
             if user_response.data:
                 user_data = user_response.data[0]
                 return User(
                     id=user_data["id"],
                     email=user_data.get("email"),
-                    anonymous=True,  # Default to anonymous
+                    anonymous=True,
                     session_token=session_token
                 )
+
         except Exception as e:
             logger.error(f"Error finding user by session token: {e}")
-    
+
     # Create new anonymous user
     user_id = str(uuid.uuid4())
     new_session_token = str(uuid.uuid4())
-    
+
     try:
-        # Create user without anonymous column
         supabase.table("users").insert({
             "id": user_id,
             "session_token": new_session_token,
             "created_at": datetime.now().isoformat()
         }).execute()
-        
-        # Set session token in response
+
         res.set_cookie(
             key="session_token",
             value=new_session_token,
             httponly=True,
             samesite="lax",
-            max_age=60 * 60 * 24 * 30  # 30 days
+            max_age=60 * 60 * 24 * 30
         )
-        
+
         return User(
             id=user_id,
             anonymous=True,
             session_token=new_session_token
         )
+
     except Exception as e:
         logger.error(f"Error creating anonymous user: {e}")
+        raise
+    
         # Fallback to basic user without session tracking
         return User(id=user_id, anonymous=True)
                         except Exception as e:
