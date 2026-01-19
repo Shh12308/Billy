@@ -12,6 +12,10 @@ import tempfile
 import cv2
 import requests
 import random
+import jwt
+from typing import Optional
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+
 # Add this near the top of your file, after imports
 from pydantic import BaseModel
 
@@ -90,6 +94,10 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 
+# Frontend Supabase configuration (for user authentication)
+FRONTEND_SUPABASE_URL = os.getenv("FRONTEND_SUPABASE_URL")
+FRONTEND_SUPABASE_ANON_KEY = os.getenv("FRONTEND_SUPABASE_ANON_KEY")
+
 if not SUPABASE_URL or not SUPABASE_KEY:
     raise RuntimeError("SUPABASE_URL or SUPABASE_KEY is missing")
     
@@ -98,10 +106,33 @@ supabase = create_client(
     SUPABASE_KEY
 )
 
+# Create a client for the frontend Supabase
+frontend_supabase = None
+if FRONTEND_SUPABASE_URL and FRONTEND_SUPABASE_ANON_KEY:
+    frontend_supabase = create_client(
+        FRONTEND_SUPABASE_URL,
+        FRONTEND_SUPABASE_ANON_KEY
+    )
+
+# Security for JWT tokens
+security = HTTPBearer()
+
+# User model for authentication
+class User(BaseModel):
+    id: str
+    email: Optional[str] = None
+    anonymous: bool = True
+
 # Initialize Supabase tables
 def init_supabase_tables():
     # Try to create the required tables using RPC functions if they exist
     # If they don't exist, we'll handle the error gracefully
+    
+    # Create users table
+    try:
+        supabase.rpc("create_users_table").execute()
+    except Exception as e:
+        print(f"Failed to create users table via RPC: {e}")
     
     # Create profiles table
     try:
@@ -144,6 +175,12 @@ def init_supabase_tables():
         supabase.rpc("create_voice_profiles_table").execute()
     except Exception as e:
         print(f"Failed to create voice_profiles table via RPC: {e}")
+    
+    # Create videos table
+    try:
+        supabase.rpc("create_videos_table").execute()
+    except Exception as e:
+        print(f"Failed to create videos table via RPC: {e}")
     
     # Keep the existing table creation code for the basic tables
     try:
@@ -891,17 +928,81 @@ async def duckduckgo_search(q: str):
             "results": results
             }
 
-async def get_or_create_user(req: Request, res: Response) -> str:
+# Updated function to get or create a user
+async def get_or_create_user(req: Request, res: Response) -> User:
+    # Check for JWT token first (logged-in user)
+    auth_header = req.headers.get("authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header.split(" ")[1]
+        try:
+            # Verify JWT token with frontend Supabase
+            if frontend_supabase:
+                # Try to get user from frontend Supabase
+                user_response = frontend_supabase.auth.get_user(token)
+                if user_response.user:
+                    # User is authenticated, create or update in backend
+                    user_id = user_response.user.id
+                    email = user_response.user.email
+                    
+                    # Check if user exists in backend
+                    try:
+                        existing_user = supabase.table("users").select("*").eq("id", user_id).execute()
+                        if not existing_user.data:
+                            # Create user in backend
+                            supabase.table("users").insert({
+                                "id": user_id,
+                                "email": email,
+                                "anonymous": False,
+                                "created_at": datetime.now().isoformat(),
+                                "last_seen": datetime.now().isoformat()
+                            }).execute()
+                        else:
+                            # Update last seen
+                            supabase.table("users").update({
+                                "last_seen": datetime.now().isoformat()
+                            }).eq("id", user_id).execute()
+                        
+                        return User(id=user_id, email=email, anonymous=False)
+                    except Exception as e:
+                        logger.error(f"Error creating/updating user in backend: {e}")
+                        # Continue with anonymous user if there's an error
+        except Exception as e:
+            logger.error(f"Error verifying JWT token: {e}")
+            # Continue with anonymous user if there's an error
+    
+    # Check for anonymous user ID in cookie
     user_id = req.cookies.get("user_id")
     if not user_id:
+        # Create new anonymous user
         user_id = str(uuid.uuid4())
         res.set_cookie(
             key="user_id",
             value=user_id,
             httponly=True,
-            samesite="lax"
+            samesite="lax",
+            max_age=60 * 60 * 24 * 30  # 30 days
         )
-    return user_id
+        
+        # Create anonymous user in database
+        try:
+            supabase.table("users").insert({
+                "id": user_id,
+                "anonymous": True,
+                "created_at": datetime.now().isoformat(),
+                "last_seen": datetime.now().isoformat()
+            }).execute()
+        except Exception as e:
+            logger.error(f"Error creating anonymous user: {e}")
+    else:
+        # Update last seen for existing anonymous user
+        try:
+            supabase.table("users").update({
+                "last_seen": datetime.now().isoformat()
+            }).eq("id", user_id).execute()
+        except Exception as e:
+            logger.error(f"Error updating last seen for anonymous user: {e}")
+    
+    return User(id=user_id, anonymous=True)
 
 def cache_result(prompt: str, provider: str, result: dict):
     # Store cache in Supabase
@@ -930,8 +1031,13 @@ def get_system_prompt(user_message: Optional[str] = None) -> str:
         base += f" The user said: \"{user_message}\". Tailor your response to this."
     return base
 
+# Update the build_contextual_prompt function to include user history
 def build_contextual_prompt(user_id: str, message: str) -> str:
     try:
+        # Get user information
+        user_response = supabase.table("users").select("*").eq("id", user_id).execute()
+        user_info = user_response.data[0] if user_response.data else None
+        
         # Get user memory
         memory_response = supabase.table("memory").select("key, value").eq("user_id", user_id).order("updated_at", desc=True).limit(5).execute()
         memory_rows = memory_response.data if memory_response.data else []
@@ -945,17 +1051,41 @@ def build_contextual_prompt(user_id: str, message: str) -> str:
         else:
             msg_rows = []
         
-        context = "\n".join(f"{row['key']}: {row['value']}" for row in memory_rows)
-        msg_context = "\n".join(f"Previous: {row['content']}" for row in msg_rows)
+        # Get user's images and videos for context
+        images_response = supabase.table("images").select("prompt, filename").eq("user_id", user_id).order("created_at", desc=True).limit(5).execute()
+        image_rows = images_response.data if images_response.data else []
+        
+        videos_response = supabase.table("videos").select("prompt, filename").eq("user_id", user_id).order("created_at", desc=True).limit(5).execute()
+        video_rows = videos_response.data if videos_response.data else []
+        
+        # Build context
+        user_type = "logged-in" if user_info and not user_info.get("anonymous", True) else "anonymous"
+        context = f"User ID: {user_id} ({user_type})\n"
+        
+        if user_info and not user_info.get("anonymous", True) and user_info.get("email"):
+            context += f"User email: {user_info['email']}\n"
+        
+        context += "\nUser memories:\n"
+        context += "\n".join(f"- {row['key']}: {row['value']}" for row in memory_rows)
+        
+        context += "\n\nRecent conversation:\n"
+        context += "\n".join(f"- {row['content']}" for row in msg_rows)
+        
+        if image_rows:
+            context += "\n\nRecent images:\n"
+            context += "\n".join(f"- {row['prompt']} (file: {row['filename']})" for row in image_rows)
+        
+        if video_rows:
+            context += "\n\nRecent videos:\n"
+            context += "\n".join(f"- {row['prompt']} (file: {row['filename']})" for row in video_rows)
         
         return f"""You are ZyNaraAI1.0: helpful, concise, friendly. Focus on exactly what the user wants.
+You have a persistent memory of this user across sessions.
+
 User context:
 {context}
 
-Recent conversation:
-{msg_context}
-
-User message: {message}"""
+Current message: {message}"""
     except Exception as e:
         logger.error(f"Failed to build contextual prompt: {e}")
         return f"You are ZyNaraAI1.0: helpful, concise, friendly. Focus on exactly what the user wants.\n\nUser message: {message}"
@@ -1037,7 +1167,8 @@ def upload_to_supabase(
     )
     return filename
 
-def upload_image_to_supabase(image_bytes: bytes, filename: str):
+# Update the upload_image_to_supabase function to link to users
+def upload_image_to_supabase(image_bytes: bytes, filename: str, user_id: str):
     upload = supabase.storage.from_("ai-images").upload(
         filename,
         image_bytes,
@@ -1046,6 +1177,17 @@ def upload_image_to_supabase(image_bytes: bytes, filename: str):
 
     if upload.get("error"):
         raise Exception(upload["error"]["message"])
+
+    # Save image record with user ID
+    try:
+        supabase.table("images").insert({
+            "id": str(uuid.uuid4()),
+            "user_id": user_id,
+            "filename": filename,
+            "created_at": datetime.now().isoformat()
+        }).execute()
+    except Exception as e:
+        logger.error(f"Failed to save image record: {e}")
 
     return upload
 
@@ -1084,7 +1226,8 @@ async def route_query(user_id: str, query: str):
     return "search"
 
 async def get_user_id_from_cookie(request: Request, response: Response) -> str:
-    return await get_or_create_user(request, response)
+    user = await get_or_create_user(request, response)
+    return user.id
 
 async def nsfw_check(prompt: str) -> bool:
     if not OPENAI_API_KEY: return False
@@ -1330,9 +1473,9 @@ def analyze_prompt(prompt: str):
                 settings["samples"] = n
     return settings
 
-async def image_stream_helper(prompt: str, samples: int):
+async def image_stream_helper(prompt: str, samples: int, user_id: str):
     try:
-        result = await _generate_image_core(prompt, samples, "anonymous", return_base64=False)
+        result = await _generate_image_core(prompt, samples, user_id, return_base64=False)
         yield {
             "type": "images",
             "provider": result["provider"],
@@ -1408,6 +1551,7 @@ async def enhance_prompt_with_groq(prompt: str) -> str:
         logger.exception("Prompt enhancer failed")
     return prompt
 
+# Update the generate_video_internal function to link to users
 async def generate_video_internal(prompt: str, samples: int = 1, user_id: str = "anonymous") -> dict:
     """
     Generate video (stub). Stores video files in Supabase storage like images.
@@ -1427,6 +1571,16 @@ async def generate_video_internal(prompt: str, samples: int = 1, user_id: str = 
                 file=placeholder_content,
                 file_options={"content-type": "video/mp4"}
             )
+            
+            # Save video record with user ID
+            supabase.table("videos").insert({
+                "id": str(uuid.uuid4()),
+                "user_id": user_id,
+                "filename": filename,
+                "prompt": prompt,
+                "created_at": datetime.now().isoformat()
+            }).execute()
+            
             # Get signed URL
             signed = supabase.storage.from_("ai-videos").create_signed_url(filename, 60*60)
             urls.append(signed["signedURL"])
@@ -1580,6 +1734,7 @@ async def tts_stream_helper(text: str):
     b64 = base64.b64encode(r.content).decode()
     yield {"type": "tts_done", "audio": b64}
 
+# Update the _generate_image_core function to use the user ID
 async def _generate_image_core(
     prompt: str,
     samples: int,
@@ -1646,6 +1801,18 @@ async def _generate_image_core(
             if isinstance(upload, dict) and upload.get("error"):
                 raise RuntimeError(upload["error"])
 
+            # Save image record with user ID and prompt
+            try:
+                supabase.table("images").insert({
+                    "id": str(uuid.uuid4()),
+                    "user_id": user_id,
+                    "filename": filename,
+                    "prompt": prompt,
+                    "created_at": datetime.now().isoformat()
+                }).execute()
+            except Exception as e:
+                logger.error(f"Failed to save image record: {e}")
+
             signed = supabase.storage.from_("ai-images").create_signed_url(
                 filename, 60 * 60
             )
@@ -1667,13 +1834,13 @@ async def _generate_image_core(
         "images": urls
     }
 
-async def image_gen_internal(prompt: str, samples: int = 1):
+async def image_gen_internal(prompt: str, samples: int = 1, user_id: str = "anonymous"):
     """Helper for streaming /ask/universal."""
-    result = await _generate_image_core(prompt, samples, "anonymous", return_base64=False)
+    result = await _generate_image_core(prompt, samples, user_id, return_base64=False)
 
-async def stream_images(prompt: str, samples: int):
+async def stream_images(prompt: str, samples: int, user_id: str):
     try:
-        async for chunk in image_stream_helper(prompt, samples):
+        async for chunk in image_stream_helper(prompt, samples, user_id):
             yield sse(chunk)
     except HTTPException as e:
         yield sse({"type": "image_error", "error": e.detail})
@@ -1705,10 +1872,10 @@ def track_cost(user_id: str, tokens: int, tool: Union[str, None] = None):
 
 async def auth(request: Request):
     # Simple auth function that extracts user_id from cookie
-    user_id = request.cookies.get("user_id")
-    if not user_id:
+    user = await get_or_create_user(request, Response())
+    if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    return type('User', (), {'id': user_id})()
+    return user
 
 PERSONALITY_MAP = {
     "friendly": (
@@ -2817,7 +2984,8 @@ async def chat_stream(req: Request, res: Response, tts: bool = False, samples: i
         raise HTTPException(400, "prompt required")
 
     # ✅ COOKIE USER
-    user_id = await get_or_create_user(req, res)
+    user = await get_or_create_user(req, res)
+    user_id = user.id
     
 # ---------- Chat endpoint ----------
 @app.post("/chat")
@@ -2859,7 +3027,8 @@ async def ask_universal(request: Request, background_tasks: BackgroundTasks):
     # Extract request data
     # -------------------------------
     prompt = body.get("prompt", "").strip()
-    user_id = body.get("user_id") or str(uuid.uuid4())
+    user = await get_or_create_user(request, Response())
+    user_id = user.id
     role = body.get("role", "user")
     stream = bool(body.get("stream", False))
 
@@ -3079,7 +3248,8 @@ async def edit_message(
     req: Request,
     res: Response
 ):
-    user_id = await get_or_create_user(req, res)
+    user = await get_or_create_user(req, res)
+    user_id = user.id
     body = await req.json()
     new_text = body.get("content")
 
@@ -3157,7 +3327,8 @@ async def regenerate(req: Request, res: Response, tts: bool = False, samples: in
         raise HTTPException(400, "prompt required")
 
     # ✅ COOKIE USER
-    user_id = await get_or_create_user(req, res)
+    user = await get_or_create_user(req, res)
+    user_id = user.id
 
     # ✅ CANCEL EXISTING STREAM (IF ANY)
     old_task = active_streams.get(user_id)
@@ -3309,7 +3480,8 @@ async def generate_video(request: Request):
     """
     body = await request.json()
     prompt = body.get("prompt", "").strip()
-    user_id = body.get("user_id", str(uuid.uuid4()))  # Generate a UUID if not provided
+    user = await get_or_create_user(request, Response())
+    user_id = user.id
     samples = max(1, int(body.get("samples", 1)))
 
     if not prompt:
@@ -3343,6 +3515,15 @@ async def generate_video(request: Request):
                     file=video_bytes,
                     file_options={"content-type": "video/mp4"}
                 )
+                
+                # Save video record with user ID
+                supabase.table("videos").insert({
+                    "id": str(uuid.uuid4()),
+                    "user_id": user_id,
+                    "filename": filename,
+                    "prompt": prompt,
+                    "created_at": datetime.now().isoformat()
+                }).execute()
 
                 # Create signed URL (1 hour)
                 signed = supabase.storage.from_("ai-videos").create_signed_url(filename, 60*60)
@@ -3360,7 +3541,8 @@ async def generate_video(request: Request):
 async def image_gen(request: Request):
     body = await request.json()
     prompt = body.get("prompt", "")
-    user_id = body.get("user_id", str(uuid.uuid4()))  # Generate a UUID if not provided
+    user = await get_or_create_user(request, Response())
+    user_id = user.id
 
     try:
         samples = max(1, int(body.get("samples", 1)))
@@ -3418,7 +3600,8 @@ async def image_stream(req: Request, res: Response):
         raise HTTPException(400, "no OpenAI KEY")
 
     # ✅ COOKIE-BASED USER ID
-    user_id = await get_or_create_user(req, res)
+    user = await get_or_create_user(req, res)
+    user_id = user.id
 
     async def event_generator():
         # ✅ REGISTER STREAM TASK (MUST BE HERE)
@@ -3490,8 +3673,8 @@ async def image_stream(req: Request, res: Response):
 
                 try:
                     image_bytes = base64.b64decode(b64)
-                    filename = f"streaming/{unique_filename('png')}"
-                    upload_image_to_supabase(image_bytes, filename)
+                    filename = f"{user_id}/{unique_filename('png')}"
+                    upload_image_to_supabase(image_bytes, filename, user_id)
 
                     signed = supabase.storage.from_("ai-images").create_signed_url(
                         filename, 60 * 60
@@ -3536,9 +3719,9 @@ async def image_stream(req: Request, res: Response):
     
 # ---------- Img2Img (DALL·E edits) ----------
 @app.post("/img2img")
-async def img2img(request: Request, file: UploadFile = File(...), prompt: str = "", user_id: str = None):
-    if user_id is None:
-        user_id = str(uuid.uuid4())
+async def img2img(request: Request, file: UploadFile = File(...), prompt: str = ""):
+    user = await get_or_create_user(request, Response())
+    user_id = user.id
         
     if not prompt:
         raise HTTPException(400, "prompt required")
@@ -3567,7 +3750,7 @@ async def img2img(request: Request, file: UploadFile = File(...), prompt: str = 
                     
                     image_bytes = base64.b64decode(b64)
                     supabase_fname = f"{user_id}/edits/{fname}"
-                    upload_image_to_supabase(image_bytes, supabase_fname)
+                    upload_image_to_supabase(image_bytes, supabase_fname, user_id)
                     signed = supabase.storage.from_("ai-images").create_signed_url(supabase_fname, 60*60)
                     urls.append(signed["signedURL"])
     except Exception:
@@ -3660,7 +3843,8 @@ async def tts_stream(req: Request, res: Response):
     }
 
     # ✅ COOKIE USER
-    user_id = await get_or_create_user(req, res)
+    user = await get_or_create_user(req, res)
+    user_id = user.id
 
     async def audio_streamer():
         # ✅ REGISTER STREAM TASK
@@ -3717,13 +3901,15 @@ async def tts_stream(req: Request, res: Response):
     )
 
 # ---------- Vision analyze ----------
+# Update the vision_analyze function to link to users
 @app.post("/vision/analyze")
 async def vision_analyze(
     req: Request,
     res: Response,
     file: UploadFile = File(...)
 ):
-    user_id = await get_or_create_user(req, res)
+    user = await get_or_create_user(req, res)
+    user_id = user.id
     content = await file.read()
 
     if not content:
@@ -3845,12 +4031,15 @@ async def vision_analyze(
         "faces_detected": face_count,
         "dominant_colors": hex_colors,
         "image_url": raw_url,
-        "annotated_image_url": ann_url
+        "annotated_image_url": ann_url,
+        "user_id": user_id
     }
 
+# Update the vision_history function to use the new user model
 @app.get("/vision/history")
 async def vision_history(req: Request, res: Response):
-    user_id = await get_or_create_user(req, res)
+    user = await get_or_create_user(req, res)
+    user_id = user.id
 
     try:
         response = supabase.table("vision_history").select("*").eq("user_id", user_id).order("created_at", desc=True).limit(50).execute()
@@ -3867,7 +4056,8 @@ async def code_gen(req: Request):
     prompt = body.get("prompt", "")
     language = body.get("language", "python").lower()
     run_flag = bool(body.get("run", False))
-    user_id = body.get("user_id", str(uuid.uuid4()))  # Generate a UUID if not provided
+    user = await get_or_create_user(req, Response())
+    user_id = user.id
 
     if not prompt:
         raise HTTPException(400, "prompt required")
@@ -3961,7 +4151,8 @@ async def speech_to_text(file: UploadFile = File(...)):
 
 @app.post("/chat/new")
 async def new_chat(req: Request, res: Response):
-    user_id = await get_or_create_user(req, res)
+    user = await get_or_create_user(req, res)
+    user_id = user.id
     cid = str(uuid.uuid4())
 
     try:
@@ -3979,7 +4170,8 @@ async def new_chat(req: Request, res: Response):
 
 @app.post("/chat/{conversation_id}")
 async def send_message(conversation_id: str, req: Request, res: Response):
-    user_id = await get_or_create_user(req, res)
+    user = await get_or_create_user(req, res)
+    user_id = user.id
     body = await req.json()
     text = body.get("message")
 
@@ -4037,7 +4229,8 @@ async def send_message(conversation_id: str, req: Request, res: Response):
 # ----------------------------------
 @app.get("/chats")
 async def list_chats(req: Request, res: Response):
-    user_id = await get_or_create_user(req, res)
+    user = await get_or_create_user(req, res)
+    user_id = user.id
 
     try:
         response = supabase.table("conversations").select("*").eq("user_id", user_id).order("updated_at", desc=True).execute()
@@ -4052,7 +4245,8 @@ async def list_chats(req: Request, res: Response):
 # ----------------------------------
 @app.get("/chats/search")
 async def search_chats(q: str, req: Request, res: Response):
-    user_id = await get_or_create_user(req, res)
+    user = await get_or_create_user(req, res)
+    user_id = user.id
 
     try:
         response = supabase.table("conversations").select("id, title").eq("user_id", user_id).ilike("title", f"%{q}%").order("updated_at", desc=True).execute()
@@ -4149,96 +4343,218 @@ async def chat_stream_endpoint(conversation_id: str, user_id: str, messages: lis
 @app.post("/document/analyze")
 async def document_analysis_endpoint(request: DocumentAnalysisRequest, user_id: str = Depends(get_user_id_from_cookie)):
     """Analyze documents for key information"""
+    user = await get_or_create_user(request, Response())
     return await document_analysis(
         f"document: {request.text}\nanalysis_type: {request.analysis_type}",
-        user_id,
+        user.id,
         False
     )
 
 @app.post("/translation")
 async def translation_endpoint(request: TranslationRequest, user_id: str = Depends(get_user_id_from_cookie)):
     """Translate text between languages"""
+    user = await get_or_create_user(request, Response())
     return await translate_text(
         f"translate: {request.text} to {request.target_lang}",
-        user_id,
+        user.id,
         False
     )
 
 @app.post("/sentiment/analyze")
 async def sentiment_analysis_endpoint(request: SentimentAnalysisRequest, user_id: str = Depends(get_user_id_from_cookie)):
     """Analyze sentiment of text"""
+    user = await get_or_create_user(request, Response())
     return await analyze_sentiment(
         f"sentiment: {request.text}",
-        user_id,
+        user.id,
         False
     )
 
 @app.post("/knowledge/graph")
 async def knowledge_graph_endpoint(request: KnowledgeGraphRequest, user_id: str = Depends(get_user_id_from_cookie)):
     """Create and visualize a knowledge graph"""
+    user = await get_or_create_user(request, Response())
     entities_str = ", ".join(request.entities)
     return await create_knowledge_graph_endpoint(
         f"entities: {entities_str}\nrelationship: {request.relationship_type}",
-        user_id,
+        user.id,
         False
     )
 
 @app.post("/model/train")
 async def custom_model_endpoint(request: CustomModelRequest, user_id: str = Depends(get_user_id_from_cookie)):
     """Train a custom model"""
+    user = await get_or_create_user(request, Response())
     return await train_custom_model(
         f"data: {request.training_data}\ntype: {request.model_type}",
-        user_id,
+        user.id,
         False
     )
 
 @app.post("/code/review")
 async def code_review_endpoint(request: CodeReviewRequest, user_id: str = Depends(get_user_id_from_cookie)):
     """Review code for issues and improvements"""
+    user = await get_or_create_user(request, Response())
     focus_str = ", ".join(request.focus_areas)
     return await review_code(
         f"code: ```{request.code}``\nlanguage: {request.language}\nfocus: {focus_str}",
-        user_id,
+        user.id,
         False
     )
 
 @app.post("/search/multimodal")
 async def multimodal_search_endpoint(request: MultimodalSearchRequest, user_id: str = Depends(get_user_id_from_cookie)):
     """Search across text, images, and videos"""
+    user = await get_or_create_user(request, Response())
     types_str = ", ".join(request.search_types)
     filters_str = ", ".join(f"{k}: {v}" for k, v in request.filters.items())
     return await multimodal_search(
         f"query: {request.query}\ntypes: {types_str}\nfilters: {filters_str}",
-        user_id,
+        user.id,
         False
     )
 
 @app.post("/ai/personalize")
 async def ai_personalization_endpoint(request: PersonalizationRequest, user_id: str = Depends(get_user_id_from_cookie)):
     """Customize AI behavior based on user preferences"""
+    user = await get_or_create_user(request, Response())
     prefs_str = ", ".join(f"{k}: {v}" for k, v in request.user_preferences.items())
     behavior_str = ", ".join(f"{k}: {v}" for k, v in request.behavior_patterns.items())
     return await personalize_ai(
         f"preferences: {prefs_str}\nbehavior: {behavior_str}",
-        user_id,
+        user.id,
         False
     )
 
 @app.post("/data/visualize")
 async def data_visualization_endpoint(request: DataVisualizationRequest, user_id: str = Depends(get_user_id_from_cookie)):
     """Generate charts and graphs from data"""
+    user = await get_or_create_user(request, Response())
     options_str = ", ".join(f"{k}: {v}" for k, v in request.options.items())
     return await visualize_data(
         f"data: {request.data}\nchart: {request.chart_type}\noptions: {options_str}",
-        user_id,
+        user.id,
         False
     )
 
 @app.post("/voice/clone")
 async def voice_cloning_endpoint(request: VoiceCloningRequest, user_id: str = Depends(get_user_id_from_cookie)):
     """Create custom voice profiles for TTS"""
+    user = await get_or_create_user(request, Response())
     return await clone_voice(
         f"sample: {request.voice_sample}\ntext: {request.text}\nname: {request.voice_name}",
-        user_id,
+        user.id,
         False
     )
+
+# Add a new endpoint to get user information
+@app.get("/user/info")
+async def get_user_info(req: Request, res: Response):
+    user = await get_or_create_user(req, res)
+    user_id = user.id
+    
+    # Get additional user data from database
+    try:
+        user_response = supabase.table("users").select("*").eq("id", user_id).execute()
+        user_data = user_response.data[0] if user_response.data else None
+        
+        # Get user's images count
+        images_count = supabase.table("images").select("id", count="exact").eq("user_id", user_id).execute()
+        
+        # Get user's videos count
+        videos_count = supabase.table("videos").select("id", count="exact").eq("user_id", user_id).execute()
+        
+        # Get user's conversations count
+        conversations_count = supabase.table("conversations").select("id", count="exact").eq("user_id", user_id).execute()
+        
+        return {
+            "id": user.id,
+            "email": user.email,
+            "anonymous": user.anonymous,
+            "created_at": user_data.get("created_at") if user_data else None,
+            "last_seen": user_data.get("last_seen") if user_data else None,
+            "stats": {
+                "images": images_count.count if hasattr(images_count, 'count') else 0,
+                "videos": videos_count.count if hasattr(videos_count, 'count') else 0,
+                "conversations": conversations_count.count if hasattr(conversations_count, 'count') else 0
+            }
+        }
+    except Exception as e:
+        logger.error(f"Failed to get user info: {e}")
+        return {
+            "id": user.id,
+            "email": user.email,
+            "anonymous": user.anonymous,
+            "error": "Failed to get additional user data"
+        }
+
+# Add a new endpoint to merge anonymous user data with logged-in user
+@app.post("/user/merge")
+async def merge_user_data(req: Request, res: Response):
+    # This endpoint should be called after a user logs in
+    # It merges the anonymous user's data with the logged-in user's data
+    
+    # Get the anonymous user ID from cookie
+    anonymous_id = req.cookies.get("user_id")
+    if not anonymous_id:
+        raise HTTPException(400, "No anonymous user ID found")
+    
+    # Get the logged-in user from JWT token
+    auth_header = req.headers.get("authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        raise HTTPException(400, "No authorization token found")
+    
+    token = auth_header.split(" ")[1]
+    try:
+        # Verify JWT token with frontend Supabase
+        if not frontend_supabase:
+            raise HTTPException(500, "Frontend Supabase not configured")
+        
+        user_response = frontend_supabase.auth.get_user(token)
+        if not user_response.user:
+            raise HTTPException(401, "Invalid token")
+        
+        logged_in_id = user_response.user.id
+        
+        # Merge data in the backend
+        try:
+            # Update all records from anonymous user to logged-in user
+            tables_to_merge = ["images", "videos", "conversations", "messages", "memory", "vision_history"]
+            
+            for table in tables_to_merge:
+                supabase.table(table).update({"user_id": logged_in_id}).eq("user_id", anonymous_id).execute()
+            
+            # Create or update the logged-in user in the backend
+            existing_user = supabase.table("users").select("*").eq("id", logged_in_id).execute()
+            if not existing_user.data:
+                supabase.table("users").insert({
+                    "id": logged_in_id,
+                    "email": user_response.user.email,
+                    "anonymous": False,
+                    "created_at": datetime.now().isoformat(),
+                    "last_seen": datetime.now().isoformat()
+                }).execute()
+            else:
+                supabase.table("users").update({
+                    "last_seen": datetime.now().isoformat()
+                }).eq("id", logged_in_id).execute()
+            
+            # Delete the anonymous user
+            supabase.table("users").delete().eq("id", anonymous_id).execute()
+            
+            # Update the cookie to the logged-in user ID
+            res.set_cookie(
+                key="user_id",
+                value=logged_in_id,
+                httponly=True,
+                samesite="lax",
+                max_age=60 * 60 * 24 * 30  # 30 days
+            )
+            
+            return {"status": "success", "message": "User data merged successfully"}
+        except Exception as e:
+            logger.error(f"Failed to merge user data: {e}")
+            raise HTTPException(500, f"Failed to merge user data: {str(e)}")
+    except Exception as e:
+        logger.error(f"Error verifying JWT token: {e}")
+        raise HTTPException(401, f"Invalid token: {str(e)}")
