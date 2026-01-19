@@ -13,28 +13,15 @@ import cv2
 import requests
 import random
 import jwt
-from typing import Optional
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-
-# Add this near the top of your file, after imports
-from pydantic import BaseModel
-
-# Set global configuration for all Pydantic models
-BaseModel.model_config["protected_namespaces"] = ()
-from datetime import datetime
+import hashlib
 from typing import Optional, Dict, Any, List, Union
 from io import BytesIO, StringIO
 import re
 import math
+from datetime import datetime
 
-last_ping = time.monotonic()
-
-async def event_generator():            # ← line ~15–18
-    async for line in resp.aiter_lines():  # ← line 21 is NOW valid
-        if time.monotonic() - last_ping > 10:
-            yield ": heartbeat\n\n"
-            last_ping = time.monotonic()
-        
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from pydantic import BaseModel
 import httpx
 import aiohttp
 import torch
@@ -47,7 +34,6 @@ from sse_starlette.sse import EventSourceResponse
 from supabase import create_client
 from ultralytics import YOLO
 from torchvision import models, transforms
-from pydantic import BaseModel
 import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
@@ -70,6 +56,9 @@ except ImportError:
     class UtilsPlaceholder:
         pass
     utils = UtilsPlaceholder()
+
+# Set global configuration for all Pydantic models
+BaseModel.model_config["protected_namespaces"] = ()
 
 YOLO_OBJECTS = None
 YOLO_FACES = None
@@ -122,6 +111,144 @@ class User(BaseModel):
     id: str
     email: Optional[str] = None
     anonymous: bool = True
+    device_fingerprint: Optional[str] = None
+    session_token: Optional[str] = None
+
+# User Identity Service
+class UserIdentityService:
+    def __init__(self, supabase_client):
+        self.supabase = supabase_client
+        
+    def generate_device_fingerprint(self, request):
+        """Generate a unique device fingerprint from request data"""
+        # Combine various request attributes to create a fingerprint
+        fingerprint_data = f"{request.headers.get('user-agent', '')}-{request.client.host}-{request.headers.get('accept-language', '')}"
+        return hashlib.sha256(fingerprint_data.encode()).hexdigest()
+    
+    async def get_or_create_user(self, request, response):
+        """Get existing user or create a new one"""
+        # Check for JWT token first (logged-in user)
+        auth_header = request.headers.get("authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            token = auth_header.split(" ")[1]
+            try:
+                # Verify JWT token with frontend Supabase
+                if frontend_supabase:
+                    # Try to get user from frontend Supabase
+                    user_response = frontend_supabase.auth.get_user(token)
+                    if user_response.user:
+                        # User is authenticated, create or update in backend
+                        user_id = user_response.user.id
+                        email = user_response.user.email
+                        
+                        # Check if user exists in backend
+                        try:
+                            existing_user = self.supabase.table("users").select("*").eq("id", user_id).execute()
+                            if not existing_user.data:
+                                # Create user in backend
+                                self.supabase.table("users").insert({
+                                    "id": user_id,
+                                    "email": email,
+                                    "anonymous": False,
+                                    "created_at": datetime.now().isoformat(),
+                                    "last_seen": datetime.now().isoformat()
+                                }).execute()
+                            else:
+                                # Update last seen
+                                self.supabase.table("users").update({
+                                    "last_seen": datetime.now().isoformat()
+                                }).eq("id", user_id).execute()
+                            
+                            return User(id=user_id, email=email, anonymous=False)
+                        except Exception as e:
+                            logger.error(f"Error creating/updating user in backend: {e}")
+            except Exception as e:
+                logger.error(f"Error verifying JWT token: {e}")
+        
+        # Check for session token in cookie or header
+        session_token = request.cookies.get("session_token") or request.headers.get("x-session-token")
+        
+        if session_token:
+            try:
+                # Try to find user by session token
+                user_response = self.supabase.table("users").select("*").eq("session_token", session_token).execute()
+                if user_response.data:
+                    user_data = user_response.data[0]
+                    # Update last seen
+                    self.supabase.table("users").update({
+                        "last_seen": datetime.now().isoformat()
+                    }).eq("id", user_data["id"]).execute()
+                    
+                    return User(
+                        id=user_data["id"],
+                        email=user_data.get("email"),
+                        anonymous=user_data.get("anonymous", True),
+                        device_fingerprint=user_data.get("device_fingerprint"),
+                        session_token=session_token
+                    )
+            except Exception as e:
+                logger.error(f"Error finding user by session token: {e}")
+        
+        # Check for device fingerprint
+        device_fingerprint = self.generate_device_fingerprint(request)
+        
+        if device_fingerprint:
+            try:
+                # Try to find user by device fingerprint
+                user_response = self.supabase.table("users").select("*").eq("device_fingerprint", device_fingerprint).execute()
+                if user_response.data:
+                    user_data = user_response.data[0]
+                    # Update last seen
+                    self.supabase.table("users").update({
+                        "last_seen": datetime.now().isoformat()
+                    }).eq("id", user_data["id"]).execute()
+                    
+                    return User(
+                        id=user_data["id"],
+                        email=user_data.get("email"),
+                        anonymous=user_data.get("anonymous", True),
+                        device_fingerprint=device_fingerprint,
+                        session_token=user_data.get("session_token")
+                    )
+            except Exception as e:
+                logger.error(f"Error finding user by device fingerprint: {e}")
+        
+        # Create new anonymous user
+        user_id = str(uuid.uuid4())
+        new_session_token = str(uuid.uuid4())
+        
+        try:
+            self.supabase.table("users").insert({
+                "id": user_id,
+                "anonymous": True,
+                "device_fingerprint": device_fingerprint,
+                "session_token": new_session_token,
+                "created_at": datetime.now().isoformat(),
+                "last_seen": datetime.now().isoformat()
+            }).execute()
+            
+            # Set session token in response
+            response.set_cookie(
+                key="session_token",
+                value=new_session_token,
+                httponly=True,
+                samesite="lax",
+                max_age=60 * 60 * 24 * 30  # 30 days
+            )
+            
+            return User(
+                id=user_id,
+                anonymous=True,
+                device_fingerprint=device_fingerprint,
+                session_token=new_session_token
+            )
+        except Exception as e:
+            logger.error(f"Error creating anonymous user: {e}")
+            # Fallback to basic user without session tracking
+            return User(id=user_id, anonymous=True)
+
+# Initialize the identity service
+identity_service = UserIdentityService(supabase)
 
 # Initialize Supabase tables
 def init_supabase_tables():
