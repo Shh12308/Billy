@@ -215,10 +215,7 @@ async def get_or_create_user(req: Request, res: Response) -> User:
     
         # Fallback to basic user without session tracking
         return User(id=user_id, anonymous=True)
-                        except Exception as e:
-                            logger.error(f"Error creating/updating user in backend: {e}")
-            except Exception as e:
-                logger.error(f"Error verifying JWT token: {e}")
+                        
         
         # Check for session token in cookie or header
         session_token = request.cookies.get("session_token") or request.headers.get("x-session-token")
