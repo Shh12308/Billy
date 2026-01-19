@@ -127,7 +127,9 @@ class UserIdentityService:
     
     # Quick fix: Modify the get_or_create_user function to not use the anonymous column
 async def get_or_create_user(req: Request, res: Response) -> User:
-    # Check for JWT token first (logged-in user)
+    # -----------------------------
+    # 1️⃣ JWT logged-in users
+    # -----------------------------
     auth_header = req.headers.get("authorization")
     if auth_header and auth_header.startswith("Bearer "):
         token = auth_header.split(" ")[1]
@@ -138,6 +140,7 @@ async def get_or_create_user(req: Request, res: Response) -> User:
                     user_id = user_response.user.id
                     email = user_response.user.email
 
+                    # Ensure exists in public.users
                     try:
                         existing_user = (
                             supabase.table("users")
@@ -145,7 +148,6 @@ async def get_or_create_user(req: Request, res: Response) -> User:
                             .eq("id", user_id)
                             .execute()
                         )
-
                         if not existing_user.data:
                             supabase.table("users").insert({
                                 "id": user_id,
@@ -154,63 +156,58 @@ async def get_or_create_user(req: Request, res: Response) -> User:
                             }).execute()
 
                         return User(id=user_id, email=email, anonymous=False)
-
                     except Exception as e:
-                        logger.error(f"Error creating/updating user in backend: {e}")
-
+                        logger.error(f"Error creating/updating user: {e}")
         except Exception as e:
             logger.error(f"Error verifying JWT token: {e}")
 
-    # Check for session token in cookie
+    # -----------------------------
+    # 2️⃣ Anonymous visitor via cookie
+    # -----------------------------
     session_token = req.cookies.get("session_token")
     if session_token:
         try:
-            user_response = (
-                supabase.table("users")
-                .select("*")
+            result = (
+                supabase.table("visitor_users")
+                .select("id")
                 .eq("session_token", session_token)
                 .execute()
             )
+            if result.data:
+                visitor_id = result.data[0]["id"]
 
-            if user_response.data:
-                user_data = user_response.data[0]
-                return User(
-                    id=user_data["id"],
-                    email=user_data.get("email"),
-                    anonymous=True,
-                    session_token=session_token
-                )
+                # Update last_seen
+                supabase.table("visitor_users").update({
+                    "last_seen": datetime.now().isoformat()
+                }).eq("id", visitor_id).execute()
 
+                return User(id=visitor_id, anonymous=True, session_token=session_token)
         except Exception as e:
-            logger.error(f"Error finding user by session token: {e}")
+            logger.error(f"Error finding visitor by session token: {e}")
 
-    # Create new anonymous user
-    user_id = str(uuid.uuid4())
+    # -----------------------------
+    # 3️⃣ Create new visitor
+    # -----------------------------
     new_session_token = str(uuid.uuid4())
-
     try:
-        supabase.table("users").insert({
-            "id": user_id,
-            "session_token": new_session_token,
-            "created_at": datetime.now().isoformat()
-        }).execute()
+        result = (
+            supabase.table("visitor_users")
+            .insert({"session_token": new_session_token})
+            .execute()
+        )
+        visitor_id = result.data[0]["id"]
 
         res.set_cookie(
             key="session_token",
             value=new_session_token,
             httponly=True,
             samesite="lax",
-            max_age=60 * 60 * 24 * 30
+            max_age=60 * 60 * 24 * 365  # 1 year
         )
 
-        return User(
-            id=user_id,
-            anonymous=True,
-            session_token=new_session_token
-        )
-
+        return User(id=visitor_id, anonymous=True, session_token=new_session_token)
     except Exception as e:
-        logger.error(f"Error creating anonymous user: {e}")
+        logger.error(f"Error creating new anonymous visitor: {e}")
         raise
     
         # Fallback to basic user without session tracking
@@ -835,6 +832,16 @@ def analyze_code_quality(code, language, focus_areas):
     results["overall_score"] = max(0, 100 - (total_issues * 10))
     
     return results
+
+
+def merge_visitor_to_user(visitor_id: str, auth_user_id: str):
+    supabase.table("ai_memory").update({
+        "user_id": auth_user_id
+    }).eq("user_id", visitor_id).execute()
+
+    # Optional: remove visitor record
+    supabase.table("visitor_users").delete().eq("id", visitor_id).execute()
+
 
 def create_chart(data, chart_type, options):
     """Create a chart from data"""
