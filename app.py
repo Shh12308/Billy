@@ -171,6 +171,7 @@ class UserIdentityService:
                         if not existing.data:
                             self.supabase.table("users").insert({
                                 "id": user_id,
+                                "nickname": nickname,
                                 "email": email,
                                 "created_at": now,
                                 "last_seen": now
@@ -243,7 +244,8 @@ class UserIdentityService:
                 self.supabase
                 .table("visitor_users")
                 .insert({
-                    "id": anonymous_id,  # Use the generated ID instead of UUID
+                    "id": user_id,
+                    "nickname": nickname,  # Use the generated ID instead of UUID
                     "session_token": new_session_token,
                     "device_fingerprint": device_fingerprint,
                     "created_at": now,
