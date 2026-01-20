@@ -125,110 +125,48 @@ class UserIdentityService:
         fingerprint_data = f"{request.headers.get('user-agent', '')}-{request.client.host}-{request.headers.get('accept-language', '')}"
         return hashlib.sha256(fingerprint_data.encode()).hexdigest()
     
-    # Quick fix: Modify the get_or_create_user function to not use the anonymous column
-async def get_or_create_user(req: Request, res: Response) -> User:
-    # -----------------------------
-    # 1️⃣ JWT logged-in users
-    # -----------------------------
-    auth_header = req.headers.get("authorization")
-    if auth_header and auth_header.startswith("Bearer "):
-        token = auth_header.split(" ")[1]
-        try:
-            if frontend_supabase:
-                user_response = frontend_supabase.auth.get_user(token)
-                if user_response.user:
-                    user_id = user_response.user.id
-                    email = user_response.user.email
-
-                    # Ensure exists in public.users
-                    try:
-                        existing_user = (
-                            supabase.table("users")
-                            .select("*")
-                            .eq("id", user_id)
-                            .execute()
-                        )
-                        if not existing_user.data:
-                            supabase.table("users").insert({
-                                "id": user_id,
-                                "email": email,
-                                "anonymous": False,
-                                "created_at": datetime.now().isoformat()
-                            }).execute()
-
-                        return User(id=user_id, email=email, anonymous=False)
-                    except Exception as e:
-                        logger.error(f"Error creating/updating user: {e}")
-        except Exception as e:
-            logger.error(f"Error verifying JWT token: {e}")
-
-    # -----------------------------
-    # 2️⃣ Anonymous visitor via cookie
-    # -----------------------------
-    session_token = req.cookies.get("session_token")
-    if session_token:
-        try:
-            result = (
-                supabase.table("users")
-                .select("*")
-                .eq("session_token", session_token)
-                .execute()
-            )
-            if result.data:
-                visitor_data = result.data[0]
-
-                # Optionally update last_active
-                supabase.table("users").update({
-                    "last_active": datetime.now().isoformat()
-                }).eq("id", visitor_data["id"]).execute()
-
-                return User(
-                    id=visitor_data["id"],
-                    anonymous=True,
-                    session_token=session_token
-                )
-        except Exception as e:
-            logger.error(f"Error finding user by session token: {e}")
-
-    # -----------------------------
-    # 3️⃣ Create new anonymous user
-    # -----------------------------
-    user_id = str(uuid.uuid4())
-    new_session_token = str(uuid.uuid4())
-
-    try:
-        supabase.table("users").insert({
-            "id": user_id,
-            "session_token": new_session_token,
-            "anonymous": True,
-            "created_at": datetime.now().isoformat()
-        }).execute()
-
-        res.set_cookie(
-            key="session_token",
-            value=new_session_token,
-            httponly=True,
-            samesite="lax",
-            max_age=60 * 60 * 24 * 365  # 1 year
-        )
-
-        return User(
-            id=user_id,
-            anonymous=True,
-            session_token=new_session_token
-        )
-
-    except Exception as e:
-        logger.error(f"Error creating anonymous user: {e}")
-        raise
-    
-        # Fallback to basic user without session tracking
-        return User(id=user_id, anonymous=True)
+    async def get_or_create_user(self, request: Request, response: Response) -> User:
+        # Check for JWT token first (logged-in user)
+        auth_header = request.headers.get("authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            token = auth_header.split(" ")[1]
+            try:
+                # Verify JWT token with frontend Supabase
+                if frontend_supabase:
+                    # Try to get user from frontend Supabase
+                    user_response = frontend_supabase.auth.get_user(token)
+                    if user_response.user:
+                        # User is authenticated, create or update in backend
+                        user_id = user_response.user.id
+                        email = user_response.user.email
                         
+                        # Check if user exists in backend
+                        try:
+                            existing_user = supabase.table("users").select("*").eq("id", user_id).execute()
+                            if not existing_user.data:
+                                # Create user in backend
+                                supabase.table("users").insert({
+                                    "id": user_id,
+                                    "email": email,
+                                    "created_at": datetime.now().isoformat(),
+                                    "last_seen": datetime.now().isoformat()
+                                }).execute()
+                            else:
+                                # Update last seen
+                                supabase.table("users").update({
+                                    "last_seen": datetime.now().isoformat()
+                                }).eq("id", user_id).execute()
+                            
+                            return User(id=user_id, email=email, anonymous=False)
+                        except Exception as e:
+                            logger.error(f"Error creating/updating user in backend: {e}")
+                            # Continue with anonymous user if there's an error
+            except Exception as e:
+                logger.error(f"Error verifying JWT token: {e}")
+                # Continue with anonymous user if there's an error
         
-        # Check for session token in cookie or header
-        session_token = request.cookies.get("session_token") or request.headers.get("x-session-token")
-        
+        # Check for session token in cookie
+        session_token = request.cookies.get("session_token")
         if session_token:
             try:
                 # Try to find user by session token
@@ -281,7 +219,6 @@ async def get_or_create_user(req: Request, res: Response) -> User:
         try:
             self.supabase.table("users").insert({
                 "id": user_id,
-                "anonymous": True,
                 "device_fingerprint": device_fingerprint,
                 "session_token": new_session_token,
                 "created_at": datetime.now().isoformat(),
@@ -944,6 +881,7 @@ async def generate_ai_response(conversation_id: str, user_id: str, messages: lis
 
 async def stream_llm(user_id, conversation_id, messages):
     assistant_reply = ""
+    tool_calls = []
 
     payload = {
         "model": CHAT_MODEL,
@@ -979,52 +917,124 @@ async def stream_llm(user_id, conversation_id, messages):
 
                 try:
                     chunk = json.loads(data)
-                except json.JSONDecodeError:
+                    delta = chunk["choices"][0]["delta"]
+
+                    # -------------------------
+                    # TOOL CALLS
+                    # -------------------------
+                    if "tool_calls" in delta:
+                        # Collect tool calls
+                        for tool_call in delta.get("tool_calls", []):
+                            if "id" in tool_call:
+                                tool_calls.append({
+                                    "id": tool_call["id"],
+                                    "type": tool_call.get("type", "function"),
+                                    "function": tool_call.get("function", {})
+                                })
+                            elif "function" in tool_call:
+                                # Update the last tool call with function details
+                                if tool_calls:
+                                    last_call = tool_calls[-1]
+                                    if "name" in tool_call["function"]:
+                                        last_call["function"]["name"] = tool_call["function"]["name"]
+                                    if "arguments" in tool_call["function"]:
+                                        last_call["function"]["arguments"] = tool_call["function"]["arguments"]
+                        continue
+
+                    # -------------------------
+                    # NORMAL TEXT STREAMING
+                    # -------------------------
+                    content = delta.get("content")
+                    if content:
+                        # 🚫 Prevent tool leakage
+                        if "<function=" in content:
+                            pass
+                        else:
+                            assistant_reply += content
+                            yield sse({
+                                "type": "token",
+                                "text": content
+                            })
+                except Exception as e:
+                    logger.error(f"Error processing stream chunk: {e}")
                     continue
 
-                delta = chunk["choices"][0]["delta"]
+    # -------------------------
+    # EXECUTE TOOL CALLS
+    # -------------------------
+    if tool_calls:
+        yield sse({"type": "tool_calls_start", "count": len(tool_calls)})
+        
+        for call in tool_calls:
+            name = call["function"]["name"]
+            args = json.loads(call["function"]["arguments"])
 
-                # -------------------------
-                # TOOL CALLS
-                # -------------------------
-                if "tool_calls" in delta:
-                    async for item in handle_tools(user_id, messages, delta):
-                        yield item
-                    continue
+            if name == "web_search":
+                result = await duckduckgo_search(args["query"])
+            elif name == "run_code":
+                result = await run_code_safely(args["task"])
+            else:
+                result = {"error": f"Unknown tool: {name}"}
 
-                # -------------------------
-                # NORMAL TEXT STREAMING
-                # -------------------------
-                content = delta.get("content")
-                if content:
-                    # 🚫 Prevent tool leakage
-                    if "<function=" in content:
-                        pass
-                    else:
-                        assistant_reply += content
-                        yield sse({
-                            "type": "token",
-                            "text": content
-                        })
+            yield sse({
+                "type": "tool_result",
+                "tool": name,
+                "result": result
+            })
 
-    async def run(call):
-        name = call["function"]["name"]
-        args = json.loads(call["function"]["arguments"])
+            # Add tool result to messages for context
+            messages.append({
+                "role": "tool",
+                "tool_call_id": call["id"],
+                "name": name,
+                "content": json.dumps(result)
+            })
 
-        if name == "web_search":
-            return name, await duckduckgo_search(args["query"])
-        if name == "run_code":
-            return name, await run_code_safely(args["task"])
+        # Continue conversation with tool results
+        yield sse({"type": "continuing_with_tools"})
+        
+        # Get final response with tool results
+        final_payload = {
+            "model": CHAT_MODEL,
+            "messages": messages,
+            "stream": True,
+            "max_tokens": 1500,
+        }
 
-    results = await asyncio.gather(*(run(c) for c in calls))
+        async with httpx.AsyncClient(timeout=None) as client:
+            async with client.stream(
+                "POST",
+                GROQ_URL,
+                headers=get_groq_headers(),
+                json=final_payload,
+            ) as response:
 
-    for name, result in results:
-        messages.append({
-            "role": "tool",
-            "tool_name": name,
-            "content": json.dumps(result)
-        })
-        yield sse({"type": "tool", "tool": name, "result": result})
+                async for line in response.aiter_lines():
+                    if not line or not line.startswith("data:"):
+                        continue
+
+                    data = line.replace("data:", "", 1).strip()
+
+                    if not data or data == "[DONE]":
+                        continue
+
+                    try:
+                        chunk = json.loads(data)
+                        delta = chunk["choices"][0]["delta"]
+                        content = delta.get("content")
+                        if content:
+                            assistant_reply += content
+                            yield sse({
+                                "type": "token",
+                                "text": content
+                            })
+                    except Exception as e:
+                        logger.error(f"Error processing final stream chunk: {e}")
+                        continue
+
+    # Save the complete response
+    if assistant_reply.strip():
+        await persist_reply(user_id, conversation_id, assistant_reply)
 
 async def persist_reply(user_id, conversation_id, text):
     try:
@@ -1128,80 +1138,99 @@ async def duckduckgo_search(q: str):
 
 # Updated function to get or create a user
 async def get_or_create_user(req: Request, res: Response) -> User:
-    # Check for JWT token first (logged-in user)
+    # -----------------------------
+    # 1️⃣ JWT logged-in users
+    # -----------------------------
     auth_header = req.headers.get("authorization")
     if auth_header and auth_header.startswith("Bearer "):
         token = auth_header.split(" ")[1]
         try:
-            # Verify JWT token with frontend Supabase
             if frontend_supabase:
-                # Try to get user from frontend Supabase
                 user_response = frontend_supabase.auth.get_user(token)
                 if user_response.user:
-                    # User is authenticated, create or update in backend
                     user_id = user_response.user.id
                     email = user_response.user.email
-                    
-                    # Check if user exists in backend
+
+                    # Ensure exists in public.users
                     try:
-                        existing_user = supabase.table("users").select("*").eq("id", user_id).execute()
+                        existing_user = (
+                            supabase.table("users")
+                            .select("*")
+                            .eq("id", user_id)
+                            .execute()
+                        )
                         if not existing_user.data:
-                            # Create user in backend
                             supabase.table("users").insert({
                                 "id": user_id,
                                 "email": email,
-                                "anonymous": False,
-                                "created_at": datetime.now().isoformat(),
-                                "last_seen": datetime.now().isoformat()
+                                "created_at": datetime.now().isoformat()
                             }).execute()
-                        else:
-                            # Update last seen
-                            supabase.table("users").update({
-                                "last_seen": datetime.now().isoformat()
-                            }).eq("id", user_id).execute()
-                        
+
                         return User(id=user_id, email=email, anonymous=False)
                     except Exception as e:
-                        logger.error(f"Error creating/updating user in backend: {e}")
-                        # Continue with anonymous user if there's an error
+                        logger.error(f"Error creating/updating user: {e}")
         except Exception as e:
             logger.error(f"Error verifying JWT token: {e}")
-            # Continue with anonymous user if there's an error
-    
-    # Check for anonymous user ID in cookie
-    user_id = req.cookies.get("user_id")
-    if not user_id:
-        # Create new anonymous user
-        user_id = str(uuid.uuid4())
+
+    # -----------------------------
+    # 2️⃣ Anonymous visitor via cookie
+    # -----------------------------
+    session_token = req.cookies.get("session_token")
+    if session_token:
+        try:
+            result = (
+                supabase.table("users")
+                .select("*")
+                .eq("session_token", session_token)
+                .execute()
+            )
+            if result.data:
+                visitor_data = result.data[0]
+
+                # Optionally update last_active
+                supabase.table("users").update({
+                    "last_active": datetime.now().isoformat()
+                }).eq("id", visitor_data["id"]).execute()
+
+                return User(
+                    id=visitor_data["id"],
+                    anonymous=True,
+                    session_token=session_token
+                )
+        except Exception as e:
+            logger.error(f"Error finding user by session token: {e}")
+
+    # -----------------------------
+    # 3️⃣ Create new anonymous user
+    # -----------------------------
+    user_id = str(uuid.uuid4())
+    new_session_token = str(uuid.uuid4())
+
+    try:
+        supabase.table("users").insert({
+            "id": user_id,
+            "session_token": new_session_token,
+            "created_at": datetime.now().isoformat()
+        }).execute()
+
         res.set_cookie(
-            key="user_id",
-            value=user_id,
+            key="session_token",
+            value=new_session_token,
             httponly=True,
             samesite="lax",
-            max_age=60 * 60 * 24 * 30  # 30 days
+            max_age=60 * 60 * 24 * 365  # 1 year
         )
-        
-        # Create anonymous user in database
-        try:
-            supabase.table("users").insert({
-                "id": user_id,
-                "anonymous": True,
-                "created_at": datetime.now().isoformat(),
-                "last_seen": datetime.now().isoformat()
-            }).execute()
-        except Exception as e:
-            logger.error(f"Error creating anonymous user: {e}")
-    else:
-        # Update last seen for existing anonymous user
-        try:
-            supabase.table("users").update({
-                "last_seen": datetime.now().isoformat()
-            }).eq("id", user_id).execute()
-        except Exception as e:
-            logger.error(f"Error updating last seen for anonymous user: {e}")
-    
-    return User(id=user_id, anonymous=True)
 
+        return User(
+            id=user_id,
+            anonymous=True,
+            session_token=new_session_token
+        )
+
+    except Exception as e:
+        logger.error(f"Error creating anonymous user: {e}")
+        raise
+    
 def cache_result(prompt: str, provider: str, result: dict):
     # Store cache in Supabase
     try:
@@ -1236,25 +1265,36 @@ def build_contextual_prompt(user_id: str, message: str) -> str:
         user_response = supabase.table("users").select("*").eq("id", user_id).execute()
         user_info = user_response.data[0] if user_response.data else None
         
-        # Get user memory
-        memory_response = supabase.table("memory").select("key, value").eq("user_id", user_id).order("updated_at", desc=True).limit(5).execute()
-        memory_rows = memory_response.data if memory_response.data else []
+        # Get user memory (with error handling)
+        memory_rows = []
+        try:
+            memory_response = supabase.table("memory").select("key, value").eq("user_id", user_id).order("updated_at", desc=True).limit(5).execute()
+            memory_rows = memory_response.data if memory_response.data else []
+        except Exception as e:
+            logger.error(f"Error fetching user memory: {e}")
         
-        # Get conversation history for context
-        conv_response = supabase.table("conversations").select("id").eq("user_id", user_id).order("updated_at", desc=True).limit(1).execute()
-        if conv_response.data:
-            conv_id = conv_response.data[0]["id"]
-            msg_response = supabase.table("messages").select("content").eq("conversation_id", conv_id).order("created_at", desc=True).limit(10).execute()
-            msg_rows = msg_response.data if msg_response.data else []
-        else:
-            msg_rows = []
+        # Get conversation history for context (with error handling)
+        msg_rows = []
+        try:
+            conv_response = supabase.table("conversations").select("id").eq("user_id", user_id).order("updated_at", desc=True).limit(1).execute()
+            if conv_response.data:
+                conv_id = conv_response.data[0]["id"]
+                msg_response = supabase.table("messages").select("content").eq("conversation_id", conv_id).order("created_at", desc=True).limit(10).execute()
+                msg_rows = msg_response.data if msg_response.data else []
+        except Exception as e:
+            logger.error(f"Error fetching conversation history: {e}")
         
-        # Get user's images and videos for context
-        images_response = supabase.table("images").select("prompt, filename").eq("user_id", user_id).order("created_at", desc=True).limit(5).execute()
-        image_rows = images_response.data if images_response.data else []
-        
-        videos_response = supabase.table("videos").select("prompt, filename").eq("user_id", user_id).order("created_at", desc=True).limit(5).execute()
-        video_rows = videos_response.data if videos_response.data else []
+        # Get user's images and videos for context (with error handling)
+        image_rows = []
+        video_rows = []
+        try:
+            images_response = supabase.table("images").select("prompt, filename").eq("user_id", user_id).order("created_at", desc=True).limit(5).execute()
+            image_rows = images_response.data if images_response.data else []
+            
+            videos_response = supabase.table("videos").select("prompt, filename").eq("user_id", user_id).order("created_at", desc=True).limit(5).execute()
+            video_rows = videos_response.data if videos_response.data else []
+        except Exception as e:
+            logger.error(f"Error fetching user media: {e}")
         
         # Build context
         user_type = "logged-in" if user_info and not user_info.get("anonymous", True) else "anonymous"
@@ -3495,7 +3535,15 @@ async def stream_endpoint():
         yield sse({"message": "Done"})
         yield "data: [DONE]\n\n"
     
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
 
 # -----------------------------
 # Stop endpoint
@@ -4693,7 +4741,7 @@ async def merge_user_data(req: Request, res: Response):
     # It merges the anonymous user's data with the logged-in user's data
     
     # Get the anonymous user ID from cookie
-    anonymous_id = req.cookies.get("user_id")
+    anonymous_id = req.cookies.get("session_token")
     if not anonymous_id:
         raise HTTPException(400, "No anonymous user ID found")
     
@@ -4728,7 +4776,6 @@ async def merge_user_data(req: Request, res: Response):
                 supabase.table("users").insert({
                     "id": logged_in_id,
                     "email": user_response.user.email,
-                    "anonymous": False,
                     "created_at": datetime.now().isoformat(),
                     "last_seen": datetime.now().isoformat()
                 }).execute()
@@ -4738,11 +4785,11 @@ async def merge_user_data(req: Request, res: Response):
                 }).eq("id", logged_in_id).execute()
             
             # Delete the anonymous user
-            supabase.table("users").delete().eq("id", anonymous_id).execute()
+            supabase.table("users").delete().eq("session_token", anonymous_id).execute()
             
             # Update the cookie to the logged-in user ID
             res.set_cookie(
-                key="user_id",
+                key="session_token",
                 value=logged_in_id,
                 httponly=True,
                 samesite="lax",
