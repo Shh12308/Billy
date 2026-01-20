@@ -231,6 +231,7 @@ class UserIdentityService:
                 value=new_session_token,
                 httponly=True,
                 samesite="lax",
+                secure=False,
                 max_age=60 * 60 * 24 * 30  # 30 days
             )
             
@@ -387,7 +388,12 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://localhost:8080",
+        "*",
+                  ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
