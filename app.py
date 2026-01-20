@@ -127,8 +127,11 @@ class UserIdentityService:
         )
         return hashlib.sha256(fingerprint_data.encode()).hexdigest()
 
-    def generate_anonymous_id(self, device_fingerprint: str) -> str:
+    def generate_anonymous_id(self, device_fingerprint: str) -> dict:
         """Generate a consistent, recognizable anonymous ID based on device fingerprint"""
+        # Generate a proper UUID for the database
+        user_uuid = str(uuid.uuid4())
+        
         # Use the first 8 characters of the device fingerprint hash
         fp_short = device_fingerprint[:8]
         
@@ -140,7 +143,10 @@ class UserIdentityService:
         adj_index = int(device_fingerprint[8:10], 16) % len(adjectives)
         noun_index = int(device_fingerprint[10:12], 16) % len(nouns)
         
-        return f"{adjectives[adj_index]}{nouns[noun_index]}-{fp_short}"
+        return {
+            "uuid": user_uuid,
+            "friendly_name": f"{adjectives[adj_index]}{nouns[noun_index]}-{fp_short}"
+        }
 
     async def get_or_create_user(self, request: Request, response: Response) -> User:
         now = datetime.utcnow().isoformat()
@@ -171,7 +177,7 @@ class UserIdentityService:
                         if not existing.data:
                             self.supabase.table("users").insert({
                                 "id": user_id,
-                                "nickname": nickname,
+                                "nickname": user_id,  # Use user_id as default nickname
                                 "email": email,
                                 "created_at": now,
                                 "last_seen": now
@@ -236,16 +242,18 @@ class UserIdentityService:
         device_fingerprint = self.generate_device_fingerprint(request)
         new_session_token = str(uuid.uuid4())
         
-        # Generate a more recognizable anonymous ID
-        anonymous_id = self.generate_anonymous_id(device_fingerprint)
+        # Generate a proper UUID for the database and a friendly name for display
+        anonymous_info = self.generate_anonymous_id(device_fingerprint)
+        anonymous_uuid = anonymous_info["uuid"]
+        friendly_name = anonymous_info["friendly_name"]
 
         try:
             created = (
                 self.supabase
                 .table("visitor_users")
                 .insert({
-                    "id": user_id,
-                    "nickname": nickname,  # Use the generated ID instead of UUID
+                    "id": anonymous_uuid,  # Use the UUID for the database
+                    "nickname": friendly_name,  # Use the friendly name for display
                     "session_token": new_session_token,
                     "device_fingerprint": device_fingerprint,
                     "created_at": now,
@@ -264,7 +272,7 @@ class UserIdentityService:
             )
 
             return User(
-                id=anonymous_id,  # Use the generated ID
+                id=anonymous_uuid,  # Use the UUID for the User object
                 anonymous=True,
                 device_fingerprint=device_fingerprint,
                 session_token=new_session_token
@@ -272,7 +280,41 @@ class UserIdentityService:
 
         except Exception as e:
             logger.critical(f"Failed to create visitor user: {e}")
-            return User(id=self.generate_anonymous_id(device_fingerprint), anonymous=True)
+            # Return a user with a UUID even if we can't save to the database
+            return User(
+                id=anonymous_uuid, 
+                anonymous=True,
+                device_fingerprint=device_fingerprint,
+                session_token=new_session_token
+            )
+
+    def merge_visitor_to_user(self, user_id: str, session_token: str):
+        """
+        Move all anonymous data to real user on login
+        """
+        visitor = (
+            self.supabase.table("visitor_users")
+            .select("id")
+            .eq("session_token", session_token)
+            .execute()
+        )
+
+        if not visitor.data:
+            return
+
+        visitor_id = visitor.data[0]["id"]
+
+        # Move conversations
+        self.supabase.table("conversations") \
+            .update({"user_id": user_id}) \
+            .eq("user_id", visitor_id) \
+            .execute()
+
+        # Delete visitor row
+        self.supabase.table("visitor_users") \
+            .delete() \
+            .eq("id", visitor_id) \
+            .execute()
 
 # Initialize UserIdentityService
 user_identity_service = UserIdentityService(supabase)
@@ -822,36 +864,6 @@ def analyze_code_quality(code, language, focus_areas):
     results["overall_score"] = max(0, 100 - (total_issues * 10))
     
     return results
-
-
-def merge_visitor_to_user(user_id: str, session_token: str):
-    """
-    Move all anonymous data to real user on login
-    """
-
-    visitor = (
-        supabase.table("visitor_users")
-        .select("id")
-        .eq("session_token", session_token)
-        .execute()
-    )
-
-    if not visitor.data:
-        return
-
-    visitor_id = visitor.data[0]["id"]
-
-    # Move conversations
-    supabase.table("conversations") \
-        .update({"user_id": user_id}) \
-        .eq("user_id", visitor_id) \
-        .execute()
-
-    # Delete visitor row
-    supabase.table("visitor_users") \
-        .delete() \
-        .eq("id", visitor_id) \
-        .execute()
 
 def create_chart(data, chart_type, options):
     """Create a chart from data"""
@@ -3228,6 +3240,13 @@ async def chat_endpoint(req: Request):
 # 🚀 UNIVERSAL MULTIMODAL ENDPOINT — /ask/universal
 # =========================================================
 
+def is_valid_uuid(uuid_string):
+    """Check if a string is a valid UUID"""
+    try:
+        uuid_obj = uuid.UUID(uuid_string)
+        return str(uuid_obj) == uuid_string.lower()
+    except ValueError:
+        return False
 
 @app.post("/ask/universal")
 async def ask_universal(request: Request, background_tasks: BackgroundTasks):
