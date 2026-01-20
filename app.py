@@ -126,7 +126,7 @@ class UserIdentityService:
         return hashlib.sha256(fingerprint_data.encode()).hexdigest()
     
     async def get_or_create_user(self, request: Request, response: Response) -> User:
-    now = datetime.utcnow().isoformat()
+        now = datetime.utcnow().isoformat()
 
     # ==================================================
     # 1️⃣ AUTHENTICATED USER (Frontend Supabase JWT)
@@ -162,7 +162,6 @@ class UserIdentityService:
                             "last_seen": now
                         }).eq("id", user_id).execute()
 
-                    # 🔁 Merge anonymous visitor if exists
                     session_token = request.cookies.get("session_token")
                     if session_token:
                         self.merge_visitor_to_user(user_id, session_token)
@@ -174,7 +173,7 @@ class UserIdentityService:
             logger.error(f"JWT verification failed: {e}")
 
     # ==================================================
-    # 2️⃣ ANONYMOUS VISITOR (COOKIE)
+    # 2️⃣ ANONYMOUS VISITOR
     # ==================================================
     session_token = request.cookies.get("session_token")
 
@@ -205,7 +204,7 @@ class UserIdentityService:
             logger.error(f"Visitor lookup failed: {e}")
 
     # ==================================================
-    # 3️⃣ CREATE NEW ANONYMOUS VISITOR
+    # 3️⃣ CREATE NEW VISITOR
     # ==================================================
     device_fingerprint = self.generate_device_fingerprint(request)
     new_session_token = str(uuid.uuid4())
@@ -229,8 +228,8 @@ class UserIdentityService:
             value=new_session_token,
             httponly=True,
             samesite="lax",
-            secure=False,                 # localhost-safe
-            max_age=60 * 60 * 24 * 365    # 1 year
+            secure=False,
+            max_age=60 * 60 * 24 * 365
         )
 
         return User(
