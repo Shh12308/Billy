@@ -126,128 +126,124 @@ class UserIdentityService:
         return hashlib.sha256(fingerprint_data.encode()).hexdigest()
     
     async def get_or_create_user(self, request: Request, response: Response) -> User:
-        # Check for JWT token first (logged-in user)
-        auth_header = request.headers.get("authorization")
-        if auth_header and auth_header.startswith("Bearer "):
-            token = auth_header.split(" ")[1]
-            try:
-                # Verify JWT token with frontend Supabase
-                if frontend_supabase:
-                    # Try to get user from frontend Supabase
-                    user_response = frontend_supabase.auth.get_user(token)
-                    if user_response.user:
-                        # User is authenticated, create or update in backend
-                        user_id = user_response.user.id
-                        email = user_response.user.email
-                        
-                        # Check if user exists in backend
-                        try:
-                            existing_user = supabase.table("users").select("*").eq("id", user_id).execute()
-                            if not existing_user.data:
-                                # Create user in backend
-                                supabase.table("users").insert({
-                                    "id": user_id,
-                                    "email": email,
-                                    "created_at": datetime.now().isoformat(),
-                                    "last_seen": datetime.now().isoformat()
-                                }).execute()
-                            else:
-                                # Update last seen
-                                supabase.table("users").update({
-                                    "last_seen": datetime.now().isoformat()
-                                }).eq("id", user_id).execute()
-                            
-                            return User(id=user_id, email=email, anonymous=False)
-                        except Exception as e:
-                            logger.error(f"Error creating/updating user in backend: {e}")
-                            # Continue with anonymous user if there's an error
-            except Exception as e:
-                logger.error(f"Error verifying JWT token: {e}")
-                # Continue with anonymous user if there's an error
-        
-        # Check for session token in cookie
-        session_token = request.cookies.get("session_token")
-        if session_token:
-            try:
-                # Try to find user by session token
-                user_response = self.supabase.table("users").select("*").eq("session_token", session_token).execute()
-                if user_response.data:
-                    user_data = user_response.data[0]
-                    # Update last seen
-                    self.supabase.table("users").update({
-                        "last_seen": datetime.now().isoformat()
-                    }).eq("id", user_data["id"]).execute()
-                    
-                    return User(
-                        id=user_data["id"],
-                        email=user_data.get("email"),
-                        anonymous=user_data.get("anonymous", True),
-                        device_fingerprint=user_data.get("device_fingerprint"),
-                        session_token=session_token
-                    )
-            except Exception as e:
-                logger.error(f"Error finding user by session token: {e}")
-        
-        # Check for device fingerprint
-        device_fingerprint = self.generate_device_fingerprint(request)
-        
-        if device_fingerprint:
-            try:
-                # Try to find user by device fingerprint
-                user_response = self.supabase.table("users").select("*").eq("device_fingerprint", device_fingerprint).execute()
-                if user_response.data:
-                    user_data = user_response.data[0]
-                    # Update last seen
-                    self.supabase.table("users").update({
-                        "last_seen": datetime.now().isoformat()
-                    }).eq("id", user_data["id"]).execute()
-                    
-                    return User(
-                        id=user_data["id"],
-                        email=user_data.get("email"),
-                        anonymous=user_data.get("anonymous", True),
-                        device_fingerprint=device_fingerprint,
-                        session_token=user_data.get("session_token")
-                    )
-            except Exception as e:
-                logger.error(f"Error finding user by device fingerprint: {e}")
-        
-        # Create new anonymous user
-        user_id = str(uuid.uuid4())
-        new_session_token = str(uuid.uuid4())
-        
-        try:
-            self.supabase.table("users").insert({
-                "id": user_id,
-                "device_fingerprint": device_fingerprint,
-                "session_token": new_session_token,
-                "created_at": datetime.now().isoformat(),
-                "last_seen": datetime.now().isoformat()
-            }).execute()
-            
-            # Set session token in response
-            response.set_cookie(
-                key="session_token",
-                value=new_session_token,
-                httponly=True,
-                samesite="lax",
-                secure=False,
-                max_age=60 * 60 * 24 * 30  # 30 days
-            )
-            
-            return User(
-                id=user_id,
-                anonymous=True,
-                device_fingerprint=device_fingerprint,
-                session_token=new_session_token
-            )
-        except Exception as e:
-            logger.error(f"Error creating anonymous user: {e}")
-            # Fallback to basic user without session tracking
-            return User(id=user_id, anonymous=True)
+    now = datetime.utcnow().isoformat()
 
-# Initialize the identity service
-identity_service = UserIdentityService(supabase)
+    # ==================================================
+    # 1️⃣ AUTHENTICATED USER (Frontend Supabase JWT)
+    # ==================================================
+    auth_header = request.headers.get("authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header.split(" ")[1]
+
+        try:
+            if frontend_supabase:
+                user_response = frontend_supabase.auth.get_user(token)
+
+                if user_response and user_response.user:
+                    user_id = user_response.user.id
+                    email = user_response.user.email
+
+                    existing = (
+                        self.supabase.table("users")
+                        .select("id")
+                        .eq("id", user_id)
+                        .execute()
+                    )
+
+                    if not existing.data:
+                        self.supabase.table("users").insert({
+                            "id": user_id,
+                            "email": email,
+                            "created_at": now,
+                            "last_seen": now
+                        }).execute()
+                    else:
+                        self.supabase.table("users").update({
+                            "last_seen": now
+                        }).eq("id", user_id).execute()
+
+                    # 🔁 Merge anonymous visitor if exists
+                    session_token = request.cookies.get("session_token")
+                    if session_token:
+                        self.merge_visitor_to_user(user_id, session_token)
+                        response.delete_cookie("session_token")
+
+                    return User(id=user_id, email=email, anonymous=False)
+
+        except Exception as e:
+            logger.error(f"JWT verification failed: {e}")
+
+    # ==================================================
+    # 2️⃣ ANONYMOUS VISITOR (COOKIE)
+    # ==================================================
+    session_token = request.cookies.get("session_token")
+
+    if session_token:
+        try:
+            visitor = (
+                self.supabase.table("visitor_users")
+                .select("*")
+                .eq("session_token", session_token)
+                .execute()
+            )
+
+            if visitor.data:
+                visitor_data = visitor.data[0]
+
+                self.supabase.table("visitor_users").update({
+                    "last_seen": now
+                }).eq("id", visitor_data["id"]).execute()
+
+                return User(
+                    id=visitor_data["id"],
+                    anonymous=True,
+                    session_token=session_token,
+                    device_fingerprint=visitor_data.get("device_fingerprint")
+                )
+
+        except Exception as e:
+            logger.error(f"Visitor lookup failed: {e}")
+
+    # ==================================================
+    # 3️⃣ CREATE NEW ANONYMOUS VISITOR
+    # ==================================================
+    device_fingerprint = self.generate_device_fingerprint(request)
+    new_session_token = str(uuid.uuid4())
+
+    try:
+        created = (
+            self.supabase.table("visitor_users")
+            .insert({
+                "session_token": new_session_token,
+                "device_fingerprint": device_fingerprint,
+                "created_at": now,
+                "last_seen": now
+            })
+            .execute()
+        )
+
+        visitor_id = created.data[0]["id"]
+
+        response.set_cookie(
+            key="session_token",
+            value=new_session_token,
+            httponly=True,
+            samesite="lax",
+            secure=False,                 # localhost-safe
+            max_age=60 * 60 * 24 * 365    # 1 year
+        )
+
+        return User(
+            id=visitor_id,
+            anonymous=True,
+            device_fingerprint=device_fingerprint,
+            session_token=new_session_token
+        )
+
+    except Exception as e:
+        logger.critical(f"Failed to create visitor user: {e}")
+        return User(id=str(uuid.uuid4()), anonymous=True)
+        
 
 # Initialize Supabase tables
 def init_supabase_tables():
@@ -784,14 +780,34 @@ def analyze_code_quality(code, language, focus_areas):
     return results
 
 
-def merge_visitor_to_user(visitor_id: str, auth_user_id: str):
-    supabase.table("ai_memory").update({
-        "user_id": auth_user_id
-    }).eq("user_id", visitor_id).execute()
+def merge_visitor_to_user(user_id: str, session_token: str):
+    """
+    Move all anonymous data to real user on login
+    """
 
-    # Optional: remove visitor record
-    supabase.table("visitor_users").delete().eq("id", visitor_id).execute()
+    visitor = (
+        supabase.table("visitor_users")
+        .select("id")
+        .eq("session_token", session_token)
+        .execute()
+    )
 
+    if not visitor.data:
+        return
+
+    visitor_id = visitor.data[0]["id"]
+
+    # Move conversations
+    supabase.table("conversations") \
+        .update({"user_id": user_id}) \
+        .eq("user_id", visitor_id) \
+        .execute()
+
+    # Delete visitor row
+    supabase.table("visitor_users") \
+        .delete() \
+        .eq("id", visitor_id) \
+        .execute()
 
 def create_chart(data, chart_type, options):
     """Create a chart from data"""
