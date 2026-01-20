@@ -127,6 +127,21 @@ class UserIdentityService:
         )
         return hashlib.sha256(fingerprint_data.encode()).hexdigest()
 
+    def generate_anonymous_id(self, device_fingerprint: str) -> str:
+        """Generate a consistent, recognizable anonymous ID based on device fingerprint"""
+        # Use the first 8 characters of the device fingerprint hash
+        fp_short = device_fingerprint[:8]
+        
+        # Generate a random adjective and noun combination
+        adjectives = ["Silent", "Swift", "Bright", "Calm", "Bold", "Quiet", "Sharp", "Gentle", "Cool", "Warm"]
+        nouns = ["Explorer", "Visitor", "Creator", "Thinker", "Builder", "Dreamer", "Seeker", "Maker", "Writer", "Artist"]
+        
+        # Use the fingerprint to deterministically select adjective and noun
+        adj_index = int(device_fingerprint[8:10], 16) % len(adjectives)
+        noun_index = int(device_fingerprint[10:12], 16) % len(nouns)
+        
+        return f"{adjectives[adj_index]}{nouns[noun_index]}-{fp_short}"
+
     async def get_or_create_user(self, request: Request, response: Response) -> User:
         now = datetime.utcnow().isoformat()
 
@@ -219,12 +234,16 @@ class UserIdentityService:
         # ==================================================
         device_fingerprint = self.generate_device_fingerprint(request)
         new_session_token = str(uuid.uuid4())
+        
+        # Generate a more recognizable anonymous ID
+        anonymous_id = self.generate_anonymous_id(device_fingerprint)
 
         try:
             created = (
                 self.supabase
                 .table("visitor_users")
                 .insert({
+                    "id": anonymous_id,  # Use the generated ID instead of UUID
                     "session_token": new_session_token,
                     "device_fingerprint": device_fingerprint,
                     "created_at": now,
@@ -232,8 +251,6 @@ class UserIdentityService:
                 })
                 .execute()
             )
-
-            visitor_id = created.data[0]["id"]
 
             response.set_cookie(
                 key="session_token",
@@ -245,7 +262,7 @@ class UserIdentityService:
             )
 
             return User(
-                id=visitor_id,
+                id=anonymous_id,  # Use the generated ID
                 anonymous=True,
                 device_fingerprint=device_fingerprint,
                 session_token=new_session_token
@@ -253,8 +270,10 @@ class UserIdentityService:
 
         except Exception as e:
             logger.critical(f"Failed to create visitor user: {e}")
-            return User(id=str(uuid.uuid4()), anonymous=True)
-            
+            return User(id=self.generate_anonymous_id(device_fingerprint), anonymous=True)
+
+# Initialize UserIdentityService
+user_identity_service = UserIdentityService(supabase)
 
 # Initialize Supabase tables
 def init_supabase_tables():
@@ -314,6 +333,18 @@ def init_supabase_tables():
         supabase.rpc("create_videos_table").execute()
     except Exception as e:
         print(f"Failed to create videos table via RPC: {e}")
+    
+    # Create visitor_users table
+    try:
+        supabase.rpc("create_visitor_users_table").execute()
+    except Exception as e:
+        print(f"Failed to create visitor_users table via RPC: {e}")
+    
+    # Create code_generations table
+    try:
+        supabase.rpc("create_code_generations_table").execute()
+    except Exception as e:
+        print(f"Failed to create code_generations table via RPC: {e}")
     
     # Keep the existing table creation code for the basic tables
     try:
@@ -1166,99 +1197,8 @@ async def duckduckgo_search(q: str):
 
 # Updated function to get or create a user
 async def get_or_create_user(req: Request, res: Response) -> User:
-    # -----------------------------
-    # 1️⃣ JWT logged-in users
-    # -----------------------------
-    auth_header = req.headers.get("authorization")
-    if auth_header and auth_header.startswith("Bearer "):
-        token = auth_header.split(" ")[1]
-        try:
-            if frontend_supabase:
-                user_response = frontend_supabase.auth.get_user(token)
-                if user_response.user:
-                    user_id = user_response.user.id
-                    email = user_response.user.email
+    return await user_identity_service.get_or_create_user(req, res)
 
-                    # Ensure exists in public.users
-                    try:
-                        existing_user = (
-                            supabase.table("users")
-                            .select("*")
-                            .eq("id", user_id)
-                            .execute()
-                        )
-                        if not existing_user.data:
-                            supabase.table("users").insert({
-                                "id": user_id,
-                                "email": email,
-                                "created_at": datetime.now().isoformat()
-                            }).execute()
-
-                        return User(id=user_id, email=email, anonymous=False)
-                    except Exception as e:
-                        logger.error(f"Error creating/updating user: {e}")
-        except Exception as e:
-            logger.error(f"Error verifying JWT token: {e}")
-
-    # -----------------------------
-    # 2️⃣ Anonymous visitor via cookie
-    # -----------------------------
-    session_token = req.cookies.get("session_token")
-    if session_token:
-        try:
-            result = (
-                supabase.table("users")
-                .select("*")
-                .eq("session_token", session_token)
-                .execute()
-            )
-            if result.data:
-                visitor_data = result.data[0]
-
-                # Optionally update last_active
-                supabase.table("users").update({
-                    "last_active": datetime.now().isoformat()
-                }).eq("id", visitor_data["id"]).execute()
-
-                return User(
-                    id=visitor_data["id"],
-                    anonymous=True,
-                    session_token=session_token
-                )
-        except Exception as e:
-            logger.error(f"Error finding user by session token: {e}")
-
-    # -----------------------------
-    # 3️⃣ Create new anonymous user
-    # -----------------------------
-    user_id = str(uuid.uuid4())
-    new_session_token = str(uuid.uuid4())
-
-    try:
-        supabase.table("users").insert({
-            "id": user_id,
-            "session_token": new_session_token,
-            "created_at": datetime.now().isoformat()
-        }).execute()
-
-        res.set_cookie(
-            key="session_token",
-            value=new_session_token,
-            httponly=True,
-            samesite="lax",
-            max_age=60 * 60 * 24 * 365  # 1 year
-        )
-
-        return User(
-            id=user_id,
-            anonymous=True,
-            session_token=new_session_token
-        )
-
-    except Exception as e:
-        logger.error(f"Error creating anonymous user: {e}")
-        raise
-    
 def cache_result(prompt: str, provider: str, result: dict):
     # Store cache in Supabase
     try:
@@ -2097,7 +2037,8 @@ async def _generate_image_core(
 
     return {
         "provider": provider_used,
-        "images": urls
+        "images": urls,
+        "user_id": user_id  # Include user_id in response
     }
 
 async def image_gen_internal(prompt: str, samples: int = 1, user_id: str = "anonymous"):
@@ -3258,7 +3199,8 @@ async def chat_stream(req: Request, res: Response, tts: bool = False, samples: i
 async def chat_endpoint(req: Request):
     body = await req.json()
     prompt = body.get("prompt","")
-    user_id = body.get("user_id", "anonymous")
+    user = await get_or_create_user(req, Response())
+    user_id = user.id
     if not prompt:
         raise HTTPException(400,"prompt required")
     if not GROQ_API_KEY:
@@ -3293,8 +3235,11 @@ async def ask_universal(request: Request, background_tasks: BackgroundTasks):
     # Extract request data
     # -------------------------------
     prompt = body.get("prompt", "").strip()
+    
+    # Use our new user ID system
     user = await get_or_create_user(request, Response())
     user_id = user.id
+    
     role = body.get("role", "user")
     stream = bool(body.get("stream", False))
 
@@ -3320,6 +3265,7 @@ async def ask_universal(request: Request, background_tasks: BackgroundTasks):
     }
 
     if intent in intent_map:
+        # Pass the user_id to all intent handlers
         return await intent_map[intent](prompt, user_id, stream)
 
     # -------------------------------
@@ -4325,18 +4271,20 @@ async def vision_history(req: Request, res: Response):
 
 # ---------- Code generation ----------
 @app.post("/code")
-async def code_gen(req: Request):
+async def code_gen(req: Request, res: Response):
     body = await req.json()
     prompt = body.get("prompt", "")
     language = body.get("language", "python").lower()
     run_flag = bool(body.get("run", False))
-    user = await get_or_create_user(req, Response())
+    
+    # Get the user with our new ID system
+    user = await get_or_create_user(req, res)
     user_id = user.id
 
     if not prompt:
         raise HTTPException(400, "prompt required")
 
-    # Generate code using Groq (unchanged)
+    # Generate code using Groq
     contextual_prompt = build_contextual_prompt(
         user_id,
         f"Write a complete {language} program:\n{prompt}"
@@ -4361,7 +4309,8 @@ async def code_gen(req: Request):
 
     response = {
         "language": language,
-        "generated_code": code
+        "generated_code": code,
+        "user_id": user_id  # Include user_id in response
     }
 
     # ✅ Run via Judge0
@@ -4369,6 +4318,19 @@ async def code_gen(req: Request):
         lang_id = JUDGE0_LANGUAGES.get(language, 71)
         execution = await run_code_judge0(code, lang_id)
         response["execution"] = execution
+
+    # Save code generation record
+    try:
+        supabase.table("code_generations").insert({
+            "id": str(uuid.uuid4()),
+            "user_id": user_id,
+            "language": language,
+            "prompt": prompt,
+            "code": code,
+            "created_at": datetime.now().isoformat()
+        }).execute()
+    except Exception as e:
+        logger.error(f"Failed to save code generation record: {e}")
 
     return response
 
@@ -4615,9 +4577,9 @@ async def chat_stream_endpoint(conversation_id: str, user_id: str, messages: lis
 
 # ---------- Dedicated Endpoints for Advanced Features ----------
 @app.post("/document/analyze")
-async def document_analysis_endpoint(request: DocumentAnalysisRequest, user_id: str = Depends(get_user_id_from_cookie)):
+async def document_analysis_endpoint(request: DocumentAnalysisRequest, req: Request, res: Response):
     """Analyze documents for key information"""
-    user = await get_or_create_user(request, Response())
+    user = await get_or_create_user(req, res)
     return await document_analysis(
         f"document: {request.text}\nanalysis_type: {request.analysis_type}",
         user.id,
@@ -4625,9 +4587,9 @@ async def document_analysis_endpoint(request: DocumentAnalysisRequest, user_id: 
     )
 
 @app.post("/translation")
-async def translation_endpoint(request: TranslationRequest, user_id: str = Depends(get_user_id_from_cookie)):
+async def translation_endpoint(request: TranslationRequest, req: Request, res: Response):
     """Translate text between languages"""
-    user = await get_or_create_user(request, Response())
+    user = await get_or_create_user(req, res)
     return await translate_text(
         f"translate: {request.text} to {request.target_lang}",
         user.id,
@@ -4635,9 +4597,9 @@ async def translation_endpoint(request: TranslationRequest, user_id: str = Depen
     )
 
 @app.post("/sentiment/analyze")
-async def sentiment_analysis_endpoint(request: SentimentAnalysisRequest, user_id: str = Depends(get_user_id_from_cookie)):
+async def sentiment_analysis_endpoint(request: SentimentAnalysisRequest, req: Request, res: Response):
     """Analyze sentiment of text"""
-    user = await get_or_create_user(request, Response())
+    user = await get_or_create_user(req, res)
     return await analyze_sentiment(
         f"sentiment: {request.text}",
         user.id,
@@ -4645,9 +4607,9 @@ async def sentiment_analysis_endpoint(request: SentimentAnalysisRequest, user_id
     )
 
 @app.post("/knowledge/graph")
-async def knowledge_graph_endpoint(request: KnowledgeGraphRequest, user_id: str = Depends(get_user_id_from_cookie)):
+async def knowledge_graph_endpoint(request: KnowledgeGraphRequest, req: Request, res: Response):
     """Create and visualize a knowledge graph"""
-    user = await get_or_create_user(request, Response())
+    user = await get_or_create_user(req, res)
     entities_str = ", ".join(request.entities)
     return await create_knowledge_graph_endpoint(
         f"entities: {entities_str}\nrelationship: {request.relationship_type}",
@@ -4656,9 +4618,9 @@ async def knowledge_graph_endpoint(request: KnowledgeGraphRequest, user_id: str 
     )
 
 @app.post("/model/train")
-async def custom_model_endpoint(request: CustomModelRequest, user_id: str = Depends(get_user_id_from_cookie)):
+async def custom_model_endpoint(request: CustomModelRequest, req: Request, res: Response):
     """Train a custom model"""
-    user = await get_or_create_user(request, Response())
+    user = await get_or_create_user(req, res)
     return await train_custom_model(
         f"data: {request.training_data}\ntype: {request.model_type}",
         user.id,
@@ -4666,9 +4628,9 @@ async def custom_model_endpoint(request: CustomModelRequest, user_id: str = Depe
     )
 
 @app.post("/code/review")
-async def code_review_endpoint(request: CodeReviewRequest, user_id: str = Depends(get_user_id_from_cookie)):
+async def code_review_endpoint(request: CodeReviewRequest, req: Request, res: Response):
     """Review code for issues and improvements"""
-    user = await get_or_create_user(request, Response())
+    user = await get_or_create_user(req, res)
     focus_str = ", ".join(request.focus_areas)
     return await review_code(
         f"code: ```{request.code}``\nlanguage: {request.language}\nfocus: {focus_str}",
@@ -4677,9 +4639,9 @@ async def code_review_endpoint(request: CodeReviewRequest, user_id: str = Depend
     )
 
 @app.post("/search/multimodal")
-async def multimodal_search_endpoint(request: MultimodalSearchRequest, user_id: str = Depends(get_user_id_from_cookie)):
+async def multimodal_search_endpoint(request: MultimodalSearchRequest, req: Request, res: Response):
     """Search across text, images, and videos"""
-    user = await get_or_create_user(request, Response())
+    user = await get_or_create_user(req, res)
     types_str = ", ".join(request.search_types)
     filters_str = ", ".join(f"{k}: {v}" for k, v in request.filters.items())
     return await multimodal_search(
@@ -4689,9 +4651,9 @@ async def multimodal_search_endpoint(request: MultimodalSearchRequest, user_id: 
     )
 
 @app.post("/ai/personalize")
-async def ai_personalization_endpoint(request: PersonalizationRequest, user_id: str = Depends(get_user_id_from_cookie)):
+async def ai_personalization_endpoint(request: PersonalizationRequest, req: Request, res: Response):
     """Customize AI behavior based on user preferences"""
-    user = await get_or_create_user(request, Response())
+    user = await get_or_create_user(req, res)
     prefs_str = ", ".join(f"{k}: {v}" for k, v in request.user_preferences.items())
     behavior_str = ", ".join(f"{k}: {v}" for k, v in request.behavior_patterns.items())
     return await personalize_ai(
@@ -4701,9 +4663,9 @@ async def ai_personalization_endpoint(request: PersonalizationRequest, user_id: 
     )
 
 @app.post("/data/visualize")
-async def data_visualization_endpoint(request: DataVisualizationRequest, user_id: str = Depends(get_user_id_from_cookie)):
+async def data_visualization_endpoint(request: DataVisualizationRequest, req: Request, res: Response):
     """Generate charts and graphs from data"""
-    user = await get_or_create_user(request, Response())
+    user = await get_or_create_user(req, res)
     options_str = ", ".join(f"{k}: {v}" for k, v in request.options.items())
     return await visualize_data(
         f"data: {request.data}\nchart: {request.chart_type}\noptions: {options_str}",
@@ -4712,9 +4674,9 @@ async def data_visualization_endpoint(request: DataVisualizationRequest, user_id
     )
 
 @app.post("/voice/clone")
-async def voice_cloning_endpoint(request: VoiceCloningRequest, user_id: str = Depends(get_user_id_from_cookie)):
+async def voice_cloning_endpoint(request: VoiceCloningRequest, req: Request, res: Response):
     """Create custom voice profiles for TTS"""
-    user = await get_or_create_user(request, Response())
+    user = await get_or_create_user(req, res)
     return await clone_voice(
         f"sample: {request.voice_sample}\ntext: {request.text}\nname: {request.voice_name}",
         user.id,
@@ -4769,9 +4731,9 @@ async def merge_user_data(req: Request, res: Response):
     # It merges the anonymous user's data with the logged-in user's data
     
     # Get the anonymous user ID from cookie
-    anonymous_id = req.cookies.get("session_token")
-    if not anonymous_id:
-        raise HTTPException(400, "No anonymous user ID found")
+    session_token = req.cookies.get("session_token")
+    if not session_token:
+        raise HTTPException(400, "No session token found")
     
     # Get the logged-in user from JWT token
     auth_header = req.headers.get("authorization")
@@ -4790,10 +4752,17 @@ async def merge_user_data(req: Request, res: Response):
         
         logged_in_id = user_response.user.id
         
+        # Get the anonymous user ID from session token
+        visitor_response = supabase.table("visitor_users").select("id").eq("session_token", session_token).execute()
+        if not visitor_response.data:
+            raise HTTPException(404, "Anonymous user not found")
+        
+        anonymous_id = visitor_response.data[0]["id"]
+        
         # Merge data in the backend
         try:
             # Update all records from anonymous user to logged-in user
-            tables_to_merge = ["images", "videos", "conversations", "messages", "memory", "vision_history"]
+            tables_to_merge = ["images", "videos", "conversations", "messages", "memory", "vision_history", "code_generations"]
             
             for table in tables_to_merge:
                 supabase.table(table).update({"user_id": logged_in_id}).eq("user_id", anonymous_id).execute()
@@ -4813,7 +4782,7 @@ async def merge_user_data(req: Request, res: Response):
                 }).eq("id", logged_in_id).execute()
             
             # Delete the anonymous user
-            supabase.table("users").delete().eq("session_token", anonymous_id).execute()
+            supabase.table("visitor_users").delete().eq("id", anonymous_id).execute()
             
             # Update the cookie to the logged-in user ID
             res.set_cookie(
