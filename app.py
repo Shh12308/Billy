@@ -148,7 +148,7 @@ class UserIdentityService:
             "friendly_name": f"{adjectives[adj_index]}{nouns[noun_index]}-{fp_short}"
         }
         async def get_or_create_user(self, request: Request, response: Response) -> User:
-        now = datetime.utcnow().isoformat()
+            now = datetime.utcnow().isoformat()
 
         # ==================================================
         # 1️⃣ AUTHENTICATED USER (Frontend Supabase JWT)
