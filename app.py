@@ -147,7 +147,7 @@ class UserIdentityService:
             "uuid": user_uuid,
             "friendly_name": f"{adjectives[adj_index]}{nouns[noun_index]}-{fp_short}"
         }
-    async def get_or_create_user(self, request: Request, response: Response) -> User:
+        async def get_or_create_user(self, request: Request, response: Response) -> User:
         now = datetime.utcnow().isoformat()
 
         # ==================================================
@@ -221,9 +221,13 @@ class UserIdentityService:
                 if visitor.data:
                     v = visitor.data[0]
 
-                    self.supabase.table("visitor_users").update({
-                        "last_seen": now
-                    }).eq("id", v["id"]).execute()
+                    # Try to update last_seen if column exists
+                    try:
+                        self.supabase.table("visitor_users").update({
+                            "last_seen": now
+                        }).eq("id", v["id"]).execute()
+                    except Exception as e:
+                        logger.warning(f"Failed to update last_seen: {e}")
 
                     return User(
                         id=v["id"],
@@ -247,7 +251,7 @@ class UserIdentityService:
         friendly_name = anonymous_info["friendly_name"]
 
         try:
-            # Try to create visitor with device_fingerprint
+            # Try to create visitor with all columns
             created = (
                 self.supabase
                 .table("visitor_users")
@@ -262,8 +266,8 @@ class UserIdentityService:
                 .execute()
             )
         except Exception as e:
-            # If that fails due to missing device_fingerprint column, try without it
-            logger.warning(f"Failed to create visitor with device_fingerprint, trying without: {e}")
+            # If that fails due to missing columns, try with minimal columns
+            logger.warning(f"Failed to create visitor with all columns, trying with minimal: {e}")
             try:
                 created = (
                     self.supabase
@@ -271,9 +275,7 @@ class UserIdentityService:
                     .insert({
                         "id": anonymous_uuid,
                         "nickname": friendly_name,
-                        "session_token": new_session_token,
-                        "created_at": now,
-                        "last_seen": now
+                        "session_token": new_session_token
                     })
                     .execute()
                 )
@@ -302,7 +304,6 @@ class UserIdentityService:
             device_fingerprint=device_fingerprint,
             session_token=new_session_token
         )
-
 
     def merge_visitor_to_user(self, user_id: str, session_token: str):
         """
