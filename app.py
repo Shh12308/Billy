@@ -147,8 +147,9 @@ class UserIdentityService:
             "uuid": user_uuid,
             "friendly_name": f"{adjectives[adj_index]}{nouns[noun_index]}-{fp_short}"
         }
-        async def get_or_create_user(self, request: Request, response: Response) -> User:
-            now = datetime.utcnow().isoformat()
+        
+    async def get_or_create_user(self, request: Request, response: Response) -> User:
+        now = datetime.utcnow().isoformat()
 
         # ==================================================
         # 1️⃣ AUTHENTICATED USER (Frontend Supabase JWT)
@@ -399,7 +400,7 @@ def init_supabase_tables():
     try:
         supabase.rpc("create_visitor_users_table").execute()
     except Exception as e:
-        print(f"Failed to create visitor_users table via RPC: {e}")
+        print(f"Failed to create visitor_users_table via RPC: {e}")
     
     # Create code_generations table
     try:
@@ -1826,6 +1827,1126 @@ async def generate_video_internal(prompt: str, samples: int = 1, user_id: str = 
 
     return {"provider": "stub", "videos": urls}
 
+# Helper functions for all the missing intents that work with streaming
+async def image_generation_handler(prompt: str, user_id: str, stream: bool = False):
+    """Handle image generation requests"""
+    if stream:
+        async def event_generator():
+            yield sse({"type": "starting", "message": "Generating image..."})
+            try:
+                # Extract any sample count from the prompt
+                samples = 1
+                sample_match = re.search(r'(\d+)\s+(image|images)', prompt.lower())
+                if sample_match:
+                    samples = min(int(sample_match.group(1)), 4)  # Cap at 4 images
+                
+                # Generate the image
+                result = await _generate_image_core(prompt, samples, user_id, return_base64=False)
+                
+                yield sse({
+                    "type": "images",
+                    "provider": result["provider"],
+                    "images": result["images"]
+                })
+                yield sse({"type": "done"})
+            except Exception as e:
+                logger.error(f"Image generation failed: {e}")
+                yield sse({"type": "error", "message": str(e)})
+        
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
+    else:
+        # Non-streaming version
+        samples = 1
+        sample_match = re.search(r'(\d+)\s+(image|images)', prompt.lower())
+        if sample_match:
+            samples = min(int(sample_match.group(1)), 4)  # Cap at 4 images
+        
+        return await _generate_image_core(prompt, samples, user_id, return_base64=False)
+
+async def img2img_handler(prompt: str, user_id: str, stream: bool = False):
+    """Handle image-to-image editing requests"""
+    # For now, we'll just return an error message since we need an image file
+    if stream:
+        async def event_generator():
+            yield sse({"type": "error", "message": "Image editing requires uploading an image file. Please use the /img2img endpoint directly."})
+        
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
+    else:
+        return {"error": "Image editing requires uploading an image file. Please use the /img2img endpoint directly."}
+
+async def vision_handler(prompt: str, user_id: str, stream: bool = False):
+    """Handle vision/analysis requests"""
+    # For now, we'll just return an error message since we need an image file
+    if stream:
+        async def event_generator():
+            yield sse({"type": "error", "message": "Image analysis requires uploading an image file. Please use the /vision/analyze endpoint directly."})
+        
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
+    else:
+        return {"error": "Image analysis requires uploading an image file. Please use the /vision/analyze endpoint directly."}
+
+async def stt_handler(prompt: str, user_id: str, stream: bool = False):
+    """Handle speech-to-text requests"""
+    # For now, we'll just return an error message since we need an audio file
+    if stream:
+        async def event_generator():
+            yield sse({"type": "error", "message": "Speech transcription requires uploading an audio file. Please use the /stt endpoint directly."})
+        
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
+    else:
+        return {"error": "Speech transcription requires uploading an audio file. Please use the /stt endpoint directly."}
+
+async def tts_handler(prompt: str, user_id: str, stream: bool = False):
+    """Handle text-to-speech requests"""
+    # Extract text to speak
+    text = prompt
+    if "say" in prompt.lower():
+        text = prompt.lower().split("say", 1)[1].strip()
+    elif "speak" in prompt.lower():
+        text = prompt.lower().split("speak", 1)[1].strip()
+    elif "read" in prompt.lower():
+        text = prompt.lower().split("read", 1)[1].strip()
+    
+    if stream:
+        async def event_generator():
+            yield sse({"type": "starting", "message": "Generating speech..."})
+            try:
+                headers = {
+                    "Authorization": f"Bearer {OPENAI_API_KEY}",
+                    "Content-Type": "application/json"
+                }
+                
+                payload = {
+                    "model": "tts-1",
+                    "voice": "alloy",
+                    "input": text
+                }
+                
+                async with httpx.AsyncClient(timeout=60) as client:
+                    r = await client.post(
+                        "https://api.openai.com/v1/audio/speech",
+                        headers=headers,
+                        json=payload
+                    )
+                    r.raise_for_status()
+                
+                # Convert to base64
+                audio_b64 = base64.b64encode(r.content).decode()
+                
+                yield sse({
+                    "type": "audio",
+                    "text": text,
+                    "audio": audio_b64
+                })
+                yield sse({"type": "done"})
+            except Exception as e:
+                logger.error(f"TTS failed: {e}")
+                yield sse({"type": "error", "message": str(e)})
+        
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
+    else:
+        # Non-streaming version
+        headers = {
+            "Authorization": f"Bearer {OPENAI_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        payload = {
+            "model": "tts-1",
+            "voice": "alloy",
+            "input": text
+        }
+        
+        async with httpx.AsyncClient(timeout=60) as client:
+            r = await client.post(
+                "https://api.openai.com/v1/audio/speech",
+                headers=headers,
+                json=payload
+            )
+            r.raise_for_status()
+        
+        # Convert to base64
+        audio_b64 = base64.b64encode(r.content).decode()
+        
+        return {
+            "text": text,
+            "audio": audio_b64
+        }
+
+async def video_generation_handler(prompt: str, user_id: str, stream: bool = False):
+    """Handle video generation requests"""
+    # Extract sample count from prompt
+    samples = 1
+    sample_match = re.search(r'(\d+)\s+(video|videos)', prompt.lower())
+    if sample_match:
+        samples = min(int(sample_match.group(1)), 2)  # Cap at 2 videos
+    
+    if stream:
+        async def event_generator():
+            yield sse({"type": "starting", "message": "Generating video..."})
+            try:
+                result = await generate_video_internal(prompt, samples, user_id)
+                yield sse({
+                    "type": "videos",
+                    "provider": result["provider"],
+                    "videos": result["videos"]
+                })
+                yield sse({"type": "done"})
+            except Exception as e:
+                logger.error(f"Video generation failed: {e}")
+                yield sse({"type": "error", "message": str(e)})
+        
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
+    else:
+        # Non-streaming version
+        return await generate_video_internal(prompt, samples, user_id)
+
+async def code_generation_handler(prompt: str, user_id: str, stream: bool = False):
+    """Handle code generation requests"""
+    # Extract language from prompt
+    language = "python"
+    lang_match = re.search(r'(python|javascript|java|c\+\+|c#|php|ruby|go|rust|swift|kotlin)\s+code', prompt.lower())
+    if lang_match:
+        language = lang_match.group(1)
+    
+    # Extract run flag
+    run_flag = "run" in prompt.lower() or "execute" in prompt.lower()
+    
+    if stream:
+        async def event_generator():
+            yield sse({"type": "starting", "message": f"Generating {language} code..."})
+            try:
+                # Generate code
+                code_prompt = f"Write a complete {language} program to: {prompt}"
+                payload = {
+                    "model": CHAT_MODEL,
+                    "messages": [{"role": "user", "content": code_prompt}],
+                    "max_tokens": 2048
+                }
+                async with httpx.AsyncClient(timeout=60) as client:
+                    r = await client.post(
+                        "https://api.groq.com/openai/v1/chat/completions",
+                        headers=get_groq_headers(),
+                        json=payload
+                    )
+                    r.raise_for_status()
+                    code = r.json()["choices"][0]["message"]["content"]
+                
+                yield sse({
+                    "type": "code",
+                    "language": language,
+                    "code": code
+                })
+                
+                # Run code if requested
+                if run_flag:
+                    yield sse({"type": "progress", "message": "Running code..."})
+                    lang_id = JUDGE0_LANGUAGES.get(language, 71)
+                    execution = await run_code_judge0(code, lang_id)
+                    yield sse({
+                        "type": "execution",
+                        "result": execution
+                    })
+                
+                # Save code generation record
+                try:
+                    supabase.table("code_generations").insert({
+                        "id": str(uuid.uuid4()),
+                        "user_id": user_id,
+                        "language": language,
+                        "prompt": prompt,
+                        "code": code,
+                        "created_at": datetime.now().isoformat()
+                    }).execute()
+                except Exception as e:
+                    logger.error(f"Failed to save code generation record: {e}")
+                
+                yield sse({"type": "done"})
+            except Exception as e:
+                logger.error(f"Code generation failed: {e}")
+                yield sse({"type": "error", "message": str(e)})
+        
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
+    else:
+        # Non-streaming version
+        code_prompt = f"Write a complete {language} program to: {prompt}"
+        payload = {
+            "model": CHAT_MODEL,
+            "messages": [{"role": "user", "content": code_prompt}],
+            "max_tokens": 2048
+        }
+        async with httpx.AsyncClient(timeout=60) as client:
+            r = await client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers=get_groq_headers(),
+                json=payload
+            )
+            r.raise_for_status()
+            code = r.json()["choices"][0]["message"]["content"]
+        
+        result = {
+            "language": language,
+            "generated_code": code,
+            "user_id": user_id
+        }
+        
+        # Run code if requested
+        if run_flag:
+            lang_id = JUDGE0_LANGUAGES.get(language, 71)
+            execution = await run_code_judge0(code, lang_id)
+            result["execution"] = execution
+        
+        # Save code generation record
+        try:
+            supabase.table("code_generations").insert({
+                "id": str(uuid.uuid4()),
+                "user_id": user_id,
+                "language": language,
+                "prompt": prompt,
+                "code": code,
+                "created_at": datetime.now().isoformat()
+            }).execute()
+        except Exception as e:
+            logger.error(f"Failed to save code generation record: {e}")
+        
+        return result
+
+async def search_handler(prompt: str, user_id: str, stream: bool = False):
+    """Handle web search requests"""
+    # Extract query from prompt
+    query = prompt
+    if "search for" in prompt.lower():
+        query = prompt.lower().split("search for", 1)[1].strip()
+    elif "look up" in prompt.lower():
+        query = prompt.lower().split("look up", 1)[1].strip()
+    elif "find" in prompt.lower():
+        query = prompt.lower().split("find", 1)[1].strip()
+    
+    if stream:
+        async def event_generator():
+            yield sse({"type": "starting", "message": "Searching..."})
+            try:
+                result = await duckduckgo_search(query)
+                yield sse({
+                    "type": "search_results",
+                    "query": query,
+                    "results": result
+                })
+                yield sse({"type": "done"})
+            except Exception as e:
+                logger.error(f"Search failed: {e}")
+                yield sse({"type": "error", "message": str(e)})
+        
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
+    else:
+        # Non-streaming version
+        return await duckduckgo_search(query)
+
+async def new_chat_handler(prompt: str, user_id: str, stream: bool = False):
+    """Handle new chat creation"""
+    cid = str(uuid.uuid4())
+
+    try:
+        supabase.table("conversations").insert({
+            "id": cid,
+            "user_id": user_id,
+            "title": prompt[:50] if len(prompt) > 50 else prompt,
+            "created_at": datetime.now().isoformat(),
+            "updated_at": datetime.now().isoformat()
+        }).execute()
+    except Exception as e:
+        logger.error(f"Failed to create new chat: {e}")
+
+    if stream:
+        async def event_generator():
+            yield sse({
+                "type": "new_chat",
+                "conversation_id": cid
+            })
+            yield sse({"type": "done"})
+        
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
+    else:
+        return {"conversation_id": cid}
+
+async def send_message_handler(prompt: str, user_id: str, stream: bool = False):
+    """Handle sending a message to a conversation"""
+    # Extract conversation ID from prompt
+    conv_id = None
+    conv_match = re.search(r'conversation[:\s]+([a-f0-9-]+)', prompt.lower())
+    if conv_match:
+        conv_id = conv_match.group(1)
+    
+    if not conv_id:
+        # Get the most recent conversation
+        conv_response = supabase.table("conversations").select("id").eq("user_id", user_id).order("updated_at", desc=True).limit(1).execute()
+        if conv_response.data:
+            conv_id = conv_response.data[0]["id"]
+    
+    if not conv_id:
+        return {"error": "No conversation found"}
+    
+    # Extract message
+    message = prompt
+    if "message:" in prompt.lower():
+        message = prompt.lower().split("message:", 1)[1].strip()
+    
+    # Save user message
+    msg_id = str(uuid.uuid4())
+    try:
+        supabase.table("messages").insert({
+            "id": msg_id,
+            "conversation_id": conv_id,
+            "role": "user",
+            "content": message,
+            "created_at": datetime.now().isoformat()
+        }).execute()
+    except Exception as e:
+        logger.error(f"Failed to save user message: {e}")
+    
+    if stream:
+        async def event_generator():
+            yield sse({"type": "starting", "message": "Processing message..."})
+            try:
+                # Get conversation history
+                msg_response = supabase.table("messages").select("role, content").eq("conversation_id", conv_id).order("created_at").execute()
+                rows = msg_response.data if msg_response.data else []
+                messages = [{"role": row["role"], "content": row["content"]} for row in rows]
+
+                payload = {
+                    "model": CHAT_MODEL,
+                    "messages": messages,
+                    "max_tokens": 1024
+                }
+
+                async with httpx.AsyncClient(timeout=30) as client:
+                    r = await client.post(
+                        "https://api.groq.com/openai/v1/chat/completions",
+                        headers=get_groq_headers(),
+                        json=payload
+                    )
+                    r.raise_for_status()
+                    reply = r.json()["choices"][0]["message"]["content"]
+
+                # Stream the reply
+                for char in reply:
+                    yield sse({"type": "token", "text": char})
+                    await asyncio.sleep(0.01)  # Small delay for streaming effect
+
+                # Save assistant reply
+                reply_id = str(uuid.uuid4())
+                supabase.table("messages").insert({
+                    "id": reply_id,
+                    "conversation_id": conv_id,
+                    "role": "assistant",
+                    "content": reply,
+                    "created_at": datetime.now().isoformat()
+                }).execute()
+                
+                yield sse({"type": "done"})
+            except Exception as e:
+                logger.error(f"Failed to process message: {e}")
+                yield sse({"type": "error", "message": str(e)})
+        
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
+    else:
+        # Non-streaming version
+        try:
+            msg_response = supabase.table("messages").select("role, content").eq("conversation_id", conv_id).order("created_at").execute()
+            rows = msg_response.data if msg_response.data else []
+            messages = [{"role": row["role"], "content": row["content"]} for row in rows]
+
+            payload = {
+                "model": CHAT_MODEL,
+                "messages": messages,
+                "max_tokens": 1024
+            }
+
+            async with httpx.AsyncClient(timeout=30) as client:
+                r = await client.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers=get_groq_headers(),
+                    json=payload
+                )
+                r.raise_for_status()
+                reply = r.json()["choices"][0]["message"]["content"]
+
+            # Save assistant reply
+            reply_id = str(uuid.uuid4())
+            supabase.table("messages").insert({
+                "id": reply_id,
+                "conversation_id": conv_id,
+                "role": "assistant",
+                "content": reply,
+                "created_at": datetime.now().isoformat()
+            }).execute()
+
+            return {"reply": reply}
+        except Exception as e:
+            logger.error(f"Failed to process message: {e}")
+            raise HTTPException(500, "Failed to process message")
+
+async def list_chats_handler(prompt: str, user_id: str, stream: bool = False):
+    """Handle listing chats"""
+    try:
+        response = supabase.table("conversations").select("*").eq("user_id", user_id).order("updated_at", desc=True).execute()
+        rows = response.data if response.data else []
+        
+        if stream:
+            async def event_generator():
+                yield sse({"type": "chats", "data": rows})
+                yield sse({"type": "done"})
+            
+            return StreamingResponse(
+                event_generator(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no"
+                }
+            )
+        else:
+            return rows
+    except Exception as e:
+        logger.error(f"Failed to list chats: {e}")
+        return []
+
+async def search_chats_handler(prompt: str, user_id: str, stream: bool = False):
+    """Handle searching chats"""
+    # Extract query from prompt
+    query = prompt
+    if "search for" in prompt.lower():
+        query = prompt.lower().split("search for", 1)[1].strip()
+    elif "find" in prompt.lower():
+        query = prompt.lower().split("find", 1)[1].strip()
+    
+    try:
+        response = supabase.table("conversations").select("id, title").eq("user_id", user_id).ilike("title", f"%{query}%").order("updated_at", desc=True).execute()
+        rows = response.data if response.data else []
+        
+        if stream:
+            async def event_generator():
+                yield sse({"type": "search_results", "query": query, "data": rows})
+                yield sse({"type": "done"})
+            
+            return StreamingResponse(
+                event_generator(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no"
+                }
+            )
+        else:
+            return rows
+    except Exception as e:
+        logger.error(f"Failed to search chats: {e}")
+        return []
+
+async def pin_chat_handler(prompt: str, user_id: str, stream: bool = False):
+    """Handle pinning a chat"""
+    # Extract conversation ID from prompt
+    conv_id = None
+    conv_match = re.search(r'conversation[:\s]+([a-f0-9-]+)', prompt.lower())
+    if conv_match:
+        conv_id = conv_match.group(1)
+    
+    if not conv_id:
+        return {"error": "No conversation ID provided"}
+    
+    try:
+        supabase.table("conversations").update({
+            "updated_at": datetime.now().isoformat()
+        }).eq("id", conv_id).execute()
+        
+        if stream:
+            async def event_generator():
+                yield sse({"type": "status", "message": "Chat pinned"})
+                yield sse({"type": "done"})
+            
+            return StreamingResponse(
+                event_generator(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no"
+                }
+            )
+        else:
+            return {"status": "pinned"}
+    except Exception as e:
+        logger.error(f"Failed to pin chat: {e}")
+        return {"error": "Failed to pin chat"}
+
+async def archive_chat_handler(prompt: str, user_id: str, stream: bool = False):
+    """Handle archiving a chat"""
+    # Extract conversation ID from prompt
+    conv_id = None
+    conv_match = re.search(r'conversation[:\s]+([a-f0-9-]+)', prompt.lower())
+    if conv_match:
+        conv_id = conv_match.group(1)
+    
+    if not conv_id:
+        return {"error": "No conversation ID provided"}
+    
+    try:
+        supabase.table("conversations").update({
+            "updated_at": datetime.now().isoformat()
+        }).eq("id", conv_id).execute()
+        
+        if stream:
+            async def event_generator():
+                yield sse({"type": "status", "message": "Chat archived"})
+                yield sse({"type": "done"})
+            
+            return StreamingResponse(
+                event_generator(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no"
+                }
+            )
+        else:
+            return {"status": "archived"}
+    except Exception as e:
+        logger.error(f"Failed to archive chat: {e}")
+        return {"error": "Failed to archive chat"}
+
+async def move_folder_handler(prompt: str, user_id: str, stream: bool = False):
+    """Handle moving a chat to a folder"""
+    # Extract conversation ID from prompt
+    conv_id = None
+    conv_match = re.search(r'conversation[:\s]+([a-f0-9-]+)', prompt.lower())
+    if conv_match:
+        conv_id = conv_match.group(1)
+    
+    # Extract folder from prompt
+    folder = None
+    folder_match = re.search(r'folder[:\s]+(.+)', prompt.lower())
+    if folder_match:
+        folder = folder_match.group(1).strip()
+    
+    if not conv_id:
+        return {"error": "No conversation ID provided"}
+    
+    try:
+        supabase.table("conversations").update({
+            "updated_at": datetime.now().isoformat()
+        }).eq("id", conv_id).execute()
+        
+        if stream:
+            async def event_generator():
+                yield sse({"type": "status", "message": f"Chat moved to {folder}"})
+                yield sse({"type": "done"})
+            
+            return StreamingResponse(
+                event_generator(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no"
+                }
+            )
+        else:
+            return {"status": "moved", "folder": folder}
+    except Exception as e:
+        logger.error(f"Failed to move chat to folder: {e}")
+        return {"error": "Failed to move chat to folder"}
+
+async def share_chat_handler(prompt: str, user_id: str, stream: bool = False):
+    """Handle sharing a chat"""
+    # Extract conversation ID from prompt
+    conv_id = None
+    conv_match = re.search(r'conversation[:\s]+([a-f0-9-]+)', prompt.lower())
+    if conv_match:
+        conv_id = conv_match.group(1)
+    
+    if not conv_id:
+        return {"error": "No conversation ID provided"}
+    
+    token = uuid.uuid4().hex
+
+    try:
+        supabase.table("conversations").update({
+            "updated_at": datetime.now().isoformat()
+        }).eq("id", conv_id).execute()
+        
+        if stream:
+            async def event_generator():
+                yield sse({"type": "share_url", "url": f"/share/{token}"})
+                yield sse({"type": "done"})
+            
+            return StreamingResponse(
+                event_generator(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no"
+                }
+            )
+        else:
+            return {"share_url": f"/share/{token}"}
+    except Exception as e:
+        logger.error(f"Failed to share chat: {e}")
+        return {"error": "Failed to share chat"}
+
+async def view_shared_chat_handler(prompt: str, user_id: str, stream: bool = False):
+    """Handle viewing a shared chat"""
+    # Extract token from prompt
+    token = None
+    token_match = re.search(r'token[:\s]+([a-f0-9]+)', prompt.lower())
+    if token_match:
+        token = token_match.group(1)
+    
+    if not token:
+        return {"error": "No token provided"}
+    
+    # In a real implementation, you would look up the shared chat in the database
+    # For now, we'll return a placeholder
+    
+    if stream:
+        async def event_generator():
+            yield sse({"type": "shared_chat", "title": "Shared Chat", "messages": []})
+            yield sse({"type": "done"})
+        
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
+    else:
+        return {
+            "title": "Shared Chat",
+            "messages": []
+        }
+
+async def edit_message_handler(prompt: str, user_id: str, stream: bool = False):
+    """Handle editing a message"""
+    # Extract message ID from prompt
+    msg_id = None
+    msg_match = re.search(r'message[:\s]+([a-f0-9-]+)', prompt.lower())
+    if msg_match:
+        msg_id = msg_match.group(1)
+    
+    # Extract new content from prompt
+    new_content = None
+    content_match = re.search(r'content[:\s]+(.+)', prompt.lower())
+    if content_match:
+        new_content = content_match.group(1).strip()
+    
+    if not msg_id or not new_content:
+        return {"error": "Message ID and new content required"}
+    
+    try:
+        # Get message
+        msg_response = supabase.table("messages").select("id, role, conversation_id, created_at").eq("id", msg_id).execute()
+        if not msg_response.data:
+            return {"error": "message not found"}
+        
+        msg_row = msg_response.data[0]
+        if msg_row["role"] != "user":
+            return {"error": "only user messages can be edited"}
+
+        conversation_id = msg_row["conversation_id"]
+        edited_at = msg_row["created_at"]
+
+        # Update message content
+        supabase.table("messages").update({
+            "content": new_content
+        }).eq("id", msg_id).execute()
+
+        # Delete all assistant messages after this message
+        supabase.table("messages").delete().eq("conversation_id", conversation_id).gt("created_at", edited_at).eq("role", "assistant").execute()
+        
+        if stream:
+            async def event_generator():
+                yield sse({"type": "status", "message": "Message edited"})
+                yield sse({"type": "conversation_id", "id": conversation_id})
+                yield sse({"type": "done"})
+            
+            return StreamingResponse(
+                event_generator(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no"
+                }
+            )
+        else:
+            return {
+                "status": "edited",
+                "conversation_id": conversation_id
+            }
+    except Exception as e:
+        logger.error(f"Failed to edit message: {e}")
+        return {"error": "Failed to edit message"}
+
+async def regenerate_handler(prompt: str, user_id: str, stream: bool = False):
+    """Handle regenerating a response"""
+    # Extract conversation ID from prompt
+    conv_id = None
+    conv_match = re.search(r'conversation[:\s]+([a-f0-9-]+)', prompt.lower())
+    if conv_match:
+        conv_id = conv_match.group(1)
+    
+    if not conv_id:
+        # Get the most recent conversation
+        conv_response = supabase.table("conversations").select("id").eq("user_id", user_id).order("updated_at", desc=True).limit(1).execute()
+        if conv_response.data:
+            conv_id = conv_response.data[0]["id"]
+    
+    if not conv_id:
+        return {"error": "No conversation found"}
+    
+    # Get the last user message
+    msg_response = supabase.table("messages").select("content").eq("conversation_id", conv_id).eq("role", "user").order("created_at", desc=True).limit(1).execute()
+    if not msg_response.data:
+        return {"error": "No user message found"}
+    
+    last_user_message = msg_response.data[0]["content"]
+    
+    # Delete the last assistant message
+    last_assistant_msg = supabase.table("messages").select("id").eq("conversation_id", conv_id).eq("role", "assistant").order("created_at", desc=True).limit(1).execute()
+    if last_assistant_msg.data:
+        supabase.table("messages").delete().eq("id", last_assistant_msg.data[0]["id"]).execute()
+    
+    # Generate a new response
+    if stream:
+        async def event_generator():
+            yield sse({"type": "starting", "message": "Regenerating response..."})
+            try:
+                # Get conversation history
+                msg_response = supabase.table("messages").select("role, content").eq("conversation_id", conv_id).order("created_at").execute()
+                rows = msg_response.data if msg_response.data else []
+                messages = [{"role": row["role"], "content": row["content"]} for row in rows]
+
+                payload = {
+                    "model": CHAT_MODEL,
+                    "messages": messages,
+                    "max_tokens": 1024
+                }
+
+                async with httpx.AsyncClient(timeout=30) as client:
+                    r = await client.post(
+                        "https://api.groq.com/openai/v1/chat/completions",
+                        headers=get_groq_headers(),
+                        json=payload
+                    )
+                    r.raise_for_status()
+                    reply = r.json()["choices"][0]["message"]["content"]
+
+                # Stream the reply
+                for char in reply:
+                    yield sse({"type": "token", "text": char})
+                    await asyncio.sleep(0.01)  # Small delay for streaming effect
+
+                # Save assistant reply
+                reply_id = str(uuid.uuid4())
+                supabase.table("messages").insert({
+                    "id": reply_id,
+                    "conversation_id": conv_id,
+                    "role": "assistant",
+                    "content": reply,
+                    "created_at": datetime.now().isoformat()
+                }).execute()
+                
+                yield sse({"type": "done"})
+            except Exception as e:
+                logger.error(f"Failed to regenerate response: {e}")
+                yield sse({"type": "error", "message": str(e)})
+        
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
+    else:
+        # Non-streaming version
+        try:
+            msg_response = supabase.table("messages").select("role, content").eq("conversation_id", conv_id).order("created_at").execute()
+            rows = msg_response.data if msg_response.data else []
+            messages = [{"role": row["role"], "content": row["content"]} for row in rows]
+
+            payload = {
+                "model": CHAT_MODEL,
+                "messages": messages,
+                "max_tokens": 1024
+            }
+
+            async with httpx.AsyncClient(timeout=30) as client:
+                r = await client.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers=get_groq_headers(),
+                    json=payload
+                )
+                r.raise_for_status()
+                reply = r.json()["choices"][0]["message"]["content"]
+
+            # Save assistant reply
+            reply_id = str(uuid.uuid4())
+            supabase.table("messages").insert({
+                "id": reply_id,
+                "conversation_id": conv_id,
+                "role": "assistant",
+                "content": reply,
+                "created_at": datetime.now().isoformat()
+            }).execute()
+
+            return {"reply": reply}
+        except Exception as e:
+            logger.error(f"Failed to regenerate response: {e}")
+            raise HTTPException(500, "Failed to regenerate response")
+
+async def stop_handler(prompt: str, user_id: str, stream: bool = False):
+    """Handle stopping a stream"""
+    task = active_streams.get(user_id)
+    if task:
+        task.cancel()
+        del active_streams[user_id]
+        
+        if stream:
+            async def event_generator():
+                yield sse({"type": "status", "message": "Stream stopped"})
+                yield sse({"type": "done"})
+            
+            return StreamingResponse(
+                event_generator(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no"
+                }
+            )
+        else:
+            return {"stopped": True}
+    else:
+        if stream:
+            async def event_generator():
+                yield sse({"type": "status", "message": "No active stream"})
+                yield sse({"type": "done"})
+            
+            return StreamingResponse(
+                event_generator(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no"
+                }
+            )
+        else:
+            return {"stopped": False}
+
+async def vision_history_handler(prompt: str, user_id: str, stream: bool = False):
+    """Handle getting vision history"""
+    try:
+        response = supabase.table("vision_history").select("*").eq("user_id", user_id).order("created_at", desc=True).limit(50).execute()
+        rows = response.data if response.data else []
+        
+        if stream:
+            async def event_generator():
+                yield sse({"type": "vision_history", "data": rows})
+                yield sse({"type": "done"})
+            
+            return StreamingResponse(
+                event_generator(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no"
+                }
+            )
+        else:
+            return rows
+    except Exception as e:
+        logger.error(f"Failed to get vision history: {e}")
+        return []
+
+async def get_user_info_handler(prompt: str, user_id: str, stream: bool = False):
+    """Handle getting user information"""
+    try:
+        user_response = supabase.table("users").select("*").eq("id", user_id).execute()
+        user_data = user_response.data[0] if user_response.data else None
+        
+        # Get user's images count
+        images_count = supabase.table("images").select("id", count="exact").eq("user_id", user_id).execute()
+        
+        # Get user's videos count
+        videos_count = supabase.table("videos").select("id", count="exact").eq("user_id", user_id).execute()
+        
+        # Get user's conversations count
+        conversations_count = supabase.table("conversations").select("id", count="exact").eq("user_id", user_id).execute()
+        
+        result = {
+            "id": user_id,
+            "email": user_data.get("email") if user_data else None,
+            "created_at": user_data.get("created_at") if user_data else None,
+            "last_seen": user_data.get("last_seen") if user_data else None,
+            "stats": {
+                "images": images_count.count if hasattr(images_count, 'count') else 0,
+                "videos": videos_count.count if hasattr(videos_count, 'count') else 0,
+                "conversations": conversations_count.count if hasattr(conversations_count, 'count') else 0
+            }
+        }
+        
+        if stream:
+            async def event_generator():
+                yield sse({"type": "user_info", "data": result})
+                yield sse({"type": "done"})
+            
+            return StreamingResponse(
+                event_generator(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no"
+                }
+            )
+        else:
+            return result
+    except Exception as e:
+        logger.error(f"Failed to get user info: {e}")
+        error_result = {
+            "id": user_id,
+            "error": "Failed to get additional user data"
+        }
+        
+        if stream:
+            async def event_generator():
+                yield sse({"type": "user_info", "data": error_result})
+                yield sse({"type": "done"})
+            
+            return StreamingResponse(
+                event_generator(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no"
+                }
+            )
+        else:
+            return error_result
+
+async def merge_user_data_handler(prompt: str, user_id: str, stream: bool = False):
+    """Handle merging user data"""
+    # This is a complex operation that requires authentication
+    # For now, we'll just return an error message
+    if stream:
+        async def event_generator():
+            yield sse({"type": "error", "message": "User data merging requires authentication. Please use the /user/merge endpoint directly."})
+        
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
+    else:
+        return {"error": "User data merging requires authentication. Please use the /user/merge endpoint directly."}
+
 def detect_intent(prompt: str) -> str:
     if not prompt:
         return "chat"
@@ -1945,6 +3066,280 @@ def detect_intent(prompt: str) -> str:
         "clone voice", "custom voice", "voice profile", "voice synthesis"
     ]):
         return "voice_cloning"
+    
+    # 💬 Chat Operations
+    if any(w in p for w in [
+        "new chat", "start conversation", "create conversation"
+    ]):
+        return "new_chat"
+    
+    if any(w in p for w in [
+        "send message", "add message", "reply to"
+    ]):
+        return "send_message"
+    
+    if any(w in p for w in [
+        "list chats", "show conversations", "my conversations"
+    ]):
+        return "list_chats"
+    
+    if any(w in p for w in [
+        "search chats", "find conversation", "search conversation"
+    ]):
+        return "search_chats"
+    
+    if any(w in p for w in [
+        "pin chat", "pin conversation"
+    ]):
+        return "pin_chat"
+    
+    if any(w in p for w in [
+        "archive chat", "archive conversation"
+    ]):
+        return "archive_chat"
+    
+    if any(w in p for w in [
+        "move to folder", "change folder", "folder"
+    ]):
+        return "move_folder"
+    
+    if any(w in p for w in [
+        "share chat", "share conversation"
+    ]):
+        return "share_chat"
+    
+    if any(w in p for w in [
+        "view shared chat", "shared conversation"
+    ]):
+        return "view_shared_chat"
+    
+    if any(w in p for w in [
+        "edit message", "change message"
+    ]):
+        return "edit_message"
+    
+    if any(w in p for w in [
+        "regenerate", "regenerate response", "try again"
+    ]):
+        return "regenerate"
+    
+    if any(w in p for w in [
+        "stop", "cancel", "abort"
+    ]):
+        return "stop"
+    
+    if any(w in p for w in [
+        "vision history", "image history", "analysis history"
+    ]):
+        return "vision_history"
+    
+    if any(w in p for w in [
+        "user info", "my profile", "my account"
+    ]):
+        return "get_user_info"
+    
+    if any(w in p for w in [
+        "merge user data", "merge account", "merge profile"
+    ]):
+        return "merge_user_data"
+
+    return "chat"
+
+def detect_intent(prompt: str) -> str:
+    if not prompt:
+        return "chat"
+
+    p = prompt.lower()
+
+    # 🖼 Image generation
+    if any(w in p for w in [
+        "image of", "draw", "picture of", "generate image",
+        "make me an image", "photo of", "art of"
+    ]):
+        return "image"
+
+    # 🖼 Image → Image
+    if any(w in p for w in [
+        "edit this image", "change this image",
+        "modify image", "img2img"
+    ]):
+        return "img2img"
+
+    # 👁 Vision / analysis
+    if any(w in p for w in [
+        "analyze this image", "what is in this image",
+        "describe this image", "vision"
+    ]):
+        return "vision"
+
+    # 🎙 Speech → Text
+    if any(w in p for w in [
+        "transcribe", "speech to text", "stt"
+    ]):
+        return "stt"
+
+    # 🔊 Text → Speech
+    if any(w in p for w in [
+        "say this", "speak", "tts", "read this", "read aloud"
+    ]):
+        return "tts"
+
+    # 🎥 Video (future-ready)
+    if any(w in p for w in [
+        "video of", "make a video", "animation of", "clip of"
+    ]):
+        return "video"
+
+    # 💻 Code
+    if any(w in p for w in [
+        "write code", "generate code", "python code",
+        "javascript code", "fix this code"
+    ]):
+        return "code"
+
+    # 🔍 Search
+    if any(w in p for w in [
+        "search", "look up", "find info", "who is", "what is"
+    ]):
+        return "search"
+
+    # 📄 Document Analysis
+    if any(w in p for w in [
+        "analyze document", "extract information", "summarize document",
+        "document analysis", "extract entities", "find keywords"
+    ]):
+        return "document_analysis"
+    
+    # 🌐 Translation
+    if any(w in p for w in [
+        "translate", "translation", "translate to", "in spanish", "in french",
+        "in german", "in japanese", "in chinese"
+    ]):
+        return "translation"
+    
+    # 😊 Sentiment Analysis
+    if any(w in p for w in [
+        "sentiment", "emotion", "feeling", "analyze sentiment", "mood"
+    ]):
+        return "sentiment_analysis"
+    
+    # 🕸️ Knowledge Graph
+    if any(w in p for w in [
+        "knowledge graph", "relationship map", "entity graph", "concept map"
+    ]):
+        return "knowledge_graph"
+    
+    # 🤖 Custom Model Training
+    if any(w in p for w in [
+        "train model", "custom model", "fine-tune", "model training"
+    ]):
+        return "custom_model"
+    
+    # 🔍 Code Review
+    if any(w in p for w in [
+        "review code", "code review", "analyze code", "code quality"
+    ]):
+        return "code_review"
+    
+    # 🔍 Multi-modal Search
+    if any(w in p for w in [
+        "search everything", "multimodal search", "search all", "comprehensive search"
+    ]):
+        return "multimodal_search"
+    
+    # 🧠 AI Personalization
+    if any(w in p for w in [
+        "personalize ai", "ai personality", "custom ai behavior", "ai preferences"
+    ]):
+        return "ai_personalization"
+    
+    # 📊 Data Visualization
+    if any(w in p for w in [
+        "create chart", "visualize data", "make graph", "data visualization"
+    ]):
+        return "data_visualization"
+    
+    # 🎤 Voice Cloning
+    if any(w in p for w in [
+        "clone voice", "custom voice", "voice profile", "voice synthesis"
+    ]):
+        return "voice_cloning"
+    
+    # 💬 Chat Operations
+    if any(w in p for w in [
+        "new chat", "start conversation", "create conversation"
+    ]):
+        return "new_chat"
+    
+    if any(w in p for w in [
+        "send message", "add message", "reply to"
+    ]):
+        return "send_message"
+    
+    if any(w in p for w in [
+        "list chats", "show conversations", "my conversations"
+    ]):
+        return "list_chats"
+    
+    if any(w in p for w in [
+        "search chats", "find conversation", "search conversation"
+    ]):
+        return "search_chats"
+    
+    if any(w in p for w in [
+        "pin chat", "pin conversation"
+    ]):
+        return "pin_chat"
+    
+    if any(w in p for w in [
+        "archive chat", "archive conversation"
+    ]):
+        return "archive_chat"
+    
+    if any(w in p for w in [
+        "move to folder", "change folder", "folder"
+    ]):
+        return "move_folder"
+    
+    if any(w in p for w in [
+        "share chat", "share conversation"
+    ]):
+        return "share_chat"
+    
+    if any(w in p for w in [
+        "view shared chat", "shared conversation"
+    ]):
+        return "view_shared_chat"
+    
+    if any(w in p for w in [
+        "edit message", "change message"
+    ]):
+        return "edit_message"
+    
+    if any(w in p for w in [
+        "regenerate", "regenerate response", "try again"
+    ]):
+        return "regenerate"
+    
+    if any(w in p for w in [
+        "stop", "cancel", "abort"
+    ]):
+        return "stop"
+    
+    if any(w in p for w in [
+        "vision history", "image history", "analysis history"
+    ]):
+        return "vision_history"
+    
+    if any(w in p for w in [
+        "user info", "my profile", "my account"
+    ]):
+        return "get_user_info"
+    
+    if any(w in p for w in [
+        "merge user data", "merge account", "merge profile"
+    ]):
+        return "merge_user_data"
 
     return "chat"
 
@@ -3289,6 +4684,7 @@ async def ask_universal(request: Request, background_tasks: BackgroundTasks):
     # -------------------------------
     intent = detect_intent(prompt)
 
+    # Updated intent_map with all handlers
     intent_map = {
         "document_analysis": document_analysis,
         "translation": translate_text,
@@ -3299,7 +4695,31 @@ async def ask_universal(request: Request, background_tasks: BackgroundTasks):
         "multimodal_search": multimodal_search,
         "ai_personalization": personalize_ai,
         "data_visualization": visualize_data,
-        "voice_cloning": clone_voice
+        "voice_cloning": clone_voice,
+        # Added all missing handlers
+        "image": image_generation_handler,
+        "img2img": img2img_handler,
+        "vision": vision_handler,
+        "stt": stt_handler,
+        "tts": tts_handler,
+        "video": video_generation_handler,
+        "code": code_generation_handler,
+        "search": search_handler,
+        "new_chat": new_chat_handler,
+        "send_message": send_message_handler,
+        "list_chats": list_chats_handler,
+        "search_chats": search_chats_handler,
+        "pin_chat": pin_chat_handler,
+        "archive_chat": archive_chat_handler,
+        "move_folder": move_folder_handler,
+        "share_chat": share_chat_handler,
+        "view_shared_chat": view_shared_chat_handler,
+        "edit_message": edit_message_handler,
+        "regenerate": regenerate_handler,
+        "stop": stop_handler,
+        "vision_history": vision_history_handler,
+        "get_user_info": get_user_info_handler,
+        "merge_user_data": merge_user_data_handler
     }
 
     if intent in intent_map:
