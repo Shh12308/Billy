@@ -115,6 +115,7 @@ class User(BaseModel):
     session_token: Optional[str] = None
 
 # User Identity Service
+# First, let's fix the UserIdentityService.get_or_create_user method to handle the missing columns properly
 class UserIdentityService:
     def __init__(self, supabase_client):
         self.supabase = supabase_client
@@ -270,6 +271,7 @@ class UserIdentityService:
             # If that fails due to missing columns, try with minimal columns
             logger.warning(f"Failed to create visitor with all columns, trying with minimal: {e}")
             try:
+                # Try with minimal columns
                 created = (
                     self.supabase
                     .table("visitor_users")
@@ -279,7 +281,6 @@ class UserIdentityService:
                         "session_token": new_session_token
                     })
                     .execute()
-                )
             except Exception as e2:
                 logger.critical(f"Failed to create visitor user: {e2}")
                 # Return a user with a UUID even if we can't save to the database
@@ -337,7 +338,459 @@ class UserIdentityService:
 # Initialize UserIdentityService
 user_identity_service = UserIdentityService(supabase)
 
-# Initialize Supabase tables
+# Fix the upload_image_to_supabase function to handle missing columns
+def upload_image_to_supabase(image_bytes: bytes, filename: str, user_id: str):
+    # Extract just the filename without the user_id prefix for storage
+    storage_filename = filename.split("/")[-1] if "/" in filename else filename
+    
+    # Use the user_id as a folder in the bucket
+    storage_path = f"{user_id}/{storage_filename}"
+    
+    upload = supabase.storage.from_("ai-images").upload(
+        path=storage_path,
+        file=image_bytes,
+        file_options={"content-type": "image/png"}
+    )
+
+    if upload.get("error"):
+        raise Exception(upload["error"]["message"])
+
+    # Save image record with user ID
+    try:
+        supabase.table("images").insert({
+            "id": str(uuid.uuid4()),
+            "user_id": user_id,
+            "filename": storage_path,
+            "created_at": datetime.now().isoformat()
+        }).execute()
+    except Exception as e:
+        logger.error(f"Failed to save image record: {e}")
+
+    return upload
+
+# Fix the _generate_image_core function to use the updated upload function
+async def _generate_image_core(
+    prompt: str,
+    samples: int,
+    user_id: str,
+    return_base64: bool = False
+):
+    if not OPENAI_API_KEY:
+        raise HTTPException(500, "Missing OPENAI_API_KEY")
+
+    provider_used = "openai"
+    urls = []
+
+    payload = {
+        "model": "dall-e-3",
+        "prompt": prompt,
+        "n": 1,  # DALL·E 3 supports only 1 image
+        "size": "1024x1024",
+        "response_format": "b64_json"
+    }
+
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "content-type": "application/json"
+    }
+
+    # ---------- CALL OPENAI ----------
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            r = await client.post(
+                "https://api.openai.com/v1/images/generations",
+                json=payload,
+                headers=headers
+            )
+            r.raise_for_status()
+            result = r.json()
+
+    except Exception:
+        logger.exception("OpenAI image API call failed")
+        raise HTTPException(500, "Image generation provider error")
+
+    # ---------- VALIDATE ----------
+    if not result or not result.get("data"):
+        logger.error("OpenAI returned empty image response: %s", result)
+        raise HTTPException(500, "Image generation failed")
+
+    # ---------- PROCESS IMAGES ----------
+    for img in result["data"]:
+        try:
+            b64 = img.get("b64_json")
+            if not b64:
+                continue
+
+            image_bytes = base64.b64decode(b64)
+            filename = f"{uuid.uuid4().hex}.png"
+
+            upload = upload_image_to_supabase(image_bytes, filename, user_id)
+
+            signed = supabase.storage.from_("ai-images").create_signed_url(
+                f"{user_id}/{filename}", 60 * 60
+            )
+
+            if signed and signed.get("signedURL"):
+                urls.append(signed["signedURL"])
+
+        except Exception:
+            logger.exception("Failed processing or uploading image")
+            continue
+
+    if not urls:
+        raise HTTPException(500, "No images generated")
+
+    cache_result(prompt, provider_used, {"images": urls})
+
+    return {
+        "provider": provider_used,
+        "images": urls,
+        "user_id": user_id  # Include user_id in response
+    }
+
+# Fix the generate_video_internal function to handle missing columns
+async def generate_video_internal(prompt: str, samples: int = 1, user_id: str = "anonymous") -> dict:
+    """
+    Generate video (stub). Stores video files in Supabase storage like images.
+    Returns a list of signed URLs.
+    """
+    urls = []
+
+    for i in range(samples):
+        # For now, we create a placeholder video file
+        placeholder_content = b"This is a placeholder video for prompt: " + prompt.encode('utf-8')
+        filename = f"{uuid.uuid4().hex[:8]}.mp4"
+
+        # Use the user_id as a folder in the bucket
+        storage_path = f"{user_id}/{filename}"
+
+        # Upload to Supabase
+        try:
+            supabase.storage.from_("ai-videos").upload(
+                path=storage_path,
+                file=placeholder_content,
+                file_options={"content-type": "video/mp4"}
+            )
+            
+            # Save video record with user ID
+            try:
+                supabase.table("videos").insert({
+                    "id": str(uuid.uuid4()),
+                    "user_id": user_id,
+                    "filename": storage_path,
+                    "prompt": prompt,
+                    "created_at": datetime.now().isoformat()
+                }).execute()
+            
+            # Get signed URL
+            signed = supabase.storage.from_("ai-videos").create_signed_url(storage_path, 60*60)
+            urls.append(signed["signedURL"])
+        except Exception as e:
+            logger.error(f"Video upload failed: {e}")
+
+    return {"provider": "stub", "videos": urls}
+
+# Fix the cache_result function to handle missing columns
+def cache_result(prompt: str, provider: str, result: dict):
+    # Store cache in Supabase
+    try:
+        supabase.table("cache").insert({
+            "prompt": prompt,
+            "provider": provider,
+            "result": json.dumps(result),
+            "created_at": datetime.now().isoformat()
+        }).execute()
+    except Exception as e:
+        logger.error(f"Failed to cache result: {e}")
+
+# Fix the save_image_record function to handle missing columns
+def save_image_record(user_id, prompt, path, is_nsfw):
+    try:
+        supabase.table("images").insert({
+            "id": str(uuid.uuid4()),
+            "user_id": user_id,
+            "prompt": prompt,
+            "image_path": path,
+            "is_nsfw": is_nsfw,
+            "created_at": datetime.now().isoformat()
+        }).execute()
+    except Exception as e:
+        logger.error(f"Failed to save image record: {e}")
+
+# Fix the save_code_generation_record function to handle missing columns
+async def save_code_generation_record(user_id: str, language: str, prompt: str, code: str):
+    try:
+        supabase.table("code_generations").insert({
+            "id": str(uuid.uuid4()),
+            "user_id": user_id,
+            "language": language,
+            "prompt": prompt,
+            "code": code,
+            "created_at": datetime.now().isoformat()
+        }).execute()
+    except Exception as e:
+        logger.error(f"Failed to save code generation record: {e}")
+
+# Update the code_gen function to use the updated save function
+@app.post("/code")
+async def code_gen(req: Request, res: Response):
+    body = await req.json()
+    prompt = body.get("prompt", "")
+    language = body.get("language", "python").lower()
+    run_flag = bool(body.get("run", False))
+    
+    # Get the user with our new ID system
+    user = await get_or_create_user(req, res)
+    user_id = user.id
+
+    if not prompt:
+        raise HTTPException(400, "prompt required")
+
+    # Generate code using Groq
+    contextual_prompt = build_contextual_prompt(
+        user_id,
+        f"Write a complete {language} program:\n{prompt}"
+    )
+
+    payload = {
+        "model": CHAT_MODEL,
+        "messages": [
+            {"role": "system", "content": contextual_prompt},
+            {"role": "user", "content": prompt}
+        ]
+    }
+
+    async with httpx.AsyncClient(timeout=60) as client:
+        r = await client.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers=get_groq_headers(),
+            json=payload
+        )
+        r.raise_for_status()
+        code = r.json()["choices"][0]["message"]["content"]
+
+    response = {
+        "language": language,
+        "generated_code": code,
+        "user_id": user_id  # Include user_id in response
+    }
+
+    # ✅ Run via Judge0
+    if run_flag:
+        lang_id = JUDGE0_LANGUAGES.get(language, 71)
+        execution = await run_code_judge0(code, lang_id)
+        response["execution"] = execution
+
+    # Save code generation record
+    await save_code_generation_record(user_id, language, prompt, code)
+
+    return response
+
+# Update the vision_analyze function to use the updated upload function
+@app.post("/vision/analyze")
+async def vision_analyze(
+    req: Request,
+    res: Response,
+    file: UploadFile = File(...)
+):
+    user = await get_or_create_user(req, res)
+    user_id = user.id
+    content = await file.read()
+
+    if not content:
+        raise HTTPException(400, "empty file")
+
+    # Load image
+    img = Image.open(BytesIO(content)).convert("RGB")
+    np_img = np.array(img)
+    annotated = np_img.copy()
+
+    # =========================
+    # 1️⃣ YOLO OBJECT DETECTION
+    # =========================
+    obj_results = get_yolo_objects()(np_img, conf=0.25)
+    detections = []
+
+    for r in obj_results:
+        for box in r.boxes:
+            label = YOLO_OBJECTS.names[int(box.cls)]
+            conf = float(box.conf)
+            x1, y1, x2, y2 = map(int, box.xyxy[0])
+
+            detections.append({
+                "label": label,
+                "confidence": conf,
+                "bbox": [x1, y1, x2, y2]
+            })
+
+            # Draw box
+            cv2.rectangle(annotated, (x1,y1), (x2,y2), (0,255,0), 2)
+            cv2.putText(
+                annotated,
+                f"{label} {conf:.2f}",
+                (x1, y1-5),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (0,255,0),
+                2
+            )
+
+    # =========================
+    # 2️⃣ FACE DETECTION
+    # =========================
+    face_results = get_yolo_faces()(np_img)
+    face_count = 0
+
+    for r in face_results:
+        for box in r.boxes:
+            face_count += 1
+            x1, y1, x2, y2 = map(int, box.xyxy[0])
+            cv2.rectangle(annotated, (x1,y1), (x2,y2), (255,0,0), 2)
+            cv2.putText(
+                annotated,
+                "face",
+                (x1, y1-5),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (255,0,0),
+                2
+            )
+
+    # =========================
+    # 3️⃣ DOMINANT COLORS
+    # =========================
+    hex_colors = []
+    try:
+        from sklearn.cluster import KMeans  # Added import inside function to avoid import error if sklearn is not installed
+        pixels = np_img.reshape(-1, 3)
+        kmeans = KMeans(n_clusters=5, random_state=0).fit(pixels)
+        hex_colors = [
+            '#%02x%02x%02x' % tuple(map(int, c))
+            for c in kmeans.cluster_centers_
+        ]
+    except Exception:
+        pass
+
+    # =========================
+    # 4️⃣ UPLOAD TO SUPABASE
+    # =========================
+    # Use the user_id as a folder in the bucket
+    raw_path = f"{user_id}/raw/{uuid.uuid4().hex}.png"
+    ann_path = f"{user_id}/annotated/{uuid.uuid4().hex}.png"
+
+    _, ann_buf = cv2.imencode(".png", annotated)
+
+    supabase.storage.from_("ai-images").upload(
+        raw_path,
+        content,
+        {"content-type": "image/png"}
+    )
+
+    supabase.storage.from_("ai-images").upload(
+        ann_path,
+        ann_buf.tobytes(),
+        {"content-type": "image/png"}
+    )
+
+    raw_url = supabase.storage.from_("ai-images").create_signed_url(raw_path, 3600)["signedURL"]
+    ann_url = supabase.storage.from_("ai-images").create_signed_url(ann_path, 3600)["signedURL"]
+
+    # =========================
+    # 5️⃣ SAVE HISTORY
+    # =========================
+    analysis_id = str(uuid.uuid4())
+    try:
+        supabase.table("vision_history").insert({
+            "id": analysis_id,
+            "user_id": user_id,
+            "image_path": raw_path,
+            "annotated_path": ann_path,
+            "detections": json.dumps(detections),
+            "faces": face_count,
+            "created_at": datetime.now().isoformat()
+        }).execute()
+    except Exception as e:
+        logger.error(f"Failed to save vision analysis: {e}")
+
+    return {
+        "objects": detections,
+        "faces_detected": face_count,
+        "dominant_colors": hex_colors,
+        "image_url": raw_url,
+        "annotated_image_url": ann_url,
+        "user_id": user_id
+    }
+
+# Update the video generation endpoint to use the updated function
+@app.post("/video")
+async def generate_video(request: Request):
+    """
+    Generate a video from a prompt using Hugging Face and upload to Supabase.
+    Returns signed URL(s) to the video(s).
+    """
+    body = await request.json()
+    prompt = body.get("prompt", "").strip()
+    user = await get_or_create_user(request, Response())
+    user_id = user.id
+    samples = max(1, int(body.get("samples", 1))
+
+    if not prompt:
+        raise HTTPException(400, "prompt required")
+    if not HF_API_KEY:
+        raise HTTPException(500, "HF_API_KEY missing")
+
+    video_urls = []
+
+    try:
+        async with httpx.AsyncClient(timeout=600.0) as client:
+            headers = {"Authorization": f"Bearer {HF_API_KEY}"}
+            for _ in range(samples):
+                payload = {"inputs": prompt}
+
+                r = await client.post(
+                    "https://api-inference.huggingface.co/models/runwayml/stable-diffusion-videos",
+                    headers=headers,
+                    json=payload
+                )
+                r.raise_for_status()
+                # HF returns bytes, not base64
+                video_bytes = r.content
+
+                # Generate a unique filename
+                filename = f"{uuid.uuid4().hex[:8]}.mp4"
+
+                # Use the user_id as a folder in the bucket
+                storage_path = f"{user_id}/{filename}"
+
+                # Upload to Supabase
+                supabase.storage.from_("ai-videos").upload(
+                    path=storage_path,
+                    file=video_bytes,
+                    file_options={"content-type": "video/mp4"}
+                )
+                
+                # Save video record with user ID
+                supabase.table("videos").insert({
+                    "id": str(uuid.uuid4()),
+                    "user_id": user_id,
+                    "filename": storage_path,
+                    "prompt": prompt,
+                    "created_at": datetime.now().isoformat()
+                }).execute()
+                
+                # Create signed URL (1 hour)
+                signed = supabase.storage.from_("ai-videos").create_signed_url(storage_path, 60*60)
+                video_urls.append(signed["signedURL"])
+
+    except Exception as e:
+        raise HTTPException(500, f"Video generation failed: {str(e)}")
+
+    if not video_urls:
+        raise HTTPException(500, "No video generated")
+
+    return {"provider": "huggingface", "videos": video_urls}
+
+# Fix the init_supabase_tables function to handle missing tables gracefully
 def init_supabase_tables():
     # Try to create the required tables using RPC functions if they exist
     # If they don't exist, we'll handle the error gracefully
@@ -400,7 +853,7 @@ def init_supabase_tables():
     try:
         supabase.rpc("create_visitor_users_table").execute()
     except Exception as e:
-        print(f"Failed to create visitor_users_table via RPC: {e}")
+        print(f"Failed to create visitor_users table via RPC: {e}")
     
     # Create code_generations table
     try:
