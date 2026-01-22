@@ -1441,106 +1441,83 @@ def get_system_prompt(user_message: Optional[str] = None) -> str:
 
 # Update the build_contextual_prompt function to include user history
 def build_contextual_prompt(user_id: str, message: str) -> str:
+    """Build system prompt with user memory and conversation history"""
     try:
-        # Get user information
-        user_response = supabase.table("users").select("*").eq("id", user_id).execute()
-        user_info = user_response.data[0] if user_response.data else None
+        # Get user's recent conversations
+        conv_response = supabase.table("conversations").select("id").eq("user_id", user_id).order("updated_at", desc=True).limit(1).execute()
         
-        # Get user memory (with error handling)
-        memory_rows = []
-        try:
-            memory_response = supabase.table("memory").select("key, value").eq("user_id", user_id).order("updated_at", desc=True).limit(5).execute()
-            memory_rows = memory_response.data if memory_response.data else []
-        except Exception as e:
-            logger.error(f"Error fetching user memory: {e}")
+        if not conv_response.data:
+            # New user, no history
+            return f"You are a helpful AI assistant. User message: {message}"
         
-        # Get conversation history for context (with error handling)
-        msg_rows = []
-        try:
-            conv_response = supabase.table("conversations").select("id").eq("user_id", user_id).order("updated_at", desc=True).limit(1).execute()
-            if conv_response.data:
-                conv_id = conv_response.data[0]["id"]
-                msg_response = supabase.table("messages").select("content").eq("conversation_id", conv_id).order("created_at", desc=True).limit(10).execute()
-                msg_rows = msg_response.data if msg_response.data else []
-        except Exception as e:
-            logger.error(f"Error fetching conversation history: {e}")
+        conversation_id = conv_response.data[0]["id"]
         
-        # Get user's images and videos for context (with error handling)
-        image_rows = []
-        video_rows = []
-        try:
-            images_response = supabase.table("images").select("prompt, filename").eq("user_id", user_id).order("created_at", desc=True).limit(5).execute()
-            image_rows = images_response.data if images_response.data else []
-            
-            videos_response = supabase.table("videos").select("prompt, filename").eq("user_id", user_id).order("created_at", desc=True).limit(5).execute()
-            video_rows = videos_response.data if videos_response.data else []
-        except Exception as e:
-            logger.error(f"Error fetching user media: {e}")
+        # Get recent messages from this conversation
+        msg_response = supabase.table("messages").select("role, content").eq("conversation_id", conversation_id).order("created_at", desc=True).limit(10).execute()
         
-        # Build context
-        user_type = "logged-in" if user_info and not user_info.get("anonymous", True) else "anonymous"
-        context = f"User ID: {user_id} ({user_type})\n"
+        # Build context from messages
+        context = "Recent conversation:\n"
+        for msg in reversed(msg_response.data):  # Reverse to show chronological order
+            context += f"{msg['role']}: {msg['content']}\n"
         
-        if user_info and not user_info.get("anonymous", True) and user_info.get("email"):
-            context += f"User email: {user_info['email']}\n"
+        # Get user preferences if they exist
+        profile_response = supabase.table("profiles").select("preferences").eq("id", user_id).execute()
+        if profile_response.data:
+            preferences = profile_response.data[0].get("preferences", {})
+            if preferences:
+                context += f"\nUser preferences: {json.dumps(preferences)}\n"
         
-        context += "\nUser memories:\n"
-        context += "\n".join(f"- {row['key']}: {row['value']}" for row in memory_rows)
-        
-        context += "\n\nRecent conversation:\n"
-        context += "\n".join(f"- {row['content']}" for row in msg_rows)
-        
-        if image_rows:
-            context += "\n\nRecent images:\n"
-            context += "\n".join(f"- {row['prompt']} (file: {row['filename']})" for row in image_rows)
-        
-        if video_rows:
-            context += "\n\nRecent videos:\n"
-            context += "\n".join(f"- {row['prompt']} (file: {row['filename']})" for row in video_rows)
-        
-        return f"""You are ZyNaraAI1.0: helpful, concise, friendly. Focus on exactly what the user wants.
-You have a persistent memory of this user across sessions.
+        return f"""You are a helpful AI assistant with memory of this user.
 
-User context:
 {context}
 
 Current message: {message}"""
     except Exception as e:
         logger.error(f"Failed to build contextual prompt: {e}")
-        return f"You are ZyNaraAI1.0: helpful, concise, friendly. Focus on exactly what the user wants.\n\nUser message: {message}"
+        return f"You are a helpful AI assistant. User message: {message}"
 
-def check_permission(role: str, tool_name: str) -> bool:
-    permissions = {
-        "user": {"web_search"},
-        "admin": {"web_search", "run_code"},
-        "system": {"web_search", "run_code"}
-    }
-    return tool_name in permissions.get(role, set())
+def persist_message(user_id: str, conversation_id: str, role: str, content: str):
+    """Store message in database"""
+    try:
+        supabase.table("messages").insert({
+            "id": str(uuid.uuid4()),
+            "conversation_id": conversation_id,
+            "user_id": user_id,
+            "role": role,
+            "content": content,
+            "created_at": datetime.utcnow().isoformat()
+        }).execute()
+        
+        # Update conversation timestamp
+        supabase.table("conversations").update({
+            "updated_at": datetime.utcnow().isoformat()
+        }).eq("id", conversation_id).execute()
+    except Exception as e:
+        logger.error(f"Failed to persist message: {e}")
 
-def get_or_create_conversation_id(supabase, user_id: str) -> str:
-    # Try to get most recent conversation
-    res = (
-        supabase.table("conversations")
-        .select("id")
-        .eq("user_id", user_id)
-        .order("updated_at", desc=True)
-        .limit(1)
-        .execute()
-    )
-
-    if res.data:
-        return res.data[0]["id"]
-
-    # Create new conversation
-    conversation_id = str(uuid.uuid4())
-    supabase.table("conversations").insert({
-        "id": conversation_id,
-        "user_id": user_id,
-        "created_at": datetime.utcnow().isoformat(),
-        "updated_at": datetime.utcnow().isoformat()
-    }).execute()
-
-    return conversation_id
+def get_or_create_conversation(user_id: str) -> str:
+    """Get existing conversation or create new one"""
+    try:
+        # Try to get most recent conversation
+        response = supabase.table("conversations").select("id").eq("user_id", user_id).order("updated_at", desc=True).limit(1).execute()
+        
+        if response.data:
+            return response.data[0]["id"]
+        
+        # Create new conversation
+        conversation_id = str(uuid.uuid4())
+        supabase.table("conversations").insert({
+            "id": conversation_id,
+            "user_id": user_id,
+            "created_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat()
+        }).execute()
+        
+        return conversation_id
+    except Exception as e:
+        logger.error(f"Failed to get or create conversation: {e}")
+        return str(uuid.uuid4())  # Fallback
+        
 
 def build_system_prompt(artifact: Union[str, None]):
     base = """
@@ -4429,32 +4406,61 @@ async def chat_stream(req: Request, res: Response, tts: bool = False, samples: i
     
 # ---------- Chat endpoint ----------
 @app.post("/chat")
-async def chat_endpoint(req: Request):
-    body = await req.json()
-    prompt = body.get("prompt","")
-    user = await get_or_create_user(req, Response())
+async def chat_endpoint(request: Request, response: Response):
+    """Main chat endpoint with user memory"""
+    # Get or create user with stable UUID
+    user = user_identity_service.get_or_create_user(request, response)
     user_id = user.id
-    if not prompt:
-        raise HTTPException(400,"prompt required")
-    if not GROQ_API_KEY:
-        raise HTTPException(400,"no groq key")
-    payload = {"model":CHAT_MODEL,"messages":[{"role":"system","content":build_contextual_prompt(user_id, prompt)},{"role":"user","content":prompt}]}
-
-    headers = get_groq_headers()
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        try:
-            r = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
-            if r.status_code != 200:
-                logger.warning("Groq /chat returned status=%s text=%s", r.status_code, (r.text[:500] + '...') if r.text else "")
-                r.raise_for_status()
-            return r.json()
-        except httpx.HTTPStatusError as exc:
-            logger.exception("Groq HTTP error on /chat: %s", getattr(exc.response, "text", "no-response-text"))
-            raise HTTPException(status_code=exc.response.status_code if exc.response is not None else 500, detail=f"Groq error: {exc.response.text[:400] if exc.response is not None else str(exc)}")
-        except Exception:
-            logger.exception("Groq /chat request failed")
-            raise HTTPException(500, "groq_request_failed")
-
+    
+    # Parse request
+    body = await request.json()
+    message = body.get("message", "")
+    
+    if not message:
+        raise HTTPException(400, "message required")
+    
+    # Get or create conversation for this user
+    conversation_id = get_or_create_conversation(user_id)
+    
+    # Store user message
+    persist_message(user_id, conversation_id, "user", message)
+    
+    # Build contextual prompt with user history
+    system_prompt = build_contextual_prompt(user_id, message)
+    
+    # Prepare messages for API call
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": message}
+    ]
+    
+    # Call language model
+    payload = {
+        "model": CHAT_MODEL,
+        "messages": messages,
+        "max_tokens": 1500
+    }
+    
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.post(GROQ_URL, headers=headers, json=payload)
+        r.raise_for_status()
+        response_data = r.json()
+    
+    assistant_reply = response_data["choices"][0]["message"]["content"]
+    
+    # Store assistant message
+    persist_message(user_id, conversation_id, "assistant", assistant_reply)
+    
+    return {
+        "reply": assistant_reply,
+        "conversation_id": conversation_id,
+        "user_id": user_id
+    }
 # =========================================================
 # 🚀 UNIVERSAL MULTIMODAL ENDPOINT — /ask/universal
 # =========================================================
@@ -5915,6 +5921,40 @@ async def multimodal_search_endpoint(request: MultimodalSearchRequest, req: Requ
         user.id,
         False
     )
+
+@app.post("/user/preferences")
+async def set_preferences(request: Request, response: Response):
+    """Store user preferences"""
+    user = user_identity_service.get_or_create_user(request, response)
+    user_id = user.id
+    
+    body = await request.json()
+    preferences = body.get("preferences", {})
+    
+    # Upsert preferences
+    try:
+        existing = supabase.table("profiles").select("id").eq("id", user_id).execute()
+        
+        if existing.data:
+            # Update existing profile
+            supabase.table("profiles").update({
+                "preferences": preferences,
+                "updated_at": datetime.utcnow().isoformat()
+            }).eq("id", user_id).execute()
+        else:
+            # Create new profile
+            supabase.table("profiles").insert({
+                "id": user_id,
+                "preferences": preferences,
+                "created_at": datetime.utcnow().isoformat()
+            }).execute()
+    except Exception as e:
+        logger.error(f"Failed to save preferences: {e}")
+        raise HTTPException(500, "Failed to save preferences")
+    
+    return {"status": "success"}
+
+
 
 @app.post("/ai/personalize")
 async def ai_personalization_endpoint(request: PersonalizationRequest, req: Request, res: Response):
