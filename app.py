@@ -4542,7 +4542,7 @@ async def ask_universal(request: Request, background_tasks: BackgroundTasks):
     # -------------------------------
     # Load conversation
     # -------------------------------
-    conversation_id = get_or_create_conversation(user_id)
+    def get_or_create_conversation(user_id, conversation_id=None):
 
     history = await load_history(user_id)
 
