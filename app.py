@@ -4542,9 +4542,9 @@ async def ask_universal(request: Request, background_tasks: BackgroundTasks):
     # -------------------------------
     # Load conversation
     # -------------------------------
-    def get_or_create_conversation(user_id, conversation_id=None):
-
-    history = await load_history(user_id)
+    async def get_or_create_conversation(user_id, conversation_id=None):
+        history = await load_history(user_id)
+        return history
 
     # -------------------------------
     # SAFE PROFILE FETCH / CREATE
