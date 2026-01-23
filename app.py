@@ -156,7 +156,7 @@ class UserIdentityService:
     # -----------------------------------
     session_token = request.cookies.get("session_token")
 
-    if session_token:
+     if session_token:
         try:
             visitor_resp = await asyncio.to_thread(
                 lambda: supabase.table("visitor_users")
@@ -174,7 +174,6 @@ class UserIdentityService:
                     session_token=v["session_token"],
                     device_fingerprint=v.get("device_fingerprint"),
                 )
-
         except Exception as e:
             logger.warning(f"Visitor lookup failed: {e}")
 
