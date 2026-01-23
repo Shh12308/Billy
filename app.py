@@ -149,7 +149,7 @@ class UserIdentityService:
         }
         
     async def get_or_create_user(request: Request, response: Response) -> User:
-    now = datetime.utcnow()
+        now = datetime.utcnow()
 
     # -----------------------------------
     # 1️⃣ Try existing visitor via cookie
