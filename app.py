@@ -150,7 +150,7 @@ class UserIdentityService:
             "friendly_name": f"{adjectives[adj_index]}{nouns[noun_index]}-{fp_short}"
         }
         
-    async def get_or_create_user(request: Request, response: Response) -> User:
+    async def get_or_create_user(self, request: Request, response: Response) -> User:
         now = datetime.utcnow()
 
     # 1️⃣ Try existing visitor via cookie
@@ -179,9 +179,9 @@ class UserIdentityService:
             logger.warning(f"Visitor lookup failed: {e}")
 
     # 2️⃣ Create new visitor
-    device_fingerprint = generate_device_fingerprint(request)
+    device_fingerprint = self.generate_device_fingerprint(request)
     new_session_token = str(uuid.uuid4())
-    anonymous_info = generate_anonymous_id(device_fingerprint)
+    anonymous_info = self.generate_anonymous_id(device_fingerprint)
     anonymous_uuid = anonymous_info["uuid"]
     nickname = anonymous_info["friendly_name"]
 
@@ -6269,5 +6269,4 @@ async def merge_user_data(req: Request, res: Response):
         raise HTTPException(401, f"Invalid token: {str(e)}")
 
 @app.on_event("shutdown")
-async def shutdown_event():
     scheduler.shutdown()
