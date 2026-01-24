@@ -4415,11 +4415,8 @@ async def cleanup_old_tasks():
 
 # ---------- API Endpoints ----------
 @app.get("/health")
-async def health():
-    return {
-        "status": "ok",
-        "timestamp": datetime.utcnow().isoformat()
-    }
+def health():
+    return {"status": "ok"}
     
 @app.get("/")
 async def root():
@@ -6274,11 +6271,6 @@ async def merge_user_data(req: Request, res: Response):
     except Exception as e:
         logger.error(f"Error verifying JWT token: {e}")
         raise HTTPException(401, f"Invalid token: {str(e)}")
-
-# Startup and shutdown events
-@app.on_event("startup")
-async def startup_event():
-    scheduler.start()
 
 @app.on_event("shutdown")
 async def shutdown_event():
