@@ -6269,4 +6269,5 @@ async def merge_user_data(req: Request, res: Response):
         raise HTTPException(401, f"Invalid token: {str(e)}")
 
 @app.on_event("shutdown")
+async def shutdown_event():
     scheduler.shutdown()
