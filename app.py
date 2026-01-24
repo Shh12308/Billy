@@ -574,9 +574,7 @@ async def get_or_create_user(req: Request, res: Response) -> User:
     return await user_identity_service.get_or_create_user(req, res)
 
 def init_supabase_tables():
-    # Supabase schema is managed via SQL / migrations.
-    # Do NOT create tables via RPC at runtime.
-    logger.info("Supabase schema assumed present — skipping RPC table creation")
+    print("Supabase schema assumed present — skipping RPC table creation")
 
 
 # Initialize on startup (safe no-op)
