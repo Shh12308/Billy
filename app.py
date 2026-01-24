@@ -18,7 +18,8 @@ from typing import Optional, Dict, Any, List, Union
 from io import BytesIO, StringIO
 import re
 import math
-from datetime import datetime
+from datetime import datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor
 
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
@@ -26,7 +27,7 @@ import httpx
 import aiohttp
 import torch
 from PIL import Image
-from fastapi import BackgroundTasks, FastAPI, Request, Header, UploadFile, File, HTTPException, Query, Form, Depends, Response
+from fastapi import BackgroundTasks, FastAPI, Request, Header, UploadFile, File, HTTPException, Query, Form, Depends, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -43,6 +44,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 import networkx as nx
 import plotly.graph_objects as go
 import plotly.express as px
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # Fix: Import utils with proper error handling
 try:
@@ -248,6 +250,132 @@ class UserIdentityService:
 
 # Initialize UserIdentityService
 user_identity_service = UserIdentityService(supabase)
+
+# Background task management
+background_executor = ThreadPoolExecutor(max_workers=10)
+active_tasks: Dict[str, Dict[str, Any]] = {}  # task_id -> task_info
+
+class TaskManager:
+    def __init__(self):
+        self.active_tasks = {}
+    
+    def create_task(self, user_id: str, task_type: str, params: Dict[str, Any]) -> str:
+        """Create a new background task and return its ID"""
+        task_id = str(uuid.uuid4())
+        
+        # Store task info
+        self.active_tasks[task_id] = {
+            "user_id": user_id,
+            "type": task_type,
+            "params": params,
+            "status": "queued",
+            "created_at": datetime.now().isoformat(),
+            "result": None,
+            "error": None
+        }
+        
+        # Save to database
+        try:
+            supabase.table("background_tasks").insert({
+                "id": task_id,
+                "user_id": user_id,
+                "task_type": task_type,
+                "params": json.dumps(params),
+                "status": "queued",
+                "created_at": datetime.now().isoformat()
+            }).execute()
+        except Exception as e:
+            logger.error(f"Failed to save task to database: {e}")
+        
+        return task_id
+    
+    def update_task_status(self, task_id: str, status: str, result=None, error=None):
+        """Update task status and optionally result/error"""
+        if task_id in self.active_tasks:
+            self.active_tasks[task_id]["status"] = status
+            if result is not None:
+                self.active_tasks[task_id]["result"] = result
+            if error is not None:
+                self.active_tasks[task_id]["error"] = error
+            
+            # Update in database
+            try:
+                update_data = {"status": status}
+                if result is not None:
+                    update_data["result"] = json.dumps(result)
+                if error is not None:
+                    update_data["error"] = error
+                
+                supabase.table("background_tasks").update(update_data).eq("id", task_id).execute()
+            except Exception as e:
+                logger.error(f"Failed to update task in database: {e}")
+    
+    def get_task(self, task_id: str) -> Dict[str, Any]:
+        """Get task information"""
+        if task_id in self.active_tasks:
+            return self.active_tasks[task_id]
+        
+        # Try to fetch from database
+        try:
+            response = supabase.table("background_tasks").select("*").eq("id", task_id).execute()
+            if response.data:
+                task = response.data[0]
+                # Parse JSON fields
+                if "params" in task and isinstance(task["params"], str):
+                    task["params"] = json.loads(task["params"])
+                if "result" in task and isinstance(task["result"], str):
+                    task["result"] = json.loads(task["result"])
+                
+                # Cache in memory
+                self.active_tasks[task_id] = task
+                return task
+        except Exception as e:
+            logger.error(f"Failed to fetch task from database: {e}")
+        
+        return None
+    
+    def get_user_tasks(self, user_id: str) -> List[Dict[str, Any]]:
+        """Get all tasks for a user"""
+        try:
+            response = supabase.table("background_tasks").select("*").eq("user_id", user_id).order("created_at", desc=True).execute()
+            tasks = response.data if response.data else []
+            
+            # Parse JSON fields
+            for task in tasks:
+                if "params" in task and isinstance(task["params"], str):
+                    task["params"] = json.loads(task["params"])
+                if "result" in task and isinstance(task["result"], str):
+                    task["result"] = json.loads(task["result"])
+            
+            return tasks
+        except Exception as e:
+            logger.error(f"Failed to fetch user tasks from database: {e}")
+            return []
+
+# Initialize the task manager
+task_manager = TaskManager()
+
+# WebSocket connection manager
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: Dict[str, WebSocket] = {}  # user_id -> websocket
+    
+    async def connect(self, websocket: WebSocket, user_id: str):
+        await websocket.accept()
+        self.active_connections[user_id] = websocket
+    
+    def disconnect(self, user_id: str):
+        if user_id in self.active_connections:
+            del self.active_connections[user_id]
+    
+    async def send_personal_message(self, message: str, user_id: str):
+        if user_id in self.active_connections:
+            await self.active_connections[user_id].send_text(message)
+
+manager = ConnectionManager()
+
+# Initialize scheduler
+scheduler = AsyncIOScheduler()
 
 # Fixed upload_image_to_supabase function to store in anonymous folder
 def upload_image_to_supabase(image_bytes: bytes, filename: str, user_id: str):
@@ -515,6 +643,12 @@ def init_supabase_tables():
         supabase.rpc("create_code_generations_table").execute()
     except Exception as e:
         print(f"Failed to create code_generations table via RPC: {e}")
+    
+    # Create background_tasks table
+    try:
+        supabase.rpc("create_background_tasks_table").execute()
+    except Exception as e:
+        print(f"Failed to create background_tasks table via RPC: {e}")
     
     # Keep the existing table creation code for the basic tables
     try:
@@ -4285,6 +4419,134 @@ async def tts_stream_helper(text: str):
     b64 = base64.b64encode(r.content).decode()
     yield {"type": "tts_done", "audio": b64}
 
+# Background task functions
+async def generate_chat_response_background(
+    task_id: str,
+    user_id: str,
+    conversation_id: str,
+    message: str
+):
+    """Generate chat response in the background"""
+    try:
+        # Update task status
+        task_manager.update_task_status(task_id, "processing")
+        
+        # Get conversation history
+        msg_response = supabase.table("messages").select("role, content").eq("conversation_id", conversation_id).order("created_at").execute()
+        rows = msg_response.data if msg_response.data else []
+        messages = [{"role": row["role"], "content": row["content"]} for row in rows]
+        
+        # Build contextual prompt
+        system_prompt = build_contextual_prompt(user_id, message)
+        
+        # Prepare messages for API call
+        api_messages = [
+            {"role": "system", "content": system_prompt},
+            *messages
+        ]
+        
+        # Call language model
+        payload = {
+            "model": CHAT_MODEL,
+            "messages": api_messages,
+            "max_tokens": 1500
+        }
+        
+        headers = {
+            "Authorization": f"Bearer {GROQ_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.post(GROQ_URL, headers=headers, json=payload)
+            r.raise_for_status()
+            response_data = r.json()
+        
+        assistant_reply = response_data["choices"][0]["message"]["content"]
+        
+        # Store assistant message
+        persist_message(user_id, conversation_id, "assistant", assistant_reply)
+        
+        # Update task with result
+        task_manager.update_task_status(
+            task_id, 
+            "completed",
+            result={
+                "reply": assistant_reply,
+                "conversation_id": conversation_id
+            }
+        )
+        
+        # Send WebSocket notification if connected
+        await manager.send_personal_message(
+            json.dumps({
+                "type": "task_completed",
+                "task_id": task_id,
+                "result": {
+                    "reply": assistant_reply,
+                    "conversation_id": conversation_id
+                }
+            }),
+            user_id
+        )
+    except Exception as e:
+        logger.error(f"Background chat generation failed: {e}")
+        task_manager.update_task_status(task_id, "failed", error=str(e))
+
+async def generate_image_background(
+    task_id: str,
+    user_id: str,
+    prompt: str,
+    samples: int
+):
+    """Generate images in the background"""
+    try:
+        task_manager.update_task_status(task_id, "processing")
+        
+        result = await _generate_image_core(prompt, samples, user_id, return_base64=False)
+        
+        task_manager.update_task_status(
+            task_id, 
+            "completed",
+            result=result
+        )
+        
+        # Send WebSocket notification if connected
+        await manager.send_personal_message(
+            json.dumps({
+                "type": "task_completed",
+                "task_id": task_id,
+                "result": result
+            }),
+            user_id
+        )
+    except Exception as e:
+        logger.error(f"Background image generation failed: {e}")
+        task_manager.update_task_status(task_id, "failed", error=str(e))
+
+# Cleanup job for old tasks
+@scheduler.scheduled_job('interval', hours=24)
+async def cleanup_old_tasks():
+    """Clean up tasks older than 7 days"""
+    cutoff_date = (datetime.now() - timedelta(days=7)).isoformat()
+    
+    try:
+        # Delete from database
+        supabase.table("background_tasks").delete().lt("created_at", cutoff_date).execute()
+        
+        # Clean up memory
+        old_task_ids = [
+            task_id for task_id, task in task_manager.active_tasks.items()
+            if task["created_at"] < cutoff_date
+        ]
+        
+        for task_id in old_task_ids:
+            del task_manager.active_tasks[task_id]
+            
+        logger.info(f"Cleaned up {len(old_task_ids)} old tasks")
+    except Exception as e:
+        logger.error(f"Failed to cleanup old tasks: {e}")
+
 # ---------- API Endpoints ----------
 @app.get("/health")
 async def health():
@@ -4372,6 +4634,138 @@ async def chat_endpoint(request: Request, response: Response):
         "conversation_id": conversation_id,
         "user_id": user_id
     }
+
+# Background chat endpoint
+@app.post("/chat/background")
+async def chat_background(
+    request: Request, 
+    response: Response,
+    background_tasks: BackgroundTasks
+):
+    """Start a chat response in the background"""
+    # Get user
+    user = await get_or_create_user(request, response)
+    user_id = user.id
+    
+    # Parse request
+    body = await request.json()
+    message = body.get("message", "")
+    conversation_id = body.get("conversation_id")
+    
+    if not message:
+        raise HTTPException(400, "message required")
+    
+    # Create or get conversation
+    if not conversation_id:
+        conversation_id = get_or_create_conversation(user_id)
+    
+    # Store user message
+    persist_message(user_id, conversation_id, "user", message)
+    
+    # Create background task
+    task_id = task_manager.create_task(
+        user_id=user_id,
+        task_type="chat_response",
+        params={
+            "message": message,
+            "conversation_id": conversation_id
+        }
+    )
+    
+    # Add to background tasks
+    background_tasks.add_task(
+        generate_chat_response_background,
+        task_id,
+        user_id,
+        conversation_id,
+        message
+    )
+    
+    return {
+        "task_id": task_id,
+        "conversation_id": conversation_id,
+        "status": "queued"
+    }
+
+# Background image generation endpoint
+@app.post("/image/background")
+async def image_background(
+    request: Request, 
+    response: Response,
+    background_tasks: BackgroundTasks
+):
+    """Start image generation in the background"""
+    user = await get_or_create_user(request, response)
+    user_id = user.id
+    
+    body = await request.json()
+    prompt = body.get("prompt", "")
+    samples = max(1, int(body.get("samples", 1)))
+    
+    if not prompt:
+        raise HTTPException(400, "prompt required")
+    
+    # Create background task
+    task_id = task_manager.create_task(
+        user_id=user_id,
+        task_type="image_generation",
+        params={
+            "prompt": prompt,
+            "samples": samples
+        }
+    )
+    
+    # Add to background tasks
+    background_tasks.add_task(
+        generate_image_background,
+        task_id,
+        user_id,
+        prompt,
+        samples
+    )
+    
+    return {
+        "task_id": task_id,
+        "status": "queued"
+    }
+
+# Task status endpoints
+@app.get("/task/{task_id}")
+async def get_task_status(request: Request, response: Response):
+    """Get the status of a background task"""
+    user = await get_or_create_user(request, response)
+    user_id = user.id
+    
+    task_id = request.path_params["task_id"]
+    task = task_manager.get_task(task_id)
+    
+    if not task:
+        raise HTTPException(404, "Task not found")
+    
+    if task["user_id"] != user_id:
+        raise HTTPException(403, "Not authorized to access this task")
+    
+    return task
+
+@app.get("/tasks")
+async def get_user_tasks(request: Request, response: Response):
+    """Get all tasks for the current user"""
+    user = await get_or_create_user(request, response)
+    user_id = user.id
+    
+    return task_manager.get_user_tasks(user_id)
+
+# WebSocket endpoint
+@app.websocket("/ws/{user_id}")
+async def websocket_endpoint(websocket: WebSocket, user_id: str):
+    await manager.connect(websocket, user_id)
+    try:
+        while True:
+            data = await websocket.receive_text()
+            # Handle incoming messages if needed
+    except WebSocketDisconnect:
+        manager.disconnect(user_id)
+
 # =========================================================
 # 🚀 UNIVERSAL MULTIMODAL ENDPOINT — /ask/universal
 # =========================================================
@@ -5864,8 +6258,6 @@ async def set_preferences(request: Request, response: Response):
     
     return {"status": "success"}
 
-
-
 @app.post("/ai/personalize")
 async def ai_personalization_endpoint(request: PersonalizationRequest, req: Request, res: Response):
     """Customize AI behavior based on user preferences"""
@@ -6016,3 +6408,12 @@ async def merge_user_data(req: Request, res: Response):
     except Exception as e:
         logger.error(f"Error verifying JWT token: {e}")
         raise HTTPException(401, f"Invalid token: {str(e)}")
+
+# Startup and shutdown events
+@app.on_event("startup")
+async def startup_event():
+    scheduler.start()
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    scheduler.shutdown()
