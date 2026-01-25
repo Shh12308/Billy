@@ -2922,7 +2922,7 @@ async def clone_voice(prompt: str, user_id: str, stream: bool = False):
             
             payload = {
                 "model": "tts-1",
-                "voice": "alloy",  // Default voice - in a real implementation, you'd use the cloned voice
+                "voice": "alloy", #  // Default voice - in a real implementation, you'd use the cloned voice
                 "input": text
             }
             
@@ -3798,7 +3798,7 @@ async def edit_message_handler(prompt: str, user_id: str, stream: bool = False):
         return {"error": "Message ID and new content required"}
     
     try:
-        // Get message
+        #// Get message
         msg_response = supabase.table("messages").select("id, role, conversation_id, created_at").eq("id", msg_id).execute()
         if not msg_response.data:
             return {"error": "message not found"}
@@ -4577,7 +4577,7 @@ async def chat_background(
   #  // Store user message
     persist_message(user_id, conversation_id, "user", message)
     
-    // Create background task
+   # // Create background task
     task_id = task_manager.create_task(
         user_id=user_id,
         task_type="chat_response",
@@ -4695,7 +4695,7 @@ def is_valid_uuid(uuid_string):
 
 @app.post("/ask/universal")
 async def ask_universal(request: Request, response: Response):
-    // -------------------------------
+  #  // -------------------------------
  #   // Extract request data FIRST
   #/* LuxStream CSS - Modern Streaming Platform */
 
@@ -4758,7 +4758,7 @@ async def ask_universal(request: Request, response: Response):
         "ai_personalization": personalize_ai,
         "data_visualization": visualize_data,
         "voice_cloning": clone_voice,
-        // Added all missing handlers
+      #  // Added all missing handlers
         "image": image_generation_handler,
         "img2img": img2img_handler,
         "vision": vision_handler,
@@ -4785,7 +4785,7 @@ async def ask_universal(request: Request, response: Response):
     }
 
     if intent in intent_map:
-        // Pass the user_id to all intent handlers
+    #    // Pass the user_id to all intent handlers
         return await intent_map[intent](prompt, user_id, stream)
 
 #    // -------------------------------
@@ -4793,7 +4793,7 @@ async def ask_universal(request: Request, response: Response):
 #    // -------------------------------
  #   // If a conversation_id is provided, use it. Otherwise, get/create the most recent one.
     if conversation_id:
-        // Verify this conversation belongs to the user before using it
+      #  // Verify this conversation belongs to the user before using it
         conv_check = await asyncio.to_thread(
             supabase.table("conversations")
             .select("id")
@@ -4802,10 +4802,10 @@ async def ask_universal(request: Request, response: Response):
             .execute()
         )
         if not conv_check.data:
-            // If the provided ID is invalid, fall back to creating a new one
+          #  // If the provided ID is invalid, fall back to creating a new one
             conversation_id = get_or_create_conversation(user_id)
     else:
-        // If no ID was provided, get/create the most recent conversation for the user
+    #    // If no ID was provided, get/create the most recent conversation for the user
         conversation_id = get_or_create_conversation(user_id)
 
 #    // Now, load the history for the CORRECT conversation_id
@@ -4837,7 +4837,7 @@ async def ask_universal(request: Request, response: Response):
             personality = profile_data.get("personality") or personality
             nickname = profile_data.get("nickname") or generate_random_nickname()
         else:
-            // Default profile if no data
+          #  // Default profile if no data
             default_profile = {
                 "id": user_id,
                 "nickname": generate_random_nickname(),
@@ -5323,7 +5323,7 @@ async def image_gen(request: Request):
 async def test_stream(request: Request):
     async def event_generator():
         for i in range(1, 6):
-            // Check if client disconnected
+           # // Check if client disconnected
             if await request.is_disconnected():
                 break
             yield sse({"message": f"This is chunk {i}"})
@@ -5644,10 +5644,10 @@ async def tts_stream(req: Request, res: Response):
 
         } catch Exception as e {
             logger.exception("TTS streaming failed")
-            // Audio streams cannot emit JSON errors safely mid-stream
+            #// Audio streams cannot emit JSON errors safely mid-stream
 
         } finally {
-            // ✅ CLEANUP
+           # // ✅ CLEANUP
             active_streams.pop(user_id, None)
             try {
                 supabase.table("active_streams").delete().eq("user_id", user_id).execute()
@@ -6358,7 +6358,7 @@ async def merge_user_data(req: Request, res: Response):
         
      #   // Merge data in the backend
         try {
-            // Update all records from anonymous user to logged-in user
+          #  // Update all records from anonymous user to logged-in user
             tables_to_merge = ["images", "videos", "conversations", "messages", "memory", "vision_history", "code_generations"]
             
             for (const table of tables_to_merge) {
