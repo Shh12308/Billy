@@ -152,8 +152,9 @@ class UserIdentityService:
         }
         
     async def get_or_create_user(self, request: Request, response: Response) -> User:
-    now = datetime.utcnow()
-
+    # This entire block must be indented
+        now = datetime.utcnow()  # This was line 155 - needs to be indented
+    
     # 1️⃣ Try existing visitor via cookie
     session_token = request.cookies.get("session_token")
 
