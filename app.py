@@ -4653,6 +4653,7 @@ async def ask_universal(request: Request, background_tasks: BackgroundTasks):
     
     role = body.get("role", "user")
     stream = bool(body.get("stream", False))
+    conversation_id = body.get("conversation_id")  # Get conversation_id from request body
 
     if not prompt:
         raise HTTPException(status_code=400, detail="prompt required")
