@@ -1,4 +1,4 @@
-import os
+ import os
 import io
 import json
 import uuid
@@ -649,7 +649,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:9898"],  // frontend URL
-    allow_credentials=True,  // ✅ required
+    allow_credentials=True, 
     allow_methods=["*"],
     allow_headers=["*"],
 )
