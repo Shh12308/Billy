@@ -4642,8 +4642,33 @@ def is_valid_uuid(uuid_string):
         return False
 
 @app.post("/ask/universal")
-async def ask_universal(request: Request, background_tasks: BackgroundTasks):
-    body = await request.json()
+async def ask_universal(request: Request, response: Response):
+    session_token = request.cookies.get("session_token")
+
+    if session_token:
+        try:
+            visitor_resp = await asyncio.to_thread(
+                lambda: (
+                    supabase
+                    .table("visitor_users")
+                    .select("id, device_fingerprint, session_token")
+                    .eq("session_token", session_token)
+                    .limit(1)
+                    .execute()
+                )
+            )
+
+            if visitor_resp.data:
+                v = visitor_resp.data[0]
+                return User(
+                    id=v["id"],
+                    anonymous=True,
+                    session_token=v["session_token"],
+                    device_fingerprint=v.get("device_fingerprint"),
+                )
+
+        except Exception as e:
+            logger.warning(f"Visitor lookup failed: {e}")
 
     # -------------------------------
     # Extract request data
