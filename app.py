@@ -1406,7 +1406,7 @@ def get_system_prompt(user_message: Optional[str] = None) -> str:
 def build_contextual_prompt(user_id: str, message: str) -> str:
     """Build system prompt with user memory and conversation history"""
     try:
-        // Get user's recent conversations
+       # // Get user's recent conversations
         conv_response = supabase.table("conversations").select("id").eq("user_id", user_id).order("updated_at", desc=True).limit(1).execute()
         
         if not conv_response.data:
