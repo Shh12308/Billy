@@ -2615,7 +2615,7 @@ async def multimodal_search(prompt: str, user_id: str, stream: bool = False):
             #// Video search
             if "video" in search_types:
                 yield sse({"type": "progress", "message": "Searching videos..."})
-                // This is a placeholder - in a real implementation, you'd use a video search API
+               # // This is a placeholder - in a real implementation, you'd use a video search API
                 video_results = {
                     "query": query,
                     "results": [
