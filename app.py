@@ -157,28 +157,29 @@ class UserIdentityService:
         # 1️⃣ Try existing visitor via cookie
         session_token = request.cookies.get("session_token")
         if session_token:
-            try:
-               visitor_resp = await asyncio.to_thread(
-                   lambda: (
-                       self.supabase
-                       .table("visitor_users")
-                       .select("id, device_fingerprint, session_token")
-                       .eq("session_token", session_token)
-                       .limit(1)
-                       .execute()
-                   )
-               )
-                if visitor_resp.data:
-                    v = visitor_resp.data[0]
-                    return User(
-                        id=v["id"],
-                        anonymous=True,
-                        session_token=v["session_token"],
-                        device_fingerprint=v.get("device_fingerprint"),
-                    )
+    try:
+        visitor_resp = await asyncio.to_thread(
+            lambda: (
+                self.supabase
+                .table("visitor_users")
+                .select("id, device_fingerprint, session_token")
+                .eq("session_token", session_token)
+                .limit(1)
+                .execute()
+            )
+        )
 
-            except Exception as e:
-                logger.warning(f"Visitor lookup failed: {e}")
+        if visitor_resp.data:
+            v = visitor_resp.data[0]
+            return User(
+                id=v["id"],
+                anonymous=True,
+                session_token=v["session_token"],
+                device_fingerprint=v.get("device_fingerprint"),
+            )
+
+    except Exception as e:
+        logger.warning(f"Visitor lookup failed: {e}")
 
         # 2️⃣ Create new visitor
         device_fingerprint = self.generate_device_fingerprint(request)
