@@ -165,7 +165,8 @@ class UserIdentityService:
         .eq("session_token", session_token)
         .limit(1)
         .execute()
-    
+     )
+)
 
                 if visitor_resp.data:
                     v = visitor_resp.data[0]
