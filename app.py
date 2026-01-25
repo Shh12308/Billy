@@ -117,7 +117,6 @@ class User(BaseModel):
     session_token: Optional[str] = None
 
 # User Identity Service
-# User Identity Service
 class UserIdentityService:
     def __init__(self, supabase_client):
         self.supabase = supabase_client
@@ -152,74 +151,74 @@ class UserIdentityService:
         }
         
     async def get_or_create_user(self, request: Request, response: Response) -> User:
-    # This entire block must be indented
+        # This entire block must be indented
         now = datetime.utcnow()  # This was line 155 - needs to be indented
     
-    # 1️⃣ Try existing visitor via cookie
-    session_token = request.cookies.get("session_token")
+        # 1️⃣ Try existing visitor via cookie
+        session_token = request.cookies.get("session_token")
 
-    if session_token:
+        if session_token:
+            try:
+                visitor_resp = await asyncio.to_thread(
+                    lambda: (
+                        supabase
+                        .table("visitor_users")
+                        .select("id, device_fingerprint, session_token")
+                        .eq("session_token", session_token)
+                        .limit(1)
+                        .execute()
+                    )
+                )
+
+                if visitor_resp.data:
+                    v = visitor_resp.data[0]
+                    return User(
+                        id=v["id"],
+                        anonymous=True,
+                        session_token=v["session_token"],
+                        device_fingerprint=v.get("device_fingerprint"),
+                    )
+
+            except Exception as e:
+                logger.warning(f"Visitor lookup failed: {e}")
+        
+        # 2️⃣ Create new visitor
+        device_fingerprint = self.generate_device_fingerprint(request)
+        new_session_token = str(uuid.uuid4())
+        anonymous_info = self.generate_anonymous_id(device_fingerprint)
+        anonymous_uuid = anonymous_info["uuid"]
+        nickname = anonymous_info["friendly_name"]
+
         try:
-            visitor_resp = await asyncio.to_thread(
-                lambda: (
-                    supabase
-                    .table("visitor_users")
-                    .select("id, device_fingerprint, session_token")
-                    .eq("session_token", session_token)
-                    .limit(1)
-                    .execute()
-                )
+            await asyncio.to_thread(
+                lambda: self.supabase.table("visitor_users")
+                .insert({
+                    "id": anonymous_uuid,
+                    "nickname": nickname,
+                    "device_fingerprint": device_fingerprint,
+                    "session_token": new_session_token,
+                })
+                .execute()
             )
-
-            if visitor_resp.data:
-                v = visitor_resp.data[0]
-                return User(
-                    id=v["id"],
-                    anonymous=True,
-                    session_token=v["session_token"],
-                    device_fingerprint=v.get("device_fingerprint"),
-                )
-
         except Exception as e:
-            logger.warning(f"Visitor lookup failed: {e}")
-    
-    # 2️⃣ Create new visitor
-    device_fingerprint = self.generate_device_fingerprint(request)
-    new_session_token = str(uuid.uuid4())
-    anonymous_info = self.generate_anonymous_id(device_fingerprint)
-    anonymous_uuid = anonymous_info["uuid"]
-    nickname = anonymous_info["friendly_name"]
+            logger.critical(f"Failed to create visitor user: {e}")
 
-    try:
-        await asyncio.to_thread(
-            lambda: self.supabase.table("visitor_users")
-            .insert({
-                "id": anonymous_uuid,
-                "nickname": nickname,
-                "device_fingerprint": device_fingerprint,
-                "session_token": new_session_token,
-            })
-            .execute()
+        # 3️⃣ Set cookie
+        response.set_cookie(
+            key="session_token",
+            value=new_session_token,
+            httponly=True,
+            samesite="lax",
+            secure=False,
+            max_age=60 * 60 * 24 * 365
         )
-    except Exception as e:
-        logger.critical(f"Failed to create visitor user: {e}")
 
-    # 3️⃣ Set cookie
-    response.set_cookie(
-        key="session_token",
-        value=new_session_token,
-        httponly=True,
-        samesite="lax",
-        secure=False,
-        max_age=60 * 60 * 24 * 365
-    )
-
-    return User(
-        id=anonymous_uuid,
-        anonymous=True,
-        device_fingerprint=device_fingerprint,
-        session_token=new_session_token
-    )
+        return User(
+            id=anonymous_uuid,
+            anonymous=True,
+            device_fingerprint=device_fingerprint,
+            session_token=new_session_token
+        )
 
     def merge_visitor_to_user(self, user_id: str, session_token: str):
         """
@@ -4684,19 +4683,6 @@ async def ask_universal(request: Request, response: Response):
 
         except Exception as e:
             logger.warning(f"Visitor lookup failed: {e}")
-
-    # -------------------------------
-    # Extract request data
-    # -------------------------------
-    prompt = body.get("prompt", "").strip()
-    
-    # Use our new user ID system
-    user = await get_or_create_user(request, Response())
-    user_id = user.id
-    
-    role = body.get("role", "user")
-    stream = bool(body.get("stream", False))
-    conversation_id = body.get("conversation_id")  # Get conversation_id from request body
 
     if not prompt:
         raise HTTPException(status_code=400, detail="prompt required")
