@@ -2461,11 +2461,11 @@ async def review_code(prompt: str, user_id: str, stream: bool = False):
         async def event_generator():
             yield sse({"type": "starting", "message": "Analyzing code..."})
             
-            // Analyze code
+          #  // Analyze code
             yield sse({"type": "progress", "message": "Checking code quality..."})
             results = analyze_code_quality(code, language, focus_areas)
             
-            // Generate suggestions
+           # // Generate suggestions
             yield sse({"type": "progress", "message": "Generating suggestions..."})
             suggestions_prompt = f"Review the following {language} code and provide specific suggestions for improvement:\n\n```{language}\n{code}\n```"
             payload = {
@@ -2974,7 +2974,7 @@ async def clone_voice(prompt: str, user_id: str, stream: bool = False):
         
         payload = {
             "model": "tts-1",
-            "voice": "alloy",  // Default voice - in a real implementation, you'd use the cloned voice
+            "voice": "alloy",  #// Default voice - in a real implementation, you'd use the cloned voice
             "input": text
         }
         
