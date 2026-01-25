@@ -4741,8 +4741,11 @@ async def ask_universal(request: Request, response: Response):
         history = await load_history(user_id)
         return history
    
+    # Define messages before using it
+    messages = []
     history = await get_or_create_conversation(user_id, conversation_id)
     messages.extend(history)
+    
     # -------------------------------
     # SAFE PROFILE FETCH / CREATE
     # -------------------------------
@@ -4884,7 +4887,7 @@ async def ask_universal(request: Request, response: Response):
                         lambda: supabase.table("messages")
                         .insert({
                             "conversation_id": conversation_id,
-                            "role": "assistant",
+                            "role": "passistant",
                             "content": assistant_reply
                         })
                         .execute()
@@ -4897,8 +4900,8 @@ async def ask_universal(request: Request, response: Response):
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no"
+                "connection": "keep-alive",
+                "x-accel-buffering": "no"
             }
         )
 
