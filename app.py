@@ -697,140 +697,140 @@ CREATOR_INFO = {
 }
 
 JUDGE0_LANGUAGES = {
-    // --- C / C++ ---
+    # --- C / C++ ---
     "c": 50,
     "c_clang": 49,
     "cpp": 54,
     "cpp_clang": 53,
 
-    // --- Java ---
+    # --- Java ---
     "java": 62,
 
-    // --- Python ---
+    # --- Python ---
     "python": 71,
     "python2": 70,
     "micropython": 79,
 
-    // --- JavaScript / TS ---
+    #--- JavaScript / TS ---
     "javascript": 63,
     "nodejs": 63,
     "typescript": 74,
 
-    // --- Go ---
+    #--- Go ---
     "go": 60,
 
-    // --- Rust ---
+    #--- Rust ---
     "rust": 73,
 
-    // --- C# / .NET ---
+    # / .NET ---
     "csharp": 51,
     "fsharp": 87,
     "dotnet": 51,
 
-    // --- PHP ---
+    # --- PHP ---
     "php": 68,
 
-    // --- Ruby ---
+    #--- Ruby ---
     "ruby": 72,
 
-    // --- Swift ---
+    #--- Swift ---
     "swift": 83,
 
-    // --- Kotlin ---
+    #--- Kotlin ---
     "kotlin": 78,
 
-    // --- Scala ---
+    # --- Scala ---
     "scala": 81,
 
-    // --- Objective-C ---
+    #--- Objective-C ---
     "objective_c": 52,
 
-    // --- Bash / Shell ---
+    #--- Bash / Shell ---
     "bash": 46,
     "sh": 46,
 
-    // --- PowerShell ---
+    #--- PowerShell ---
     "powershell": 88,
 
-    // --- Perl ---
+    #--- Perl ---
     "perl": 85,
 
-    // --- Lua ---
+    # --- Lua ---
     "lua": 64,
 
-    // --- R ---
+    # --- R ---
     "r": 80,
 
-    // --- Dart ---
+    # --- Dart ---
     "dart": 75,
 
-    // --- Julia ---
+    # --- Julia ---
     "julia": 84,
 
-    // --- Haskell ---
+    # --- Haskell ---
     "haskell": 61,
 
-    // --- Elixir ---
+    # --- Elixir ---
     "elixir": 57,
 
-    // --- Erlang ---
+    #--- Erlang ---
     "erlang": 58,
 
-    // --- OCaml ---
+    #--- OCaml ---
     "ocaml": 65,
 
-    // --- Crystal ---
+    #--- Crystal ---
     "crystal": 76,
 
-    // --- Nim ---
+    #--- Nim ---
     "nim": 77,
 
-    // --- Zig ---
+    #--- Zig ---
     "zig": 86,
 
-    // --- Assembly ---
+    # --- Assembly ---
     "assembly": 45,
 
-    // --- COBOL ---
+    #--- COBOL ---
     "cobol": 55,
 
-    // --- Fortran ---
+    #--- Fortran ---
     "fortran": 59,
 
-    // --- Prolog ---
+    # --- Prolog ---
     "prolog": 69,
 
-    // --- Scheme ---
+    # --- Scheme ---
     "scheme": 82,
 
-    // --- Common Lisp ---
+    # --- Common Lisp ---
     "lisp": 66,
 
-    // --- Brainf*ck ---
+    # --- Brainf*ck ---
     "brainfuck": 47,
 
-    // --- V ---
+    #--- V ---
     "vlang": 91,
 
-    // --- Groovy ---
+    #--- Groovy ---
     "groovy": 56,
 
-    // --- Hack ---
+   # --- Hack ---
     "hack": 67,
 
-    // --- Pascal ---
+    #// --- Pascal ---
     "pascal": 67,
 
-    // --- Scratch ---
+    #// --- Scratch ---
     "scratch": 92,
 
-    // --- Solidity ---
+  #  // --- Solidity ---
     "solidity": 94,
 
-    // --- SQL ---
+  #  // --- SQL ---
     "sql": 82,
 
-    // --- Text / Plain ---
+    #// --- Text / Plain ---
     "plain_text": 43,
     "text": 43,
 }
@@ -925,11 +925,11 @@ def create_knowledge_graph(entities, relationship_type="related"):
     """Create a simple knowledge graph from entities"""
     G = nx.Graph()
     
-    // Add nodes
+   # // Add nodes
     for entity in entities:
         G.add_node(entity)
     
-    // Add edges (simple example - in a real implementation, you'd use NLP to find relationships)
+   # // Add edges (simple example - in a real implementation, you'd use NLP to find relationships)
     for i, entity1 in enumerate(entities):
         for entity2 in entities[i+1:]:
             // Simple similarity based on string overlap
@@ -943,7 +943,7 @@ def visualize_graph(G):
     """Create a visualization of the knowledge graph"""
     pos = nx.spring_layout(G)
     
-    // Create a plotly figure
+    #// Create a plotly figure
     edge_x = []
     edge_y = []
     for edge in G.edges():
@@ -999,7 +999,7 @@ def analyze_code_quality(code, language, focus_areas):
         "overall_score": 0
     }
     
-    // Security checks
+   # // Security checks
     if "security" in focus_areas:
         // Check for common security issues
         if language == "python":
@@ -1015,7 +1015,7 @@ def analyze_code_quality(code, language, focus_areas):
             if "innerHTML" in code:
                 results["security"].append("Direct innerHTML manipulation detected - potential XSS risk")
     
-    // Performance checks
+  #  // Performance checks
     if "performance" in focus_areas:
         if language == "python":
             if "for i in range(len(" in code:
@@ -1026,7 +1026,7 @@ def analyze_code_quality(code, language, focus_areas):
             if "for (var i = 0; i <" in code:
                 results["performance"].append("Consider using forEach() or map() instead of for loops")
     
-    // Style checks
+ #   // Style checks
     if "style" in focus_areas:
         if language == "python":
             if not re.search(r'^\s*def \w+\([^)]*\):\s*"""', code, re.MULTILINE):
@@ -1037,7 +1037,7 @@ def analyze_code_quality(code, language, focus_areas):
             if "var " in code:
                 results["style"].append("Consider using let or const instead of var")
     
-    // Calculate overall score
+  #  // Calculate overall score
     total_issues = sum(len(issues) for issues in results.values() if isinstance(issues, list))
     results["overall_score"] = max(0, 100 - (total_issues * 10))
     
@@ -1046,15 +1046,15 @@ def analyze_code_quality(code, language, focus_areas):
 def create_chart(data, chart_type, options):
     """Create a chart from data"""
     try:
-        // Parse data
+       # // Parse data
         if data.strip().startswith('{'):
-            // JSON data
+       #     // JSON data
             df = pd.read_json(data)
         else:
-            // CSV data
+       #     // CSV data
             df = pd.read_csv(StringIO(data))
         
-        // Create chart based on type
+       # // Create chart based on type
         if chart_type == "auto" or chart_type == "bar":
             fig = px.bar(df, **options)
         elif chart_type == "line":
@@ -1066,16 +1066,16 @@ def create_chart(data, chart_type, options):
         elif chart_type == "heatmap":
             fig = px.imshow(df.corr(), **options)
         else:
-            // Default to bar chart
+          #  // Default to bar chart
             fig = px.bar(df, **options)
         
-        // Convert to HTML
+       # // Convert to HTML
         return fig.to_html(full_html=False)
     except Exception as e:
         logger.error(f"Error creating chart: {e}")
         return f"<p>Error creating chart: {str(e)}</p>"
 
-// ---------- Helper Functions ----------
+#// ---------- Helper Functions ----------
 async def run_code_judge0(code: str, language_id: int):
     payload = {
         "language_id": language_id,
@@ -1170,11 +1170,11 @@ async def stream_llm(user_id, conversation_id, messages):
                     chunk = json.loads(data)
                     delta = chunk["choices"][0]["delta"]
 
-                    // -------------------------
-                    // TOOL CALLS
-                    // -------------------------
+                  #  // -------------------------
+                 #   // TOOL CALLS
+                #    // -------------------------
                     if "tool_calls" in delta:
-                        // Collect tool calls
+                    #    // Collect tool calls
                         for tool_call in delta.get("tool_calls", []):
                             if "id" in tool_call:
                                 tool_calls.append({
@@ -1183,7 +1183,7 @@ async def stream_llm(user_id, conversation_id, messages):
                                     "function": tool_call.get("function", {})
                                 })
                             elif "function" in tool_call:
-                                // Update the last tool call with function details
+                           #     // Update the last tool call with function details
                                 if tool_calls:
                                     last_call = tool_calls[-1]
                                     if "name" in tool_call["function"]:
@@ -1192,12 +1192,12 @@ async def stream_llm(user_id, conversation_id, messages):
                                         last_call["function"]["arguments"] = tool_call["function"]["arguments"]
                         continue
 
-                    // -------------------------
-                    // NORMAL TEXT STREAMING
-                    // -------------------------
+                  #  // -------------------------
+                   # // NORMAL TEXT STREAMING
+               #     // -------------------------
                     content = delta.get("content")
                     if content:
-                        // 🚫 Prevent tool leakage
+                       # // 🚫 Prevent tool leakage
                         if "<function=" in content:
                             pass
                         else:
@@ -1210,9 +1210,9 @@ async def stream_llm(user_id, conversation_id, messages):
                     logger.error(f"Error processing stream chunk: {e}")
                     continue
 
-    // -------------------------
-    // EXECUTE TOOL CALLS
-    // -------------------------
+ #   // -------------------------
+   # // EXECUTE TOOL CALLS
+  #  // -------------------------
     if tool_calls:
         yield sse({"type": "tool_calls_start", "count": len(tool_calls)})
         
@@ -1233,7 +1233,7 @@ async def stream_llm(user_id, conversation_id, messages):
                 "result": result
             })
 
-            // Add tool result to messages for context
+         #   // Add tool result to messages for context
             messages.append({
                 "role": "tool",
                 "tool_call_id": call["id"],
@@ -1241,10 +1241,10 @@ async def stream_llm(user_id, conversation_id, messages):
                 "content": json.dumps(result)
             })
 
-        // Continue conversation with tool results
+      #  // Continue conversation with tool results
         yield sse({"type": "continuing_with_tools"})
         
-        // Get final response with tool results
+       # // Get final response with tool results
         final_payload = {
             "model": CHAT_MODEL,
             "messages": messages,
@@ -1283,7 +1283,7 @@ async def stream_llm(user_id, conversation_id, messages):
                         logger.error(f"Error processing final stream chunk: {e}")
                         continue
 
-    // Save the complete response
+#    // Save the complete response
     if assistant_reply.strip():
         await persist_reply(user_id, conversation_id, assistant_reply)
 
@@ -1328,10 +1328,10 @@ def get_groq_headers():
 
 async def run_code_safely(prompt: str):
     """Helper for streaming /ask/universal."""
-    // Default to python if not specified for this helper
+ #   // Default to python if not specified for this helper
     language = "python" 
     
-    // 1. Generate code
+  #  // 1. Generate code
     code_prompt = f"Write a complete {language} program to: {prompt}"
     payload = {
         "model": CHAT_MODEL,
@@ -1347,7 +1347,7 @@ async def run_code_safely(prompt: str):
         r.raise_for_status()
         code = r.json()["choices"][0]["message"]["content"]
 
-    // 2. Run code
+  #  // 2. Run code
     lang_id = JUDGE0_LANGUAGES.get(language, 71)
     execution = await run_code_judge0(code, lang_id)
     
@@ -1366,7 +1366,7 @@ async def duckduckgo_search(q: str):
         data = r.json()
 
         results = []
-        // RelatedTopics can contain nested topics or single items; handle both.
+      #  // RelatedTopics can contain nested topics or single items; handle both.
         for item in data.get("RelatedTopics", []):
             if isinstance(item, dict):
                 // Some items are like {"Text": "...", "FirstURL": "..."}
@@ -1377,7 +1377,7 @@ async def duckduckgo_search(q: str):
                     for t in item.get("Topics", []):
                         if t.get("Text"):
                             results.append({"title": t.get("Text"), "url": t.get("FirstURL")})
-        // Limit results to a reasonable number
+     #   // Limit results to a reasonable number
         results = results[:10]
 
         return {
@@ -1402,7 +1402,7 @@ def get_system_prompt(user_message: Optional[str] = None) -> str:
         base += f" The user said: \"{user_message}\". Tailor your response to this."
     return base
 
-// Update the build_contextual_prompt function to include user history
+#// Update the build_contextual_prompt function to include user history
 def build_contextual_prompt(user_id: str, message: str) -> str:
     """Build system prompt with user memory and conversation history"""
     try:
@@ -1410,20 +1410,20 @@ def build_contextual_prompt(user_id: str, message: str) -> str:
         conv_response = supabase.table("conversations").select("id").eq("user_id", user_id).order("updated_at", desc=True).limit(1).execute()
         
         if not conv_response.data:
-            // New user, no history
+           # // New user, no history
             return f"You are a helpful AI assistant. User message: {message}"
         
         conversation_id = conv_response.data[0]["id"]
         
-        // Get recent messages from this conversation
+       # // Get recent messages from this conversation
         msg_response = supabase.table("messages").select("role, content").eq("conversation_id", conversation_id).order("created_at", desc=True).limit(10).execute()
         
-        // Build context from messages
+     #   // Build context from messages
         context = "Recent conversation:\n"
         for msg in reversed(msg_response.data):  // Reverse to show chronological order
             context += f"{msg['role']}: {msg['content']}\n"
         
-        // Get user preferences if they exist
+     #   // Get user preferences if they exist
         profile_response = supabase.table("profiles").select("preferences").eq("id", user_id).execute()
         if profile_response.data:
             preferences = profile_response.data[0].get("preferences", {})
@@ -1451,7 +1451,7 @@ def persist_message(user_id: str, conversation_id: str, role: str, content: str)
             "created_at": datetime.utcnow().isoformat()
         }).execute()
         
-        // Update conversation timestamp
+      #  // Update conversation timestamp
         supabase.table("conversations").update({
             "updated_at": datetime.utcnow().isoformat()
         }).eq("id", conversation_id).execute()
@@ -1461,13 +1461,13 @@ def persist_message(user_id: str, conversation_id: str, role: str, content: str)
 def get_or_create_conversation(user_id: str) -> str:
     """Get existing conversation or create new one"""
     try:
-        // Try to get most recent conversation
+     #   // Try to get most recent conversation
         response = supabase.table("conversations").select("id").eq("user_id", user_id).order("updated_at", desc=True).limit(1).execute()
         
         if response.data:
             return response.data[0]["id"]
         
-        // Create new conversation
+      #  // Create new conversation
         conversation_id = str(uuid.uuid4())
         supabase.table("conversations").insert({
             "id": conversation_id,
@@ -1910,7 +1910,7 @@ def track_cost(user_id: str, tokens: int, tool: Union[str, None] = None):
         logger.error(f"Cost tracking failed: {e}")
 
 async def auth(request: Request):
-    // Simple auth function that extracts user_id from cookie
+  #  // Simple auth function that extracts user_id from cookie
     user = await get_or_create_user(request, Response())
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -1961,16 +1961,16 @@ TOOLS = [
     }
 ]
 
-// Tracks currently active SSE/streaming tasks per user
+#// Tracks currently active SSE/streaming tasks per user
 active_streams: Dict[str, asyncio.Task] = {}
 
-// ---------- Utility Functions ----------
+#// ---------- Utility Functions ----------
 def generate_random_nickname():
     adjectives = ["Happy", "Brave", "Clever", "Friendly", "Gentle", "Kind", "Lucky", "Proud", "Smart", "Wise"]
     nouns = ["Bear", "Eagle", "Fox", "Lion", "Tiger", "Wolf", "Dolphin", "Hawk", "Owl"]
     return f"{random.choice(adjectives)}{random.choice(nouns)}"
 
-// ---------- Advanced Feature Implementations ----------
+#// ---------- Advanced Feature Implementations ----------
 async def document_analysis(prompt: str, user_id: str, stream: bool = False):
     """Analyze documents for key information"""
     // Extract text from prompt
@@ -1980,7 +1980,7 @@ async def document_analysis(prompt: str, user_id: str, stream: bool = False):
     
     text = text_match.group(1).strip()
     
-    // Determine analysis type
+  #  // Determine analysis type
     analysis_type = "summary"
     if "entities" in prompt.lower():
         analysis_type = "entities"
@@ -1999,13 +1999,13 @@ async def document_analysis(prompt: str, user_id: str, stream: bool = False):
                 entities = extract_entities(text)
                 yield sse({"type": "entities", "data": entities})
             
-            // Extract keywords
+       #     // Extract keywords
             if analysis_type in ["summary", "keywords"]:
                 yield sse({"type": "progress", "message": "Extracting keywords..."})
                 keywords = extract_keywords(text)
                 yield sse({"type": "keywords", "data": keywords})
             
-            // Generate summary
+      #      // Generate summary
             if analysis_type in ["summary", "sentiment"]:
                 yield sse({"type": "progress", "message": "Generating summary..."})
                 
@@ -2026,7 +2026,7 @@ async def document_analysis(prompt: str, user_id: str, stream: bool = False):
                     summary = r.json()["choices"][0]["message"]["content"]
                     yield sse({"type": "summary", "data": summary})
             
-            // Analyze sentiment
+     #       // Analyze sentiment
             if analysis_type in ["summary", "sentiment"]:
                 yield sse({"type": "progress", "message": "Analyzing sentiment..."})
                 
@@ -2059,13 +2059,13 @@ async def document_analysis(prompt: str, user_id: str, stream: bool = False):
             }
         )
     else:
-        // Non-streaming version
+    #    // Non-streaming version
         result = {
             "entities": extract_entities(text),
             "keywords": extract_keywords(text),
         }
         
-        // Generate summary
+   #     // Generate summary
         summary_prompt = f"Summarize the following text in a concise way:\n\n{text}"
         payload = {
             "model": CHAT_MODEL,
@@ -2082,7 +2082,7 @@ async def document_analysis(prompt: str, user_id: str, stream: bool = False):
             r.raise_for_status()
             result["summary"] = r.json()["choices"][0]["message"]["content"]
         
-        // Analyze sentiment
+    #    // Analyze sentiment
         sentiment_prompt = f"Analyze the sentiment of the following text and provide a score from -1 (very negative) to 1 (very positive):\n\n{text}"
         payload = {
             "model": CHAT_MODEL,
@@ -2103,7 +2103,7 @@ async def document_analysis(prompt: str, user_id: str, stream: bool = False):
 
 async def translate_text(prompt: str, user_id: str, stream: bool = False):
     """Translate text between languages"""
-    // Extract text and languages from prompt
+ #   // Extract text and languages from prompt
     text_match = re.search(r'translate[:\s]+(.*?)(?:\s+to\s+|\s+in\s+)(.*?)(?:\n\n|\n$|$)', prompt, re.DOTALL | re.IGNORECASE)
     if not text_match:
         raise HTTPException(400, "Could not extract text and target language from prompt")
@@ -2111,7 +2111,7 @@ async def translate_text(prompt: str, user_id: str, stream: bool = False):
     text = text_match.group(1).strip()
     target_lang = text_match.group(2).strip()
     
-    // Map common language names to language codes
+#    // Map common language names to language codes
     lang_map = {
         "english": "en",
         "spanish": "es",
@@ -2133,7 +2133,7 @@ async def translate_text(prompt: str, user_id: str, stream: bool = False):
         async def event_generator():
             yield sse({"type": "starting", "message": f"Translating to {target_lang}..."})
             
-            // Use Groq for translation
+        #    // Use Groq for translation
             translation_prompt = f"Translate the following text to {target_lang}:\n\n{text}"
             payload = {
                 "model": CHAT_MODEL,
@@ -2177,7 +2177,7 @@ async def translate_text(prompt: str, user_id: str, stream: bool = False):
             }
         )
     else:
-        // Non-streaming version
+   #     // Non-streaming version
         translation_prompt = f"Translate the following text to {target_lang}:\n\n{text}"
         payload = {
             "model": CHAT_MODEL,
@@ -2202,10 +2202,10 @@ async def translate_text(prompt: str, user_id: str, stream: bool = False):
 
 async def analyze_sentiment(prompt: str, user_id: str, stream: bool = False):
     """Analyze sentiment of text"""
-    // Extract text from prompt
+#    // Extract text from prompt
     text_match = re.search(r'sentiment[:\s]+(.*?)(?:\n\n|\n$|$)', prompt, re.DOTALL | re.IGNORECASE)
     if not text_match:
-        // If no explicit text, use the whole prompt
+ #       // If no explicit text, use the whole prompt
         text = prompt
     else:
         text = text_match.group(1).strip()
@@ -2214,7 +2214,7 @@ async def analyze_sentiment(prompt: str, user_id: str, stream: bool = False):
         async def event_generator():
             yield sse({"type": "starting", "message": "Analyzing sentiment..."})
             
-            // Use Groq for sentiment analysis
+       #     // Use Groq for sentiment analysis
             sentiment_prompt = f"Analyze the sentiment of the following text. Provide a score from -1 (very negative) to 1 (very positive) and explain your reasoning:\n\n{text}"
             payload = {
                 "model": CHAT_MODEL,
@@ -2258,7 +2258,7 @@ async def analyze_sentiment(prompt: str, user_id: str, stream: bool = False):
             }
         )
     else:
-        // Non-streaming version
+      #  // Non-streaming version
         sentiment_prompt = f"Analyze the sentiment of the following text. Provide a score from -1 (very negative) to 1 (very positive) and explain your reasoning:\n\n{text}"
         payload = {
             "model": CHAT_MODEL,
@@ -2282,7 +2282,7 @@ async def analyze_sentiment(prompt: str, user_id: str, stream: bool = False):
 
 async def create_knowledge_graph_endpoint(prompt: str, user_id: str, stream: bool = False):
     """Create and visualize a knowledge graph"""
-    // Extract entities from prompt
+ #   // Extract entities from prompt
     entities_match = re.search(r'entities[:\s]+(.*?)(?:\n\n|\n$|$)', prompt, re.DOTALL | re.IGNORECASE)
     if not entities_match:
         raise HTTPException(400, "Could not extract entities from prompt")
@@ -2290,7 +2290,7 @@ async def create_knowledge_graph_endpoint(prompt: str, user_id: str, stream: boo
     entities_text = entities_match.group(1).strip()
     entities = [e.strip() for e in entities_text.split(',')]
     
-    // Extract relationship type
+   # // Extract relationship type
     relationship_type = "related"
     rel_match = re.search(r'relationship[:\s]+(.*?)(?:\n\n|\n$|$)', prompt, re.DOTALL | re.IGNORECASE)
     if rel_match:
@@ -2300,15 +2300,15 @@ async def create_knowledge_graph_endpoint(prompt: str, user_id: str, stream: boo
         async def event_generator():
             yield sse({"type": "starting", "message": "Creating knowledge graph..."})
             
-            // Create knowledge graph
+          #  // Create knowledge graph
             yield sse({"type": "progress", "message": "Building graph structure..."})
             G = create_knowledge_graph(entities, relationship_type)
             
-            // Generate visualization
+          #  // Generate visualization
             yield sse({"type": "progress", "message": "Generating visualization..."})
             graph_html = visualize_graph(G)
             
-            // Save to Supabase
+          #  // Save to Supabase
             yield sse({"type": "progress", "message": "Saving graph..."})
             graph_id = str(uuid.uuid4())
             try:
@@ -2337,11 +2337,11 @@ async def create_knowledge_graph_endpoint(prompt: str, user_id: str, stream: boo
             }
         )
     else:
-        // Non-streaming version
+       # // Non-streaming version
         G = create_knowledge_graph(entities, relationship_type)
         graph_html = visualize_graph(G)
         
-        // Save to Supabase
+     #   // Save to Supabase
         graph_id = str(uuid.uuid4())
         try:
             supabase.table("knowledge_graphs").insert({
@@ -2364,14 +2364,14 @@ async def create_knowledge_graph_endpoint(prompt: str, user_id: str, stream: boo
 
 async def train_custom_model(prompt: str, user_id: str, stream: bool = False):
     """Train a custom model"""
-    // Extract training data from prompt
+ #   // Extract training data from prompt
     data_match = re.search(r'data[:\s]+(.*?)(?:\n\n|\n$|$)', prompt, re.DOTALL | re.IGNORECASE)
     if not data_match:
         raise HTTPException(400, "Could not extract training data from prompt")
     
     training_data = data_match.group(1).strip()
     
-    // Extract model type
+  #  // Extract model type
     model_type = "classification"
     type_match = re.search(r'type[:\s]+(.*?)(?:\n\n|\n$|$)', prompt, re.DOTALL | re.IGNORECASE)
     if type_match:
@@ -2381,11 +2381,11 @@ async def train_custom_model(prompt: str, user_id: str, stream: bool = False):
         async def event_generator():
             yield sse({"type": "starting", "message": "Preparing model training..."})
             
-            // Create a model training job
+          #  // Create a model training job
             yield sse({"type": "progress", "message": "Creating training job..."})
             job_id = str(uuid.uuid4())
             
-            // Save job to Supabase
+         #   // Save job to Supabase
             try:
                 supabase.table("model_training_jobs").insert({
                     "id": job_id,
@@ -2412,10 +2412,10 @@ async def train_custom_model(prompt: str, user_id: str, stream: bool = False):
             }
         )
     else:
-        // Non-streaming version
+    #    // Non-streaming version
         job_id = str(uuid.uuid4())
         
-        // Save job to Supabase
+      #  // Save job to Supabase
         try:
             supabase.table("model_training_jobs").insert({
                 "id": job_id,
@@ -2437,20 +2437,20 @@ async def train_custom_model(prompt: str, user_id: str, stream: bool = False):
 
 async def review_code(prompt: str, user_id: str, stream: bool = False):
     """Review code for issues and improvements"""
-    // Extract code from prompt
+ #   // Extract code from prompt
     code_match = re.search(r'code[:\s]+```(.*?)```', prompt, re.DOTALL | re.IGNORECASE)
     if not code_match:
         raise HTTPException(400, "Could not extract code from prompt")
     
     code = code_match.group(1).strip()
     
-    // Extract language
+  #  // Extract language
     language = "python"
     lang_match = re.search(r'language[:\s]+(.*?)(?:\n\n|\n$|$)', prompt, re.DOTALL | re.IGNORECASE)
     if lang_match:
         language = lang_match.group(1).strip()
     
-    // Extract focus areas
+  #  // Extract focus areas
     focus_areas = ["security", "performance", "style"]
     focus_match = re.search(r'focus[:\s]+(.*?)(?:\n\n|\n$|$)', prompt, re.DOTALL | re.IGNORECASE)
     if focus_match:
@@ -2498,7 +2498,7 @@ async def review_code(prompt: str, user_id: str, stream: bool = False):
                         except Exception:
                             continue
             
-            // Save review to Supabase
+           # // Save review to Supabase
             yield sse({"type": "progress", "message": "Saving review..."})
             review_id = str(uuid.uuid4())
             try:
@@ -2528,10 +2528,10 @@ async def review_code(prompt: str, user_id: str, stream: bool = False):
             }
         )
     else:
-        // Non-streaming version
+       # // Non-streaming version
         results = analyze_code_quality(code, language, focus_areas)
         
-        // Generate suggestions
+       # // Generate suggestions
         suggestions_prompt = f"Review the following {language} code and provide specific suggestions for improvement:\n\n```{language}\n{code}\n```"
         payload = {
             "model": CHAT_MODEL,
@@ -2548,7 +2548,7 @@ async def review_code(prompt: str, user_id: str, stream: bool = False):
             r.raise_for_status()
             suggestions = r.json()["choices"][0]["message"]["content"]
         
-        // Save review to Supabase
+       # // Save review to Supabase
         review_id = str(uuid.uuid4())
         try:
             supabase.table("code_reviews").insert({
@@ -2574,15 +2574,15 @@ async def review_code(prompt: str, user_id: str, stream: bool = False):
 
 async def multimodal_search(prompt: str, user_id: str, stream: bool = False):
     """Search across text, images, and videos"""
-    // Extract query from prompt
+  #  // Extract query from prompt
     query_match = re.search(r'query[:\s]+(.*?)(?:\n\n|\n$|$)', prompt, re.DOTALL | re.IGNORECASE)
     if not query_match:
-        // If no explicit query, use the whole prompt
+       # // If no explicit query, use the whole prompt
         query = prompt
     else:
         query = query_match.group(1).strip()
     
-    // Extract search types
+  #  // Extract search types
     search_types = ["text", "image", "video"]
     types_match = re.search(r'types[:\s]+(.*?)(?:\n\n|\n$|$)', prompt, re.DOTALL | re.IGNORECASE)
     if types_match:
@@ -2593,16 +2593,16 @@ async def multimodal_search(prompt: str, user_id: str, stream: bool = False):
         async def event_generator():
             yield sse({"type": "starting", "message": "Starting multimodal search..."})
             
-            // Text search
+          #  // Text search
             if "text" in search_types:
                 yield sse({"type": "progress", "message": "Searching text..."})
                 text_results = await duckduckgo_search(query)
                 yield sse({"type": "text_results", "data": text_results})
             
-            // Image search
+            #// Image search
             if "image" in search_types:
                 yield sse({"type": "progress", "message": "Searching images..."})
-                // This is a placeholder - in a real implementation, you'd use an image search API
+               # // This is a placeholder - in a real implementation, you'd use an image search API
                 image_results = {
                     "query": query,
                     "results": [
@@ -2612,7 +2612,7 @@ async def multimodal_search(prompt: str, user_id: str, stream: bool = False):
                 }
                 yield sse({"type": "image_results", "data": image_results})
             
-            // Video search
+            #// Video search
             if "video" in search_types:
                 yield sse({"type": "progress", "message": "Searching videos..."})
                 // This is a placeholder - in a real implementation, you'd use a video search API
@@ -2625,7 +2625,7 @@ async def multimodal_search(prompt: str, user_id: str, stream: bool = False):
                 }
                 yield sse({"type": "video_results", "data": video_results})
             
-            // Save search to Supabase
+           # // Save search to Supabase
             yield sse({"type": "progress", "message": "Saving search..."})
             search_id = str(uuid.uuid4())
             try:
@@ -2652,16 +2652,16 @@ async def multimodal_search(prompt: str, user_id: str, stream: bool = False):
             }
         )
     else:
-        // Non-streaming version
+        #// Non-streaming version
         results = {}
         
-        // Text search
+       # // Text search
         if "text" in search_types:
             results["text"] = await duckduckgo_search(query)
         
-        // Image search
+      #  // Image search
         if "image" in search_types:
-            // This is a placeholder - in a real implementation, you'd use an image search API
+           # // This is a placeholder - in a real implementation, you'd use an image search API
             results["image"] = {
                 "query": query,
                 "results": [
@@ -2670,9 +2670,9 @@ async def multimodal_search(prompt: str, user_id: str, stream: bool = False):
                 ]
             }
         
-        // Video search
+      #  // Video search
         if "video" in search_types:
-            // This is a placeholder - in a real implementation, you'd use a video search API
+           # // This is a placeholder - in a real implementation, you'd use a video search API
             results["video"] = {
                 "query": query,
                 "results": [
@@ -2681,7 +2681,7 @@ async def multimodal_search(prompt: str, user_id: str, stream: bool = False):
                 ]
             }
         
-        // Save search to Supabase
+       # // Save search to Supabase
         search_id = str(uuid.uuid4())
         try:
             supabase.table("multimodal_searches").insert({
@@ -2703,14 +2703,14 @@ async def multimodal_search(prompt: str, user_id: str, stream: bool = False):
 
 async def personalize_ai(prompt: str, user_id: str, stream: bool = False):
     """Customize AI behavior based on user preferences"""
-    // Extract preferences from prompt
+    #// Extract preferences from prompt
     prefs_match = re.search(r'preferences[:\s]+(.*?)(?:\n\n|\n$|$)', prompt, re.DOTALL | re.IGNORECASE)
     if not prefs_match:
         raise HTTPException(400, "Could not extract preferences from prompt")
     
     preferences_text = prefs_match.group(1).strip()
     
-    // Parse preferences
+   # // Parse preferences
     preferences = {}
     for line in preferences_text.split('\n'):
         if ':' in line:
@@ -2721,20 +2721,20 @@ async def personalize_ai(prompt: str, user_id: str, stream: bool = False):
         async def event_generator():
             yield sse({"type": "starting", "message": "Updating AI preferences..."})
             
-            // Save preferences to Supabase
+            #// Save preferences to Supabase
             yield sse({"type": "progress", "message": "Saving preferences..."})
             try:
-                // Check if user profile exists
+               # // Check if user profile exists
                 profile_response = supabase.table("profiles").select("*").eq("id", user_id).execute()
                 
                 if profile_response.data:
-                    // Update existing profile
+                    #// Update existing profile
                     supabase.table("profiles").update({
                         "preferences": preferences,
                         "updated_at": datetime.now().isoformat()
                     }).eq("id", user_id).execute()
                 else:
-                    // Create new profile
+                   # // Create new profile
                     supabase.table("profiles").insert({
                         "id": user_id,
                         "preferences": preferences,
@@ -2756,19 +2756,19 @@ async def personalize_ai(prompt: str, user_id: str, stream: bool = False):
             }
         )
     else:
-        // Non-streaming version
+       # // Non-streaming version
         try:
-            // Check if user profile exists
+            #// Check if user profile exists
             profile_response = supabase.table("profiles").select("*").eq("id", user_id).execute()
             
             if profile_response.data:
-                // Update existing profile
+              #  // Update existing profile
                 supabase.table("profiles").update({
                     "preferences": preferences,
                     "updated_at": datetime.now().isoformat()
                 }).eq("id", user_id).execute()
             else:
-                // Create new profile
+               # // Create new profile
                 supabase.table("profiles").insert({
                     "id": user_id,
                     "preferences": preferences,
@@ -2784,20 +2784,20 @@ async def personalize_ai(prompt: str, user_id: str, stream: bool = False):
 
 async def visualize_data(prompt: str, user_id: str, stream: bool = False):
     """Generate charts and graphs from data"""
-    // Extract data from prompt
+    #// Extract data from prompt
     data_match = re.search(r'data[:\s]+(.*?)(?:\n\n|\n$|$)', prompt, re.DOTALL | re.IGNORECASE)
     if not data_match:
         raise HTTPException(400, "Could not extract data from prompt")
     
     data = data_match.group(1).strip()
     
-    // Extract chart type
+    #// Extract chart type
     chart_type = "auto"
     type_match = re.search(r'chart[:\s]+(.*?)(?:\n\n|\n$|$)', prompt, re.DOTALL | re.IGNORECASE)
     if type_match:
         chart_type = type_match.group(1).strip()
     
-    // Extract options
+    #// Extract options
     options = {}
     options_match = re.search(r'options[:\s]+(.*?)(?:\n\n|\n$|$)', prompt, re.DOTALL | re.IGNORECASE)
     if options_match:
@@ -2811,11 +2811,11 @@ async def visualize_data(prompt: str, user_id: str, stream: bool = False):
         async def event_generator():
             yield sse({"type": "starting", "message": "Creating visualization..."})
             
-            // Create chart
+            #// Create chart
             yield sse({"type": "progress", "message": "Generating chart..."})
             chart_html = create_chart(data, chart_type, options)
             
-            // Save visualization to Supabase
+            #// Save visualization to Supabase
             yield sse({"type": "progress", "message": "Saving visualization..."})
             viz_id = str(uuid.uuid4())
             try:
@@ -2844,10 +2844,10 @@ async def visualize_data(prompt: str, user_id: str, stream: bool = False):
             }
         )
     else:
-        // Non-streaming version
+       # // Non-streaming version
         chart_html = create_chart(data, chart_type, options)
         
-        // Save visualization to Supabase
+        #// Save visualization to Supabase
         viz_id = str(uuid.uuid4())
         try:
             supabase.table("data_visualizations").insert({
@@ -2871,21 +2871,21 @@ async def visualize_data(prompt: str, user_id: str, stream: bool = False):
 
 async def clone_voice(prompt: str, user_id: str, stream: bool = False):
     """Create custom voice profiles for TTS"""
-    // Extract voice sample from prompt
+    #// Extract voice sample from prompt
     sample_match = re.search(r'sample[:\s]+(.*?)(?:\n\n|\n$|$)', prompt, re.DOTALL | re.IGNORECASE)
     if not sample_match:
         raise HTTPException(400, "Could not extract voice sample from prompt")
     
     voice_sample = sample_match.group(1).strip()
     
-    // Extract text to synthesize
+    #// Extract text to synthesize
     text_match = re.search(r'text[:\s]+(.*?)(?:\n\n|\n$|$)', prompt, re.DOTALL | re.IGNORECASE)
     if not text_match:
         raise HTTPException(400, "Could not extract text to synthesize from prompt")
     
     text = text_match.group(1).strip()
     
-    // Extract voice name
+   # // Extract voice name
     voice_name = "custom_voice"
     name_match = re.search(r'name[:\s]+(.*?)(?:\n\n|\n$|$)', prompt, re.DOTALL | re.IGNORECASE)
     if name_match:
@@ -2895,11 +2895,11 @@ async def clone_voice(prompt: str, user_id: str, stream: bool = False):
         async def event_generator():
             yield sse({"type": "starting", "message": "Creating voice profile..."})
             
-            // Create voice profile
+           # // Create voice profile
             yield sse({"type": "progress", "message": "Analyzing voice sample..."})
             voice_id = str(uuid.uuid4())
             
-            // Save voice profile to Supabase
+           # // Save voice profile to Supabase
             try:
                 supabase.table("voice_profiles").insert({
                     "id": voice_id,
@@ -2911,10 +2911,10 @@ async def clone_voice(prompt: str, user_id: str, stream: bool = False):
             except Exception as e:
                 logger.error(f"Failed to save voice profile: {e}")
             
-            // Synthesize speech
+          #  // Synthesize speech
             yield sse({"type": "progress", "message": "Synthesizing speech..."})
             
-            // Use OpenAI TTS with a standard voice (voice cloning would require a specialized API)
+          #  // Use OpenAI TTS with a standard voice (voice cloning would require a specialized API)
             headers = {
                 "Authorization": f"Bearer {OPENAI_API_KEY}",
                 "Content-Type": "application/json"
@@ -2934,7 +2934,7 @@ async def clone_voice(prompt: str, user_id: str, stream: bool = False):
                 )
                 r.raise_for_status()
             
-            // Convert to base64
+          #  // Convert to base64
             audio_b64 = base64.b64encode(r.content).decode()
             
             yield sse({"type": "audio", "data": audio_b64})
@@ -2951,10 +2951,10 @@ async def clone_voice(prompt: str, user_id: str, stream: bool = False):
             }
         )
     else:
-        // Non-streaming version
+        #// Non-streaming version
         voice_id = str(uuid.uuid4())
         
-        // Save voice profile to Supabase
+        #// Save voice profile to Supabase
         try:
             supabase.table("voice_profiles").insert({
                 "id": voice_id,
@@ -2966,7 +2966,7 @@ async def clone_voice(prompt: str, user_id: str, stream: bool = False):
         except Exception as e:
             logger.error(f"Failed to save voice profile: {e}")
         
-        // Synthesize speech
+       # // Synthesize speech
         headers = {
             "Authorization": f"Bearer {OPENAI_API_KEY}",
             "Content-Type": "application/json"
@@ -2986,7 +2986,7 @@ async def clone_voice(prompt: str, user_id: str, stream: bool = False):
             )
             r.raise_for_status()
         
-        // Convert to base64
+        #// Convert to base64
         audio_b64 = base64.b64encode(r.content).decode()
         
         return {
@@ -2996,20 +2996,20 @@ async def clone_voice(prompt: str, user_id: str, stream: bool = False):
             "voice_id": voice_id
         }
 
-// Helper functions for all the missing intents that work with streaming
+#// Helper functions for all the missing intents that work with streaming
 async def image_generation_handler(prompt: str, user_id: str, stream: bool = False):
     """Handle image generation requests"""
     if stream:
         async def event_generator():
             yield sse({"type": "starting", "message": "Generating image..."})
             try:
-                // Extract any sample count from the prompt
+              #  // Extract any sample count from the prompt
                 samples = 1
                 sample_match = re.search(r'(\d+)\s+(image|images)', prompt.lower())
                 if sample_match:
                     samples = min(int(sample_match.group(1)), 4)  // Cap at 4 images
                 
-                // Generate the image
+                #// Generate the image
                 result = await _generate_image_core(prompt, samples, user_id, return_base64=False)
                 
                 yield sse({
@@ -3032,7 +3032,7 @@ async def image_generation_handler(prompt: str, user_id: str, stream: bool = Fal
             }
         )
     else:
-        // Non-streaming version
+       # // Non-streaming version
         samples = 1
         sample_match = re.search(r'(\d+)\s+(image|images)', prompt.lower())
         if sample_match:
@@ -3042,7 +3042,7 @@ async def image_generation_handler(prompt: str, user_id: str, stream: bool = Fal
 
 async def img2img_handler(prompt: str, user_id: str, stream: bool = False):
     """Handle image-to-image editing requests"""
-    // For now, we'll just return an error message since we need an image file
+   # // For now, we'll just return an error message since we need an image file
     if stream:
         async def event_generator():
             yield sse({"type": "error", "message": "Image editing requires uploading an image file. Please use the /img2img endpoint directly."})
@@ -3061,7 +3061,7 @@ async def img2img_handler(prompt: str, user_id: str, stream: bool = False):
 
 async def vision_handler(prompt: str, user_id: str, stream: bool = False):
     """Handle vision/analysis requests"""
-    // For now, we'll just return an error message since we need an image file
+  #  // For now, we'll just return an error message since we need an image file
     if stream:
         async def event_generator():
             yield sse({"type": "error", "message": "Image analysis requires uploading an image file. Please use the /vision/analyze endpoint directly."})
@@ -3080,7 +3080,7 @@ async def vision_handler(prompt: str, user_id: str, stream: bool = False):
 
 async def stt_handler(prompt: str, user_id: str, stream: bool = False):
     """Handle speech-to-text requests"""
-    // For now, we'll just return an error message since we need an audio file
+  #  // For now, we'll just return an error message since we need an audio file
     if stream:
         async def event_generator():
             yield sse({"type": "error", "message": "Speech transcription requires uploading an audio file. Please use the /stt endpoint directly."})
@@ -3099,7 +3099,7 @@ async def stt_handler(prompt: str, user_id: str, stream: bool = False):
 
 async def tts_handler(prompt: str, user_id: str, stream: bool = False):
     """Handle text-to-speech requests"""
-    // Extract text to speak
+   # // Extract text to speak
     text = prompt
     if "say" in prompt.lower():
         text = prompt.lower().split("say", 1)[1].strip()
@@ -3131,7 +3131,7 @@ async def tts_handler(prompt: str, user_id: str, stream: bool = False):
                     )
                     r.raise_for_status()
                 
-                // Convert to base64
+               # // Convert to base64
                 audio_b64 = base64.b64encode(r.content).decode()
                 
                 yield sse({
@@ -3154,7 +3154,7 @@ async def tts_handler(prompt: str, user_id: str, stream: bool = False):
             }
         )
     else:
-        // Non-streaming version
+       # // Non-streaming version
         headers = {
             "Authorization": f"Bearer {OPENAI_API_KEY}",
             "Content-Type": "application/json"
@@ -3174,7 +3174,7 @@ async def tts_handler(prompt: str, user_id: str, stream: bool = False):
             )
             r.raise_for_status()
         
-        // Convert to base64
+        #// Convert to base64
         audio_b64 = base64.b64encode(r.content).decode()
         
         return {
@@ -3184,7 +3184,7 @@ async def tts_handler(prompt: str, user_id: str, stream: bool = False):
 
 async def video_generation_handler(prompt: str, user_id: str, stream: bool = False):
     """Handle video generation requests"""
-    // Extract sample count from prompt
+    #// Extract sample count from prompt
     samples = 1
     sample_match = re.search(r'(\d+)\s+(video|videos)', prompt.lower())
     if sample_match:
@@ -3215,25 +3215,25 @@ async def video_generation_handler(prompt: str, user_id: str, stream: bool = Fal
             }
         )
     else:
-        // Non-streaming version
+        #// Non-streaming version
         return await generate_video_internal(prompt, samples, user_id)
 
 async def code_generation_handler(prompt: str, user_id: str, stream: bool = False):
     """Handle code generation requests"""
-    // Extract language from prompt
+   # // Extract language from prompt
     language = "python"
     lang_match = re.search(r'(python|javascript|java|c\+\+|c#|php|ruby|go|rust|swift|kotlin)\s+code', prompt.lower())
     if lang_match:
         language = lang_match.group(1)
     
-    // Extract run flag
+  #  // Extract run flag
     run_flag = "run" in prompt.lower() or "execute" in prompt.lower()
     
     if stream:
         async def event_generator():
             yield sse({"type": "starting", "message": f"Generating {language} code..."})
             try:
-                // Generate code
+               # // Generate code
                 code_prompt = f"Write a complete {language} program to: {prompt}"
                 payload = {
                     "model": CHAT_MODEL,
@@ -3255,7 +3255,7 @@ async def code_generation_handler(prompt: str, user_id: str, stream: bool = Fals
                     "code": code
                 })
                 
-                // Run code if requested
+                #// Run code if requested
                 if run_flag:
                     yield sse({"type": "progress", "message": "Running code..."})
                     lang_id = JUDGE0_LANGUAGES.get(language, 71)
@@ -3265,7 +3265,7 @@ async def code_generation_handler(prompt: str, user_id: str, stream: bool = Fals
                         "result": execution
                     })
                 
-                // Save code generation record
+                #// Save code generation record
                 try:
                     supabase.table("code_generations").insert({
                         "id": str(uuid.uuid4()),
@@ -3293,7 +3293,7 @@ async def code_generation_handler(prompt: str, user_id: str, stream: bool = Fals
             }
         )
     else:
-        // Non-streaming version
+     #   // Non-streaming version
         code_prompt = f"Write a complete {language} program to: {prompt}"
         payload = {
             "model": CHAT_MODEL,
@@ -3315,13 +3315,13 @@ async def code_generation_handler(prompt: str, user_id: str, stream: bool = Fals
             "user_id": user_id
         }
         
-        // Run code if requested
+      #  // Run code if requested
         if run_flag:
             lang_id = JUDGE0_LANGUAGES.get(language, 71)
             execution = await run_code_judge0(code, lang_id)
             result["execution"] = execution
         
-        // Save code generation record
+   #     // Save code generation record
         try:
             supabase.table("code_generations").insert({
                 "id": str(uuid.uuid4()),
@@ -3338,7 +3338,7 @@ async def code_generation_handler(prompt: str, user_id: str, stream: bool = Fals
 
 async def search_handler(prompt: str, user_id: str, stream: bool = False):
     """Handle web search requests"""
-    // Extract query from prompt
+ #   // Extract query from prompt
     query = prompt
     if "search for" in prompt.lower():
         query = prompt.lower().split("search for", 1)[1].strip()
@@ -3372,7 +3372,7 @@ async def search_handler(prompt: str, user_id: str, stream: bool = False):
             }
         )
     else:
-        // Non-streaming version
+     #   // Non-streaming version
         return await duckduckgo_search(query)
 
 async def new_chat_handler(prompt: str, user_id: str, stream: bool = False):
@@ -3412,14 +3412,14 @@ async def new_chat_handler(prompt: str, user_id: str, stream: bool = False):
 
 async def send_message_handler(prompt: str, user_id: str, stream: bool = False):
     """Handle sending a message to a conversation"""
-    // Extract conversation ID from prompt
+ #   // Extract conversation ID from prompt
     conv_id = None
     conv_match = re.search(r'conversation[:\s]+([a-f0-9-]+)', prompt.lower())
     if conv_match:
         conv_id = conv_match.group(1)
     
     if not conv_id:
-        // Get the most recent conversation
+   #     // Get the most recent conversation
         conv_response = supabase.table("conversations").select("id").eq("user_id", user_id).order("updated_at", desc=True).limit(1).execute()
         if conv_response.data:
             conv_id = conv_response.data[0]["id"]
@@ -3427,12 +3427,12 @@ async def send_message_handler(prompt: str, user_id: str, stream: bool = False):
     if not conv_id:
         return {"error": "No conversation found"}
     
-    // Extract message
+#    // Extract message
     message = prompt
     if "message:" in prompt.lower():
         message = prompt.lower().split("message:", 1)[1].strip()
     
-    // Save user message
+#    // Save user message
     msg_id = str(uuid.uuid4())
     try:
         supabase.table("messages").insert({
@@ -3449,7 +3449,7 @@ async def send_message_handler(prompt: str, user_id: str, stream: bool = False):
         async def event_generator():
             yield sse({"type": "starting", "message": "Processing message..."})
             try:
-                // Get conversation history
+          #      // Get conversation history
                 msg_response = supabase.table("messages").select("role, content").eq("conversation_id", conv_id).order("created_at").execute()
                 rows = msg_response.data if msg_response.data else []
                 messages = [{"role": row["role"], "content": row["content"]} for row in rows]
@@ -3469,12 +3469,12 @@ async def send_message_handler(prompt: str, user_id: str, stream: bool = False):
                     r.raise_for_status()
                     reply = r.json()["choices"][0]["message"]["content"]
 
-                // Stream the reply
+             #   // Stream the reply
                 for char in reply:
                     yield sse({"type": "token", "text": char})
                     await asyncio.sleep(0.01)  // Small delay for streaming effect
 
-                // Save assistant reply
+             #   // Save assistant reply
                 reply_id = str(uuid.uuid4())
                 supabase.table("messages").insert({
                     "id": reply_id,
@@ -3499,7 +3499,7 @@ async def send_message_handler(prompt: str, user_id: str, stream: bool = False):
             }
         )
     else:
-        // Non-streaming version
+       # // Non-streaming version
         try:
             msg_response = supabase.table("messages").select("role, content").eq("conversation_id", conv_id).order("created_at").execute()
             rows = msg_response.data if msg_response.data else []
@@ -3520,7 +3520,7 @@ async def send_message_handler(prompt: str, user_id: str, stream: bool = False):
                 r.raise_for_status()
                 reply = r.json()["choices"][0]["message"]["content"]
 
-            // Save assistant reply
+          #  // Save assistant reply
             reply_id = str(uuid.uuid4())
             supabase.table("messages").insert({
                 "id": reply_id,
@@ -3563,7 +3563,7 @@ async def list_chats_handler(prompt: str, user_id: str, stream: bool = False):
 
 async def search_chats_handler(prompt: str, user_id: str, stream: bool = False):
     """Handle searching chats"""
-    // Extract query from prompt
+  #  // Extract query from prompt
     query = prompt
     if "search for" in prompt.lower():
         query = prompt.lower().split("search for", 1)[1].strip()
@@ -3596,7 +3596,7 @@ async def search_chats_handler(prompt: str, user_id: str, stream: bool = False):
 
 async def pin_chat_handler(prompt: str, user_id: str, stream: bool = False):
     """Handle pinning a chat"""
-    // Extract conversation ID from prompt
+   # // Extract conversation ID from prompt
     conv_id = None
     conv_match = re.search(r'conversation[:\s]+([a-f0-9-]+)', prompt.lower())
     if conv_match:
@@ -3632,7 +3632,7 @@ async def pin_chat_handler(prompt: str, user_id: str, stream: bool = False):
 
 async def archive_chat_handler(prompt: str, user_id: str, stream: bool = False):
     """Handle archiving a chat"""
-    // Extract conversation ID from prompt
+   # // Extract conversation ID from prompt
     conv_id = None
     conv_match = re.search(r'conversation[:\s]+([a-f0-9-]+)', prompt.lower())
     if conv_match:
@@ -3668,7 +3668,7 @@ async def archive_chat_handler(prompt: str, user_id: str, stream: bool = False):
 
 async def move_folder_handler(prompt: str, user_id: str, stream: bool = False):
     """Handle moving a chat to a folder"""
-    // Extract conversation ID from prompt
+   # // Extract conversation ID from prompt
     conv_id = None
     conv_match = re.search(r'conversation[:\s]+([a-f0-9-]+)', prompt.lower())
     if conv_match:
@@ -3710,7 +3710,7 @@ async def move_folder_handler(prompt: str, user_id: str, stream: bool = False):
 
 async def share_chat_handler(prompt: str, user_id: str, stream: bool = False):
     """Handle sharing a chat"""
-    // Extract conversation ID from prompt
+  #  // Extract conversation ID from prompt
     conv_id = None
     conv_match = re.search(r'conversation[:\s]+([a-f0-9-]+)', prompt.lower())
     if conv_match:
@@ -3748,7 +3748,7 @@ async def share_chat_handler(prompt: str, user_id: str, stream: bool = False):
 
 async def view_shared_chat_handler(prompt: str, user_id: str, stream: bool = False):
     """Handle viewing a shared chat"""
-    // Extract token from prompt
+#    // Extract token from prompt
     token = None
     token_match = re.search(r'token[:\s]+([a-f0-9]+)', prompt.lower())
     if token_match:
@@ -3757,8 +3757,8 @@ async def view_shared_chat_handler(prompt: str, user_id: str, stream: bool = Fal
     if not token:
         return {"error": "No token provided"}
     
-    // In a real implementation, you would look up the shared chat in the database
-    // For now, we'll return a placeholder
+#    // In a real implementation, you would look up the shared chat in the database
+#    // For now, we'll return a placeholder
     
     if stream:
         async def event_generator():
@@ -3782,13 +3782,13 @@ async def view_shared_chat_handler(prompt: str, user_id: str, stream: bool = Fal
 
 async def edit_message_handler(prompt: str, user_id: str, stream: bool = False):
     """Handle editing a message"""
-    // Extract message ID from prompt
+#    // Extract message ID from prompt
     msg_id = None
     msg_match = re.search(r'message[:\s]+([a-f0-9-]+)', prompt.lower())
     if msg_match:
         msg_id = msg_match.group(1)
     
-    // Extract new content from prompt
+#    // Extract new content from prompt
     new_content = None
     content_match = re.search(r'content[:\s]+(.+)', prompt.lower())
     if content_match:
@@ -3810,12 +3810,12 @@ async def edit_message_handler(prompt: str, user_id: str, stream: bool = False):
         conversation_id = msg_row["conversation_id"]
         edited_at = msg_row["created_at"]
 
-        // Update message content
+   #     // Update message content
         supabase.table("messages").update({
             "content": new_content
         }).eq("id", msg_id).execute()
 
-        // Delete all assistant messages after this message
+  #      // Delete all assistant messages after this message
         supabase.table("messages").delete().eq("conversation_id", conversation_id).gt("created_at", edited_at).eq("role", "assistant").execute()
         
         if stream:
@@ -3844,14 +3844,14 @@ async def edit_message_handler(prompt: str, user_id: str, stream: bool = False):
 
 async def regenerate_handler(prompt: str, user_id: str, stream: bool = False):
     """Handle regenerating a response"""
-    // Extract conversation ID from prompt
+#    // Extract conversation ID from prompt
     conv_id = None
     conv_match = re.search(r'conversation[:\s]+([a-f0-9-]+)', prompt.lower())
     if conv_match:
         conv_id = conv_match.group(1)
     
     if not conv_id:
-        // Get the most recent conversation
+ #       // Get the most recent conversation
         conv_response = supabase.table("conversations").select("id").eq("user_id", user_id).order("updated_at", desc=True).limit(1).execute()
         if conv_response.data:
             conv_id = conv_response.data[0]["id"]
@@ -3859,24 +3859,24 @@ async def regenerate_handler(prompt: str, user_id: str, stream: bool = False):
     if not conv_id:
         return {"error": "No conversation found"}
     
-    // Get the last user message
+#    // Get the last user message
     msg_response = supabase.table("messages").select("content").eq("conversation_id", conv_id).eq("role", "user").order("created_at", desc=True).limit(1).execute()
     if not msg_response.data:
         return {"error": "No user message found"}
     
     last_user_message = msg_response.data[0]["content"]
     
-    // Delete the last assistant message
+#    // Delete the last assistant message
     last_assistant_msg = supabase.table("messages").select("id").eq("conversation_id", conv_id).eq("role", "assistant").order("created_at", desc=True).limit(1).execute()
     if last_assistant_msg.data:
         supabase.table("messages").delete().eq("id", last_assistant_msg.data[0]["id"]).execute()
     
-    // Generate a new response
+#    // Generate a new response
     if stream:
         async def event_generator():
             yield sse({"type": "starting", "message": "Regenerating response..."})
             try:
-                // Get conversation history
+              #  // Get conversation history
                 msg_response = supabase.table("messages").select("role, content").eq("conversation_id", conv_id).order("created_at").execute()
                 rows = msg_response.data if msg_response.data else []
                 messages = [{"role": row["role"], "content": row["content"]} for row in rows]
@@ -3896,12 +3896,12 @@ async def regenerate_handler(prompt: str, user_id: str, stream: bool = False):
                     r.raise_for_status()
                     reply = r.json()["choices"][0]["message"]["content"]
 
-                // Stream the reply
+               # // Stream the reply
                 for char in reply:
                     yield sse({"type": "token", "text": char})
                     await asyncio.sleep(0.01)  // Small delay for streaming effect
 
-                // Save assistant reply
+             #   // Save assistant reply
                 reply_id = str(uuid.uuid4())
                 supabase.table("messages").insert({
                     "id": reply_id,
@@ -3926,7 +3926,7 @@ async def regenerate_handler(prompt: str, user_id: str, stream: bool = False):
             }
         )
     else:
-        // Non-streaming version
+        #// Non-streaming version
         try:
             msg_response = supabase.table("messages").select("role, content").eq("conversation_id", conv_id).order("created_at").execute()
             rows = msg_response.data if msg_response.data else []
@@ -3947,7 +3947,7 @@ async def regenerate_handler(prompt: str, user_id: str, stream: bool = False):
                 r.raise_for_status()
                 reply = r.json()["choices"][0]["message"]["content"]
 
-            // Save assistant reply
+           # // Save assistant reply
             reply_id = str(uuid.uuid4())
             supabase.table("messages").insert({
                 "id": reply_id,
@@ -4035,13 +4035,13 @@ async def get_user_info_handler(prompt: str, user_id: str, stream: bool = False)
         user_response = supabase.table("users").select("*").eq("id", user_id).execute()
         user_data = user_response.data[0] if user_response.data else None
         
-        // Get user's images count
+      #  // Get user's images count
         images_count = supabase.table("images").select("id", count="exact").eq("user_id", user_id).execute()
         
-        // Get user's videos count
+      #  // Get user's videos count
         videos_count = supabase.table("videos").select("id", count="exact").eq("user_id", user_id).execute()
         
-        // Get user's conversations count
+       # // Get user's conversations count
         conversations_count = supabase.table("conversations").select("id", count="exact").eq("user_id", user_id).execute()
         
         result = {
@@ -4098,8 +4098,8 @@ async def get_user_info_handler(prompt: str, user_id: str, stream: bool = False)
 
 async def merge_user_data_handler(prompt: str, user_id: str, stream: bool = False):
     """Handle merging user data"""
-    // This is a complex operation that requires authentication
-    // For now, we'll just return an error message
+  #  // This is a complex operation that requires authentication
+  #  // For now, we'll just return an error message
     if stream:
         async def event_generator():
             yield sse({"type": "error", "message": "User data merging requires authentication. Please use the /user/merge endpoint directly."})
@@ -4122,121 +4122,121 @@ def detect_intent(prompt: str) -> str:
 
     p = prompt.lower()
 
-    // 🖼 Image generation
+    #// 🖼 Image generation
     if any(w in p for w in [
         "image of", "draw", "picture of", "generate image",
         "make me an image", "photo of", "art of"
     ]):
         return "image"
 
-    // 🖼 Image → Image
+    #// 🖼 Image → Image
     if any(w in p for w in [
         "edit this image", "change this image",
         "modify image", "img2img"
     ]):
         return "img2img"
 
-    // 👁 Vision / analysis
+    #// 👁 Vision / analysis
     if any(w in p for w in [
         "analyze this image", "what is in this image",
         "describe this image", "vision"
     ]):
         return "vision"
 
-    // 🎙 Speech → Text
+   # // 🎙 Speech → Text
     if any(w in p for w in [
         "transcribe", "speech to text", "stt"
     ]):
         return "stt"
 
-    // 🔊 Text → Speech
+  #  // 🔊 Text → Speech
     if any(w in p for w in [
         "say this", "speak", "tts", "read this", "read aloud"
     ]):
         return "tts"
 
-    // 🎥 Video (future-ready)
+   # // 🎥 Video (future-ready)
     if any(w in p for w in [
         "video of", "make a video", "animation of", "clip of"
     ]):
         return "video"
 
-    // 💻 Code
+  #  // 💻 Code
     if any(w in p for w in [
         "write code", "generate code", "python code",
         "javascript code", "fix this code"
     ]):
         return "code"
 
-    // 🔍 Search
+  #  // 🔍 Search
     if any(w in p for w in [
         "search", "look up", "find info", "who is", "what is"
     ]):
         return "search"
 
-    // 📄 Document Analysis
+   # // 📄 Document Analysis
     if any(w in p for w in [
         "analyze document", "extract information", "summarize document",
         "document analysis", "extract entities", "find keywords"
     ]):
         return "document_analysis"
     
-    // 🌐 Translation
+   # // 🌐 Translation
     if any(w in p for w in [
         "translate", "translation", "translate to", "in spanish", "in french",
         "in german", "in japanese", "in chinese"
     ]):
         return "translation"
     
-    // 😊 Sentiment Analysis
+   # // 😊 Sentiment Analysis
     if any(w in p for w in [
         "sentiment", "emotion", "feeling", "analyze sentiment", "mood"
     ]):
         return "sentiment_analysis"
     
-    // 🕸️ Knowledge Graph
+  #  // 🕸️ Knowledge Graph
     if any(w in p for w in [
         "knowledge graph", "relationship map", "entity graph", "concept map"
     ]):
         return "knowledge_graph"
     
-    // 🤖 Custom Model Training
+  #  // 🤖 Custom Model Training
     if any(w in p for w in [
         "train model", "custom model", "fine-tune", "model training"
     ]):
         return "custom_model"
     
-    // 🔍 Code Review
+  #  // 🔍 Code Review
     if any(w in p for w in [
         "review code", "code review", "analyze code", "code quality"
     ]):
         return "code_review"
     
-    // 🔍 Multi-modal Search
+  #  // 🔍 Multi-modal Search
     if any(w in p for w in [
         "search everything", "multimodal search", "search all", "comprehensive search"
     ]):
         return "multimodal_search"
     
-    // 🧠 AI Personalization
+   # // 🧠 AI Personalization
     if any(w in p for w in [
         "personalize ai", "ai personality", "custom ai behavior", "ai preferences"
     ]):
         return "ai_personalization"
     
-    // 📊 Data Visualization
+   # // 📊 Data Visualization
     if any(w in p for w in [
         "create chart", "visualize data", "make graph", "data visualization"
     ]):
         return "data_visualization"
     
-    // 🎤 Voice Cloning
+    #// 🎤 Voice Cloning
     if any(w in p for w in [
         "clone voice", "custom voice", "voice profile", "voice synthesis"
     ]):
         return "voice_cloning"
     
-    // 💬 Chat Operations
+    #// 💬 Chat Operations
     if any(w in p for w in [
         "new chat", "start conversation", "create conversation"
     ]):
@@ -4337,7 +4337,7 @@ async def tts_stream_helper(text: str):
     b64 = base64.b64encode(r.content).decode()
     yield {"type": "tts_done", "audio": b64}
 
-// Background task functions
+#// Background task functions
 async def generate_chat_response_background(
     task_id: str,
     user_id: str,
@@ -4346,24 +4346,24 @@ async def generate_chat_response_background(
 ):
     """Generate chat response in the background"""
     try:
-        // Update task status
+      #  // Update task status
         task_manager.update_task_status(task_id, "processing")
         
-        // Get conversation history
+       # // Get conversation history
         msg_response = supabase.table("messages").select("role, content").eq("conversation_id", conversation_id).order("created_at").execute()
         rows = msg_response.data if msg_response.data else []
         messages = [{"role": row["role"], "content": row["content"]} for row in rows]
         
-        // Build contextual prompt
+       # // Build contextual prompt
         system_prompt = build_contextual_prompt(user_id, message)
         
-        // Prepare messages for API call
+        #// Prepare messages for API call
         api_messages = [
             {"role": "system", "content": system_prompt},
             *messages
         ]
         
-        // Call language model
+       # // Call language model
         payload = {
             "model": CHAT_MODEL,
             "messages": api_messages,
@@ -4382,10 +4382,10 @@ async def generate_chat_response_background(
         
         assistant_reply = response_data["choices"][0]["message"]["content"]
         
-        // Store assistant message
+        #// Store assistant message
         persist_message(user_id, conversation_id, "assistant", assistant_reply)
         
-        // Update task with result
+       # // Update task with result
         task_manager.update_task_status(
             task_id, 
             "completed",
@@ -4395,7 +4395,7 @@ async def generate_chat_response_background(
             }
         )
         
-        // Send WebSocket notification if connected
+        #// Send WebSocket notification if connected
         await manager.send_personal_message(
             json.dumps({
                 "type": "task_completed",
@@ -4429,7 +4429,7 @@ async def generate_image_background(
             result=result
         )
         
-        // Send WebSocket notification if connected
+       # // Send WebSocket notification if connected
         await manager.send_personal_message(
             json.dumps({
                 "type": "task_completed",
@@ -4442,17 +4442,17 @@ async def generate_image_background(
         logger.error(f"Background image generation failed: {e}")
         task_manager.update_task_status(task_id, "failed", error=str(e))
 
-// Cleanup job for old tasks
+#// Cleanup job for old tasks
 @scheduler.scheduled_job('interval', hours=24)
 async def cleanup_old_tasks():
     """Clean up tasks older than 7 days"""
     cutoff_date = (datetime.now() - timedelta(days=7)).isoformat()
     
     try:
-        // Delete from database
+        #// Delete from database
         supabase.table("background_tasks").delete().lt("created_at", cutoff_date).execute()
         
-        // Clean up memory
+       # // Clean up memory
         old_task_ids = [
             task_id for task_id, task in task_manager.active_tasks.items()
             if task["created_at"] < cutoff_date
@@ -4465,7 +4465,7 @@ async def cleanup_old_tasks():
     except Exception as e:
         logger.error(f"Failed to cleanup old tasks: {e}")
 
-// ---------- API Endpoints ----------
+#// ---------- API Endpoints ----------
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -4488,41 +4488,41 @@ async def chat_stream(req: Request, res: Response, tts: bool = False, samples: i
     if not prompt:
         raise HTTPException(400, "prompt required")
 
-    // ✅ COOKIE USER
+   # // ✅ COOKIE USER
     user = await get_or_create_user(req, res)
     user_id = user.id
     
-// ---------- Chat endpoint ----------
+#// ---------- Chat endpoint ----------
 @app.post("/chat")
 async def chat_endpoint(request: Request, response: Response):
     """Main chat endpoint with user memory"""
-    // Get or create user with stable UUID
+   # // Get or create user with stable UUID
     user = user_identity_service.get_or_create_user(request, response)
     user_id = user.id
     
-    // Parse request
+   # // Parse request
     body = await request.json()
     message = body.get("message", "")
     
     if not message:
         raise HTTPException(400, "message required")
     
-    // Get or create conversation for this user
+  #  // Get or create conversation for this user
     conversation_id = get_or_create_conversation(user_id)
     
-    // Store user message
+    #// Store user message
     persist_message(user_id, conversation_id, "user", message)
     
-    // Build contextual prompt with user history
+  #  // Build contextual prompt with user history
     system_prompt = build_contextual_prompt(user_id, message)
     
-    // Prepare messages for API call
+    #// Prepare messages for API call
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": message}
     ]
     
-    // Call language model
+  #  // Call language model
     payload = {
         "model": CHAT_MODEL,
         "messages": messages,
@@ -4541,7 +4541,7 @@ async def chat_endpoint(request: Request, response: Response):
     
     assistant_reply = response_data["choices"][0]["message"]["content"]
     
-    // Store assistant message
+  #  // Store assistant message
     persist_message(user_id, conversation_id, "assistant", assistant_reply)
     
     return {
@@ -4550,7 +4550,7 @@ async def chat_endpoint(request: Request, response: Response):
         "user_id": user_id
     }
 
-// Background chat endpoint
+#// Background chat endpoint
 @app.post("/chat/background")
 async def chat_background(
     request: Request, 
@@ -4558,11 +4558,11 @@ async def chat_background(
     background_tasks: BackgroundTasks
 ):
     """Start a chat response in the background"""
-    // Get user
+#    // Get user
     user = await get_or_create_user(request, response)
     user_id = user.id
     
-    // Parse request
+ #   // Parse request
     body = await request.json()
     message = body.get("message", "")
     conversation_id = body.get("conversation_id")
@@ -4570,11 +4570,11 @@ async def chat_background(
     if not message:
         raise HTTPException(400, "message required")
     
-    // Create or get conversation
+ #   // Create or get conversation
     if not conversation_id:
         conversation_id = get_or_create_conversation(user_id)
     
-    // Store user message
+  #  // Store user message
     persist_message(user_id, conversation_id, "user", message)
     
     // Create background task
@@ -4587,7 +4587,7 @@ async def chat_background(
         }
     )
     
-    // Add to background tasks
+ #   // Add to background tasks
     background_tasks.add_task(
         generate_chat_response_background,
         task_id,
@@ -4602,7 +4602,7 @@ async def chat_background(
         "status": "queued"
     }
 
-// Background image generation endpoint
+#// Background image generation endpoint
 @app.post("/image/background")
 async def image_background(
     request: Request, 
@@ -4620,7 +4620,7 @@ async def image_background(
     if not prompt:
         raise HTTPException(400, "prompt required")
     
-    // Create background task
+ #   // Create background task
     task_id = task_manager.create_task(
         user_id=user_id,
         task_type="image_generation",
@@ -4630,7 +4630,7 @@ async def image_background(
         }
     )
     
-    // Add to background tasks
+  #  // Add to background tasks
     background_tasks.add_task(
         generate_image_background,
         task_id,
@@ -4644,7 +4644,7 @@ async def image_background(
         "status": "queued"
     }
 
-// Task status endpoints
+#// Task status endpoints
 @app.get("/task/{task_id}")
 async def get_task_status(request: Request, response: Response):
     """Get the status of a background task"""
@@ -4670,20 +4670,20 @@ async def get_user_tasks(request: Request, response: Response):
     
     return task_manager.get_user_tasks(user_id)
 
-// WebSocket endpoint
+#// WebSocket endpoint
 @app.websocket("/ws/{user_id}")
 async def websocket_endpoint(websocket: WebSocket, user_id: str):
     await manager.connect(websocket, user_id)
     try:
         while True:
             data = await websocket.receive_text()
-            // Handle incoming messages if needed
+           # // Handle incoming messages if needed
     except WebSocketDisconnect:
         manager.disconnect(user_id)
 
-// =========================================================
-// 🚀 UNIVERSAL MULTIMODAL ENDPOINT — /ask/universal
-// =========================================================
+#// =========================================================
+#// 🚀 UNIVERSAL MULTIMODAL ENDPOINT — /ask/universal
+#// =========================================================
 
 def is_valid_uuid(uuid_string):
     """Check if a string is a valid UUID"""
@@ -4696,12 +4696,14 @@ def is_valid_uuid(uuid_string):
 @app.post("/ask/universal")
 async def ask_universal(request: Request, response: Response):
     // -------------------------------
-    // Extract request data FIRST
-    // -------------------------------
+ #   // Extract request data FIRST
+  #/* LuxStream CSS - Modern Streaming Platform */
+
+#  // -------------------------------
     body = await request.json()
     prompt = body.get("prompt", "").strip()
     
-    // Use our new user ID system
+#    // Use our new user ID system
     user = await get_or_create_user(request, Response())
     user_id = user.id
     
@@ -4739,12 +4741,12 @@ async def ask_universal(request: Request, response: Response):
     if not prompt:
         raise HTTPException(status_code=400, detail="prompt required")
 
-    // -------------------------------
-    // Detect intent
-    // -------------------------------
+#    // -------------------------------
+ #   // Detect intent
+ #   // -------------------------------
     intent = detect_intent(prompt)
 
-    // Updated intent_map with all handlers
+ #   // Updated intent_map with all handlers
     intent_map = {
         "document_analysis": document_analysis,
         "translation": translate_text,
@@ -4786,10 +4788,10 @@ async def ask_universal(request: Request, response: Response):
         // Pass the user_id to all intent handlers
         return await intent_map[intent](prompt, user_id, stream)
 
-    // -------------------------------
-    // --- FIX 3: Correctly Determine Conversation ID ---
-    // -------------------------------
-    // If a conversation_id is provided, use it. Otherwise, get/create the most recent one.
+#    // -------------------------------
+#    // --- FIX 3: Correctly Determine Conversation ID ---
+#    // -------------------------------
+ #   // If a conversation_id is provided, use it. Otherwise, get/create the most recent one.
     if conversation_id:
         // Verify this conversation belongs to the user before using it
         conv_check = await asyncio.to_thread(
@@ -4806,22 +4808,22 @@ async def ask_universal(request: Request, response: Response):
         // If no ID was provided, get/create the most recent conversation for the user
         conversation_id = get_or_create_conversation(user_id)
 
-    // Now, load the history for the CORRECT conversation_id
+#    // Now, load the history for the CORRECT conversation_id
     messages = []
     history = await load_memory(conversation_id) // Use load_memory which takes an ID
     messages.extend(history)
-    // -------------------------------
-    // --- END OF FIX 3 ---
-    // -------------------------------
+#    // -------------------------------
+#    // --- END OF FIX 3 ---
+#    // -------------------------------
 
-    // -------------------------------
-    // SAFE PROFILE FETCH / CREATE
-    // -------------------------------
+#    // -------------------------------
+#    // SAFE PROFILE FETCH / CREATE
+#    // -------------------------------
     personality = "friendly"
     nickname = ""
 
     try:
-        // Fixed profile query - removed maybe_single() which was causing 406 error
+       # // Fixed profile query - removed maybe_single() which was causing 406 error
         profile_resp = await asyncio.to_thread(
             lambda: supabase.table("profiles")
             .select("nickname, personality")
@@ -4829,7 +4831,7 @@ async def ask_universal(request: Request, response: Response):
             .execute()
         )
 
-        // Check if profile exists and has data
+     #   // Check if profile exists and has data
         if profile_resp and profile_resp.data and len(profile_resp.data) > 0:
             profile_data = profile_resp.data[0]
             personality = profile_data.get("personality") or personality
@@ -4854,7 +4856,7 @@ async def ask_universal(request: Request, response: Response):
         logger.warning(f"Profile fetch/create failed: {e}")
         nickname = generate_random_nickname()
         
-        // Try to create a fallback profile
+    #    // Try to create a fallback profile
         try:
             default_profile = {
                 "id": user_id,
@@ -4870,9 +4872,9 @@ async def ask_universal(request: Request, response: Response):
         except Exception as fallback_error:
             logger.error(f"Failed to create fallback profile: {fallback_error}")
 
-    // -------------------------------
-    // Prepare system prompt
-    // -------------------------------
+#    // -------------------------------
+ #   // Prepare system prompt
+ #   // -------------------------------
     system_prompt = (
         PERSONALITY_MAP.get(personality, PERSONALITY_MAP["friendly"])
         + f"\nUser nickname: {nickname}\n"
@@ -4890,9 +4892,9 @@ async def ask_universal(request: Request, response: Response):
     messages.extend(history)
     messages.append({"role": "user", "content": prompt})
 
-    // -------------------------------
-    // STREAM MODE
-    // -------------------------------
+#    // -------------------------------
+ #   // STREAM MODE
+  #  // -------------------------------
     if stream:
 
         async def event_generator():
@@ -4929,7 +4931,7 @@ async def ask_universal(request: Request, response: Response):
                             try:
                                 chunk = json.loads(data)
                                 
-                                // Fixed: Check if chunk has choices before accessing
+                            #    // Fixed: Check if chunk has choices before accessing
                                 if "choices" in chunk and len(chunk["choices"]) > 0:
                                     delta = chunk["choices"][0].get("delta", {})
                                     content = delta.get("content")
@@ -4937,7 +4939,7 @@ async def ask_universal(request: Request, response: Response):
                                         assistant_reply += content
                                         yield sse({"type": "token", "text": content})
                                 
-                                // Handle error messages in the stream
+                             #   // Handle error messages in the stream
                                 elif "error" in chunk:
                                     error_msg = chunk["error"].get("message", "Unknown error")
                                     yield sse({"type": "error", "message": error_msg})
@@ -4973,9 +4975,9 @@ async def ask_universal(request: Request, response: Response):
             }
         )
 
-    // -------------------------------
-    // NON-STREAM MODE
-    // -------------------------------
+  #  // -------------------------------
+  #  // NON-STREAM MODE
+  #  // -------------------------------
     def safe_generate():
         try:
             asyncio.run(generate_ai_response(conversation_id, user_id, messages))
@@ -5004,7 +5006,7 @@ async def edit_message(
     if not new_text:
         raise HTTPException(400, "content required")
 
-    // Get message
+   # // Get message
     try:
         msg_response = supabase.table("messages").select("id, role, conversation_id, created_at").eq("id", message_id).execute()
         if not msg_response.data:
@@ -5017,12 +5019,12 @@ async def edit_message(
         conversation_id = msg_row["conversation_id"]
         edited_at = msg_row["created_at"]
 
-        // Update message content
+      #  // Update message content
         supabase.table("messages").update({
             "content": new_text
         }).eq("id", message_id).execute()
 
-        // 🔥 DELETE ALL ASSISTANT MESSAGES AFTER THIS MESSAGE
+        #// 🔥 DELETE ALL ASSISTANT MESSAGES AFTER THIS MESSAGE
         supabase.table("messages").delete().eq("conversation_id", conversation_id).gt("created_at", edited_at).eq("role", "assistant").execute()
 
         return {
@@ -5057,9 +5059,9 @@ async def stream_endpoint():
         }
     )
     
-// -----------------------------
-// Stop endpoint
-// -----------------------------
+#// -----------------------------
+#// Stop endpoint
+#// -----------------------------
 @app.post("/stop")
 async def stop(user=Depends(auth)):
     task = active_streams.get(user.id)
@@ -5069,9 +5071,9 @@ async def stop(user=Depends(auth)):
         return {"stopped": True}
     return {"stopped": False}
     
-// -----------------------------
-// Regenerate endpoint
-// -----------------------------
+#// -----------------------------
+#// Regenerate endpoint
+#// -----------------------------
 @app.post("/regenerate")
 async def regenerate(req: Request, res: Response, tts: bool = False, samples: int = 1):
     """
@@ -5084,21 +5086,21 @@ async def regenerate(req: Request, res: Response, tts: bool = False, samples: in
     if not prompt:
         raise HTTPException(400, "prompt required")
 
-    // ✅ COOKIE USER
+#    // ✅ COOKIE USER
     user = await get_or_create_user(req, res)
     user_id = user.id
 
-    // ✅ CANCEL EXISTING STREAM (IF ANY)
+ #   // ✅ CANCEL EXISTING STREAM (IF ANY)
     old_task = active_streams.get(user_id)
     if old_task and not old_task.done():
         old_task.cancel()
 
     async def event_generator():
-        // ✅ REGISTER NEW STREAM
+       # // ✅ REGISTER NEW STREAM
         task = asyncio.current_task()
         active_streams[user_id] = task
 
-        // Also register in database
+     #   // Also register in database
         stream_id = str(uuid.uuid4())
         try:
             supabase.table("active_streams").insert({
@@ -5110,7 +5112,7 @@ async def regenerate(req: Request, res: Response, tts: bool = False, samples: in
             logger.error(f"Failed to register stream: {e}")
 
         try:
-            // --- IMAGE (OPTIONAL) ---
+        #    // --- IMAGE (OPTIONAL) ---
             if any(w in prompt.lower() for w in ("image", "draw", "illustrate", "painting", "art", "picture")):
                 try {
                     yield sse({"status": "image_start", "message": "Regenerating image"})
@@ -5137,7 +5139,7 @@ async def regenerate(req: Request, res: Response, tts: bool = False, samples: in
                     logger.exception("Image regenerate failed")
                     yield sse({"status": "image_error"})
 
-            // --- CHAT ---
+           # // --- CHAT ---
             payload = {
                 "model": CHAT_MODEL,
                 "stream": True,
@@ -5169,7 +5171,7 @@ async def regenerate(req: Request, res: Response, tts: bool = False, samples: in
                             "message": data
                         })
 
-            // --- TTS (OPTIONAL) ---
+        #    // --- TTS (OPTIONAL) ---
             if tts:
                 try {
                     tts_payload = {
@@ -5213,7 +5215,7 @@ async def regenerate(req: Request, res: Response, tts: bool = False, samples: in
             raise
 
         finally:
-            // ✅ CLEANUP
+       #     // ✅ CLEANUP
             active_streams.pop(user_id, None)
             try {
                 supabase.table("active_streams").delete().eq("user_id", user_id).execute()
@@ -5262,13 +5264,13 @@ async def generate_video(request: Request):
                     json=payload
                 )
                 r.raise_for_status()
-                // HF returns bytes, not base64
+         #       // HF returns bytes, not base64
                 video_bytes = r.content
 
-                // Generate a unique filename
+         #       // Generate a unique filename
                 filename = f"{int(time.time())}-video-{uuid.uuid4().hex[:10]}.mp4"
 
-                // Upload to Supabase in the anonymous folder
+         #       // Upload to Supabase in the anonymous folder
                 storage_path = f"anonymous/{filename}"
                 supabase.storage.from_("ai-videos").upload(
                     path=storage_path,
@@ -5276,7 +5278,7 @@ async def generate_video(request: Request):
                     file_options={"content-type": "video/mp4"}
                 )
                 
-                // Save video record with user ID
+          #      // Save video record with user ID
                 supabase.table("videos").insert({
                     "id": str(uuid.uuid4()),
                     "user_id": user_id,
@@ -5285,7 +5287,7 @@ async def generate_video(request: Request):
                     "created_at": datetime.now().isoformat()
                 }).execute()
 
-                // Create signed URL (1 hour)
+            #    // Create signed URL (1 hour)
                 signed = supabase.storage.from_("ai-videos").create_signed_url(storage_path, 60*60)
                 video_urls.append(signed["signedURL"])
 
@@ -5361,16 +5363,16 @@ async def image_stream(req: Request, res: Response):
     if not OPENAI_API_KEY:
         raise HTTPException(400, "no OpenAI KEY")
 
-    // ✅ COOKIE-BASED USER ID
+#    // ✅ COOKIE-BASED USER ID
     user = await get_or_create_user(req, res)
     user_id = user.id
 
     async def event_generator():
-        // ✅ REGISTER STREAM TASK (MUST BE HERE)
+     #   // ✅ REGISTER STREAM TASK (MUST BE HERE)
         task = asyncio.current_task()
         active_streams[user_id] = task
 
-        // Also register in database
+    #    // Also register in database
         stream_id = str(uuid.uuid4())
         try {
             supabase.table("active_streams").insert({
@@ -5382,14 +5384,14 @@ async def image_stream(req: Request, res: Response):
             logger.error(f"Failed to register stream: {e}")
 
         try {
-            // --- initial message ---
+        #    // --- initial message ---
             yield sse({"status": "starting", "message": "Preparing request"})
             await asyncio.sleep(0)
 
             payload = {
                 "model": "dall-e-3",
                 "prompt": prompt,
-                "n": 1,  // DALL·E 3 supports only 1
+                "n": 1, # // DALL·E 3 supports only 1
                 "size": "1024x1024",
                 "response_format": "b64_json"
             }
@@ -5437,7 +5439,7 @@ async def image_stream(req: Request, res: Response):
                 try {
                     image_bytes = base64.b64decode(b64)
                     filename = f"{unique_filename('png')}"
-                    // Upload to anonymous folder
+                 #   // Upload to anonymous folder
                     upload_image_to_supabase(image_bytes, filename, user_id)
 
                     signed = supabase.storage.from_("ai-images").create_signed_url(
@@ -5464,7 +5466,7 @@ async def image_stream(req: Request, res: Response):
             yield sse({"status": "exception", "message": str(e)})
 
         finally:
-            // ✅ CLEANUP
+          #  // ✅ CLEANUP
             active_streams.pop(user_id, None)
             try {
                 supabase.table("active_streams").delete().eq("user_id", user_id).execute()
@@ -5481,7 +5483,7 @@ async def image_stream(req: Request, res: Response):
         }
     )
     
-// ---------- Img2Img (DALL·E edits) ----------
+#// ---------- Img2Img (DALL·E edits) ----------
 @app.post("/img2img")
 async def img2img(request: Request, file: UploadFile = File(...), prompt: str = ""):
     user = await get_or_create_user(request, Response())
@@ -5508,7 +5510,7 @@ async def img2img(request: Request, file: UploadFile = File(...), prompt: str = 
                 b64 = d.get("b64_json")
                 if b64:
                     fname = unique_filename("png")
-                    // Upload to anonymous folder
+             #       // Upload to anonymous folder
                     image_bytes = base64.b64decode(b64)
                     supabase_fname = f"anonymous/{fname}"
                     upload_image_to_supabase(image_bytes, supabase_fname, user_id)
@@ -5520,7 +5522,7 @@ async def img2img(request: Request, file: UploadFile = File(...), prompt: str = 
 
     return {"provider": "dalle3-edit", "images": urls}
     
-// ---------- TTS ----------
+#// ---------- TTS ----------
 @app.post("/tts")
 async def text_to_speech(request: Request):
     """
@@ -5532,12 +5534,12 @@ async def text_to_speech(request: Request):
     if not openai_api_key:
         raise HTTPException(500, "Missing OPENAI_API_KEY")
 
-    // Try JSON first
+  #  // Try JSON first
     try {
         data = await request.json()
         text = data.get("text", None)
     } catch Exception {
-        // Fallback: read raw text from body
+  #      // Fallback: read raw text from body
         text = (await request.body()).decode("utf-8")
     }
 
@@ -5604,16 +5606,16 @@ async def tts_stream(req: Request, res: Response):
         "input": text
     }
 
-    // ✅ COOKIE USER
+#    // ✅ COOKIE USER
     user = await get_or_create_user(req, res)
     user_id = user.id
 
     async def audio_streamer():
-        // ✅ REGISTER STREAM TASK
+  #      // ✅ REGISTER STREAM TASK
         task = asyncio.current_task()
         active_streams[user_id] = task
 
-        // Also register in database
+  #      // Also register in database
         stream_id = str(uuid.uuid4())
         try {
             supabase.table("active_streams").insert({
@@ -5663,7 +5665,7 @@ async def tts_stream(req: Request, res: Response):
         }
     )
 
-// ---------- Vision analyze ----------
+#// ---------- Vision analyze ----------
 @app.post("/vision/analyze")
 async def vision_analyze(
     req: Request,
@@ -5678,14 +5680,14 @@ async def vision_analyze(
         raise HTTPException(400, "empty file")
     }
 
-    // Load image
+#    // Load image
     img = Image.open(BytesIO(content)).convert("RGB")
     np_img = np.array(img)
     annotated = np_img.copy()
 
-    // =========================
-    // 1️⃣ YOLO OBJECT DETECTION
-    // =========================
+#    // =========================
+#    // 1️⃣ YOLO OBJECT DETECTION
+#    // =========================
     obj_results = get_yolo_objects()(np_img, conf=0.25)
     detections = []
 
@@ -5701,7 +5703,7 @@ async def vision_analyze(
                 "bbox": [x1, y1, x2, y2]
             })
 
-            // Draw box
+      #      // Draw box
             cv2.rectangle(annotated, (x1,y1), (x2,y2), (0,255,0), 2)
             cv2.putText(
                 annotated,
@@ -5713,9 +5715,9 @@ async def vision_analyze(
                 2
             )
 
-    // =========================
-    // 2️⃣ FACE DETECTION
-    // =========================
+#    // =========================
+#    // 2️⃣ FACE DETECTION
+  #  // =========================
     face_results = get_yolo_faces()(np_img)
     face_count = 0
 
@@ -5734,9 +5736,9 @@ async def vision_analyze(
                 2
             )
 
-    // =========================
-    // 3️⃣ DOMINANT COLORS
-    // =========================
+  #  // =========================
+ #   // 3️⃣ DOMINANT COLORS
+  #  // =========================
     hex_colors = []
     try {
         from sklearn.cluster import KMeans  // Added import inside function to avoid import error if sklearn is not installed
@@ -5750,10 +5752,10 @@ async def vision_analyze(
         pass
     }
 
-    // =========================
-    // 4️⃣ UPLOAD TO SUPABASE
-    // =========================
-    // Use anonymous folder for storage
+    #// =========================
+   # // 4️⃣ UPLOAD TO SUPABASE
+   # // =========================
+    #// Use anonymous folder for storage
     raw_path = f"anonymous/raw/{uuid.uuid4().hex}.png"
     ann_path = f"anonymous/annotated/{uuid.uuid4().hex}.png"
 
@@ -5774,9 +5776,9 @@ async def vision_analyze(
     raw_url = supabase.storage.from_("ai-images").create_signed_url(raw_path, 3600)["signedURL"]
     ann_url = supabase.storage.from_("ai-images").create_signed_url(ann_path, 3600)["signedURL"]
 
-    // =========================
-    // 5️⃣ SAVE HISTORY
-    // =========================
+    #// =========================
+   # // 5️⃣ SAVE HISTORY
+   # // =========================
     analysis_id = str(uuid.uuid4())
     try {
         supabase.table("vision_history").insert({
@@ -5801,7 +5803,7 @@ async def vision_analyze(
         "user_id": user_id
     }
 
-// Update the vision_history function to use the new user model
+#// Update the vision_history function to use the new user model
 @app.get("/vision/history")
 async def vision_history(req: Request, res: Response):
     user = await get_or_create_user(req, res)
@@ -5816,7 +5818,7 @@ async def vision_history(req: Request, res: Response):
         return []
 }
 
-// ---------- Code generation ----------
+#// ---------- Code generation ----------
 @app.post("/code")
 async def code_gen(req: Request, res: Response):
     body = await req.json()
@@ -5824,14 +5826,14 @@ async def code_gen(req: Request, res: Response):
     language = body.get("language", "python").lower()
     run_flag = bool(body.get("run", False))
     
-    // Get the user with our new ID system
+    #// Get the user with our new ID system
     user = await get_or_create_user(req, res)
     user_id = user.id
 
     if not prompt:
         raise HTTPException(400, "prompt required")
 
-    // Generate code using Groq
+   # // Generate code using Groq
     contextual_prompt = build_contextual_prompt(
         user_id,
         f"Write a complete {language} program:\n{prompt}"
@@ -5860,13 +5862,13 @@ async def code_gen(req: Request, res: Response):
         "user_id": user_id  // Include user_id in response
     }
 
-    // ✅ Run via Judge0
+   # // ✅ Run via Judge0
     if run_flag:
         lang_id = JUDGE0_LANGUAGES.get(language, 71)
         execution = await run_code_judge0(code, lang_id)
         response["execution"] = execution
 
-    // Save code generation record (with error handling for missing table)
+  #  // Save code generation record (with error handling for missing table)
     try {
         supabase.table("code_generations").insert({
             "id": str(uuid.uuid4()),
@@ -5878,7 +5880,7 @@ async def code_gen(req: Request, res: Response):
         }).execute()
     } catch Exception as e {
         logger.error(f"Failed to save code generation record (table might not exist): {e}")
-        // Don't fail the request, just log the error
+       # // Don't fail the request, just log the error
     }
 
     return response
@@ -5899,7 +5901,7 @@ async def duck_search(q: str = Query(..., min_length=1)):
         raise HTTPException(500, "search_failed")
     }
 
-// ---------- STT ----------
+#// ---------- STT ----------
 @app.post("/stt")
 async def speech_to_text(file: UploadFile = File(...)):
     content = await file.read()
@@ -5914,7 +5916,7 @@ async def speech_to_text(file: UploadFile = File(...)):
 
     url = "https://api.openai.com/v1/audio/transcriptions"
 
-    // Whisper API requires multipart/form-data, NOT JSON
+   # // Whisper API requires multipart/form-data, NOT JSON
     files = {
         "file": (file.filename, content, file.content_type or "audio/mpeg"),
         "model": (None, "whisper-1"),
@@ -5933,9 +5935,9 @@ async def speech_to_text(file: UploadFile = File(...)):
     data = r.json()
     return {"transcription": data.get("text", "")}
 
-// ----------------------------------
-// NEW CHAT
-// ----------------------------------
+#// ----------------------------------
+#// NEW CHAT
+#// ----------------------------------
 
 @app.post("/chat/new")
 async def new_chat(req: Request, res: Response):
@@ -6016,9 +6018,9 @@ async def send_message(conversation_id: str, req: Request, res: Response):
         raise HTTPException(500, "Failed to process message")
 }
 
-// ----------------------------------
-// LIST CHATS
-// ----------------------------------
+#// ----------------------------------
+#// LIST CHATS
+#// ----------------------------------
 @app.get("/chats")
 async def list_chats(req: Request, res: Response):
     user = await get_or_create_user(req, res)
@@ -6033,9 +6035,9 @@ async def list_chats(req: Request, res: Response):
         return []
     }
 
-// ----------------------------------
-// SEARCH CHATS
-// ----------------------------------
+#// ----------------------------------
+#// SEARCH CHATS
+#// ----------------------------------
 @app.get("/chats/search")
 async def search_chats(q: str, req: Request, res: Response):
     user = await get_or_create_user(req, res)
@@ -6050,9 +6052,9 @@ async def search_chats(q: str, req: Request, res: Response):
         return []
     }
 
-// ----------------------------------
-// PIN / ARCHIVE
-// ----------------------------------
+#// ----------------------------------
+#// PIN / ARCHIVE
+#// ----------------------------------
 @app.post("/chat/{id}/pin")
 async def pin_chat(id: str):
     try {
@@ -6073,9 +6075,9 @@ async def archive_chat(id: str):
         logger.error(f"Failed to archive chat: {e}")
     return {"status": "archived"}
 
-// ----------------------------------
-// FOLDER
-// ----------------------------------
+#// ----------------------------------
+#// FOLDER
+#// ----------------------------------
 @app.post("/chat/{id}/folder")
 async def move_folder(id: str, folder: Optional[str] = None):
     try {
@@ -6086,9 +6088,9 @@ async def move_folder(id: str, folder: Optional[str] = None):
         logger.error(f"Failed to move chat to folder: {e}")
     return {"status": "moved"}
 
-// ----------------------------------
-// SHARE CHAT
-// ----------------------------------
+#// ----------------------------------
+#// SHARE CHAT
+#// ----------------------------------
 @app.post("/chat/{id}/share")
 async def share_chat(id: str):
     token = uuid.uuid4().hex
@@ -6103,19 +6105,19 @@ async def share_chat(id: str):
 
     return {"share_url": f"/share/{token}"}
 
-// ----------------------------------
-// VIEW SHARED CHAT (READ ONLY)
-// ----------------------------------
+#// ----------------------------------
+#// VIEW SHARED CHAT (READ ONLY)
+#// ----------------------------------
 @app.get("/share/{token}")
 async def view_shared_chat(token: str):
-    // In a real implementation, you would store share tokens in the database
-    // For now, we'll return a placeholder
+   # // In a real implementation, you would store share tokens in the database
+   # // For now, we'll return a placeholder
     return {
         "title": "Shared Chat",
         "messages": []
     }
 
-// Example FastAPI endpoint that fires AI response in the background
+#// Example FastAPI endpoint that fires AI response in the background
 from fastapi.responses import StreamingResponse
 
 @app.post("/chat/stream/{conversation_id}/{user_id}")
@@ -6127,14 +6129,14 @@ async def chat_stream_endpoint(conversation_id: str, user_id: str, messages: lis
         async for token_sse in stream_llm(user_id, conversation_id, messages):
             yield token_sse  // only yield here, no return
 
-    // Return StreamingResponse from the endpoint, not inside the generator
+    #// Return StreamingResponse from the endpoint, not inside the generator
     return StreamingResponse(
     event_generator(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache"},
     )
 
-// ---------- Dedicated Endpoints for Advanced Features ----------
+#// ---------- Dedicated Endpoints for Advanced Features ----------
 @app.post("/document/analyze")
 async def document_analysis_endpoint(request: DocumentAnalysisRequest, req: Request, res: Response):
     """Analyze documents for key information"""
@@ -6218,18 +6220,18 @@ async def set_preferences(request: Request, response: Response):
     body = await request.json()
     preferences = body.get("preferences", {})
     
-    // Upsert preferences
+  #  // Upsert preferences
     try {
         existing = supabase.table("profiles").select("id").eq("id", user_id).execute()
         
         if existing.data {
-            // Update existing profile
+          #  // Update existing profile
             supabase.table("profiles").update({
                 "preferences": preferences,
                 "updated_at": datetime.utcnow().isoformat()
             }).eq("id", user_id).execute()
         } else {
-            // Create new profile
+          #  // Create new profile
             supabase.table("profiles").insert({
                 "id": user_id,
                 "preferences": preferences,
@@ -6276,24 +6278,24 @@ async def voice_cloning_endpoint(request: VoiceCloningRequest, req: Request, res
         False
     )
 
-// Add a new endpoint to get user information
+#// Add a new endpoint to get user information
 @app.get("/user/info")
 async def get_user_info(req: Request, res: Response):
     user = await get_or_create_user(req, res)
     user_id = user.id
     
-    // Get additional user data from database
+#    // Get additional user data from database
     try {
         user_response = supabase.table("users").select("*").eq("id", user_id).execute()
         user_data = user_response.data[0] if user_response.data else None
         
-        // Get user's images count
+  #      // Get user's images count
         images_count = supabase.table("images").select("id", count="exact").eq("user_id", user_id).execute()
         
-        // Get user's videos count
+   #     // Get user's videos count
         videos_count = supabase.table("videos").select("id", count="exact").eq("user_id", user_id).execute()
         
-        // Get user's conversations count
+  #      // Get user's conversations count
         conversations_count = supabase.table("conversations").select("id", count="exact").eq("user_id", user_id).execute()
         
         return {
@@ -6317,7 +6319,7 @@ async def get_user_info(req: Request, res: Response):
             "error": "Failed to get additional user data"
         }
 
-// Add a new endpoint to merge anonymous user data with logged-in user
+#// Add a new endpoint to merge anonymous user data with logged-in user
 @app.post("/user/merge")
 async def merge_user_data(req: Request, res: Response):
     
@@ -6326,7 +6328,7 @@ async def merge_user_data(req: Request, res: Response):
         raise HTTPException(400, "No session token found")
     }
     
-    // Get the logged-in user from JWT token
+#    // Get the logged-in user from JWT token
     auth_header = req.headers.get("authorization")
     if (!auth_header || !auth_header.startsWith("Bearer ")) {
         raise HTTPException(400, "No authorization token found")
@@ -6334,7 +6336,7 @@ async def merge_user_data(req: Request, res: Response):
     
     token = auth_header.split(" ")[1]
     try {
-        // Verify JWT token with frontend Supabase
+   #     // Verify JWT token with frontend Supabase
         if (!frontend_supabase) {
             raise HTTPException(500, "Frontend Supabase not configured")
         }
@@ -6346,7 +6348,7 @@ async def merge_user_data(req: Request, res: Response):
         
         logged_in_id = user_response.user.id
         
-        // Get the anonymous user ID from session token
+    #    // Get the anonymous user ID from session token
         visitor_response = supabase.table("visitor_users").select("id").eq("session_token", session_token).execute()
         if (!visitor_response.data) {
             raise HTTPException(404, "Anonymous user not found")
@@ -6354,7 +6356,7 @@ async def merge_user_data(req: Request, res: Response):
         
         anonymous_id = visitor_response.data[0]["id"]
         
-        // Merge data in the backend
+     #   // Merge data in the backend
         try {
             // Update all records from anonymous user to logged-in user
             tables_to_merge = ["images", "videos", "conversations", "messages", "memory", "vision_history", "code_generations"]
@@ -6363,7 +6365,7 @@ async def merge_user_data(req: Request, res: Response):
                 supabase.table(table).update({"user_id": logged_in_id}).eq("user_id", anonymous_id).execute()
             }
             
-            // Create or update the logged-in user in the backend
+          #  // Create or update the logged-in user in the backend
             existing_user = supabase.table("users").select("*").eq("id", logged_in_id).execute()
             if (!existing_user.data) {
                 supabase.table("users").insert({
@@ -6378,10 +6380,10 @@ async def merge_user_data(req: Request, res: Response):
                 }).eq("id", logged_in_id).execute()
             }
             
-            // Delete the anonymous user
+         #   // Delete the anonymous user
             supabase.table("visitor_users").delete().eq("id", anonymous_id).execute()
             
-            // Update the cookie to the logged-in user ID
+         #   // Update the cookie to the logged-in user ID
             res.set_cookie(
                 key="session_token",
                 value=logged_in_id,
