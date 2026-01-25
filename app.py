@@ -157,9 +157,9 @@ class UserIdentityService:
         # 1️⃣ Try existing visitor via cookie
         session_token = request.cookies.get("session_token")
         if session_token:
-    try:
-        visitor_resp = await asyncio.to_thread(
-            lambda: (
+            try:
+               visitor_resp = await asyncio.to_thread(
+                   lambda: (
                 self.supabase
                 .table("visitor_users")
                 .select("id, device_fingerprint, session_token")
