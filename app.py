@@ -160,14 +160,14 @@ class UserIdentityService:
             try:
                visitor_resp = await asyncio.to_thread(
                    lambda: (
-                self.supabase
-                .table("visitor_users")
-                .select("id, device_fingerprint, session_token")
-                .eq("session_token", session_token)
-                .limit(1)
-                .execute()
-            )
-        )
+                       self.supabase
+                       .table("visitor_users")
+                       .select("id, device_fingerprint, session_token")
+                       .eq("session_token", session_token)
+                       .limit(1)
+                       .execute()
+                   )
+               )
 
         if visitor_resp.data:
             v = visitor_resp.data[0]
