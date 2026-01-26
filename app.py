@@ -4728,7 +4728,7 @@ async def ask_universal(request: Request, response: Response):
 
             if visitor_resp.data:
                 v = visitor_resp.data[0]
-                return User(
+                    yield User(
                     id=v["id"],
                     anonymous=True,
                     session_token=v["session_token"],
