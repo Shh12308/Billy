@@ -5209,10 +5209,10 @@ async def regenerate(req: Request, res: Response, tts: bool = False, samples: in
 
             yield sse({"status": "done"})
 
-        } catch asyncio.CancelledError:
-            logger.info(f"Regenerate cancelled for user {user_id}")
-            yield sse({"status": "stopped"})
-            raise
+        except asyncio.CancelledError:
+    logger.info(f"Regenerate cancelled for user {user_id}")
+    yield sse({"status": "stopped"})
+    raise
 
         finally:
        #     // ✅ CLEANUP
