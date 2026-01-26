@@ -3007,7 +3007,7 @@ async def image_generation_handler(prompt: str, user_id: str, stream: bool = Fal
                 samples = 1
                 sample_match = re.search(r'(\d+)\s+(image|images)', prompt.lower())
                 if sample_match:
-                    samples = min(int(sample_match.group(1)), 4)  // Cap at 4 images
+                    samples = min(int(sample_match.group(1)), 4)  #// Cap at 4 images
                 
                 #// Generate the image
                 result = await _generate_image_core(prompt, samples, user_id, return_base64=False)
