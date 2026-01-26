@@ -4991,7 +4991,7 @@ def build_response(messages, conversation_id, supabase):
 
     background_tasks.add_task(safe_generate)
 
-    return {
+    yield {
         "status": "processing",
         "conversation_id": conversation_id,
         "user_id": user_id
