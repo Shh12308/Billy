@@ -3472,7 +3472,7 @@ async def send_message_handler(prompt: str, user_id: str, stream: bool = False):
              #   // Stream the reply
                 for char in reply:
                     yield sse({"type": "token", "text": char})
-                    await asyncio.sleep(0.01)  // Small delay for streaming effect
+                    await asyncio.sleep(0.01) # // Small delay for streaming effect
 
              #   // Save assistant reply
                 reply_id = str(uuid.uuid4())
@@ -3674,7 +3674,7 @@ async def move_folder_handler(prompt: str, user_id: str, stream: bool = False):
     if conv_match:
         conv_id = conv_match.group(1)
     
-    // Extract folder from prompt
+  #  // Extract folder from prompt
     folder = None
     folder_match = re.search(r'folder[:\s]+(.+)', prompt.lower())
     if folder_match:
