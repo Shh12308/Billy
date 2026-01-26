@@ -475,7 +475,7 @@ async def _generate_image_core(
     payload = {
         "model": "dall-e-3",
         "prompt": prompt,
-        "n": 1,  // DALL·E 3 supports only 1 image
+        "n": 1, # // DALL·E 3 supports only 1 image
         "size": "1024x1024",
         "response_format": "b64_json"
     }
@@ -536,7 +536,7 @@ async def _generate_image_core(
     return {
         "provider": provider_used,
         "images": urls,
-        "user_id": user_id  // Include user_id in response
+        "user_id": user_id  #// Include user_id in response
     }
 
 # Fixed generate_video_internal function to store in anonymous folder
@@ -648,7 +648,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:9898"],  // frontend URL
+    allow_origins=["http://localhost:9898"], # // frontend URL
     allow_credentials=True, 
     allow_methods=["*"],
     allow_headers=["*"],
@@ -680,7 +680,7 @@ logger.info(f"GROQ key present: {bool(GROQ_API_KEY)}")
 # Models
 # -------------------
 CHAT_MODEL = os.getenv("CHAT_MODEL", "llama-3.1-8b-instant")
-GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"  // Added missing URL
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions" # // Added missing URL
 
 # TTS/STT are handled via ElevenLabs now
 TTS_MODEL = None
@@ -902,7 +902,7 @@ def extract_entities(text):
         "numbers": re.findall(r'\b\d+(?:\.\d+)?\b', text),
         "money": re.findall(r'\$\d+(?:\.\d+)?|\d+(?:\.\d+)?\s*(?:USD|EUR|GBP|dollars?|euros?|pounds?)', text)
     }
-    return {k: v for k, v in entities.items() if v}  // Remove empty lists
+    return {k: v for k, v in entities.items() if v}  #// Remove empty lists
 
 def extract_keywords(text, num_keywords=10):
     """Extract keywords from text using TF-IDF"""
@@ -912,7 +912,7 @@ def extract_keywords(text, num_keywords=10):
         feature_names = vectorizer.get_feature_names_out()
         tfidf_scores = tfidf_matrix.toarray()[0]
         
-        // Get top keywords
+      #  // Get top keywords
         top_indices = tfidf_scores.argsort()[-num_keywords:][::-1]
         keywords = [(feature_names[i], tfidf_scores[i]) for i in top_indices]
         
