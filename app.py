@@ -449,7 +449,7 @@ def upload_image_to_supabase(image_bytes: bytes, filename: str, user_id: str):
 
     return upload
 
-// --- FIX 2: Add content moderation check before calling OpenAI ---
+#// --- FIX 2: Add content moderation check before calling OpenAI ---
 # Fixed _generate_image_core function to use the updated upload function
 async def _generate_image_core(
     prompt: str,
@@ -460,14 +460,14 @@ async def _generate_image_core(
     if not OPENAI_API_KEY:
         raise HTTPException(500, "Missing OPENAI_API_KEY")
 
-    // --- FIX 2: Screen prompt for policy violations ---
+  #  // --- FIX 2: Screen prompt for policy violations ---
     is_flagged = await nsfw_check(prompt)
     if is_flagged:
         raise HTTPException(
             status_code=400, 
             detail="Image generation prompt violates content policy."
         )
-    // --- END OF FIX 2 ---
+    #// --- END OF FIX 2 ---
 
     provider_used = "openai"
     urls = []
@@ -485,7 +485,7 @@ async def _generate_image_core(
         "content-type": "application/json"
     }
 
-    // ---------- CALL OPENAI ----------
+  #  // ---------- CALL OPENAI ----------
     try:
         async with httpx.AsyncClient(timeout=120.0) as client:
             r = await client.post(
@@ -500,12 +500,12 @@ async def _generate_image_core(
         logger.exception("OpenAI image API call failed")
         raise HTTPException(500, "Image generation provider error")
 
-    // ---------- VALIDATE ----------
+ #   // ---------- VALIDATE ----------
     if not result or not result.get("data"):
         logger.error("OpenAI returned empty image response: %s", result)
         raise HTTPException(500, "Image generation failed")
 
-    // ---------- PROCESS IMAGES ----------
+ #   // ---------- PROCESS IMAGES ----------
     for img in result["data"]:
         try:
             b64 = img.get("b64_json")
