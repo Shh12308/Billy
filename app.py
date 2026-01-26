@@ -3188,7 +3188,7 @@ async def video_generation_handler(prompt: str, user_id: str, stream: bool = Fal
     samples = 1
     sample_match = re.search(r'(\d+)\s+(video|videos)', prompt.lower())
     if sample_match:
-        samples = min(int(sample_match.group(1)), 2)  // Cap at 2 videos
+        samples = min(int(sample_match.group(1)), 2) #  // Cap at 2 videos
     
     if stream:
         async def event_generator():
