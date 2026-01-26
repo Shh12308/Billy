@@ -1973,7 +1973,7 @@ def generate_random_nickname():
 #// ---------- Advanced Feature Implementations ----------
 async def document_analysis(prompt: str, user_id: str, stream: bool = False):
     """Analyze documents for key information"""
-    // Extract text from prompt
+  #  // Extract text from prompt
     text_match = re.search(r'document[:\s]+(.*?)(?:\n\n|\n$|$)', prompt, re.DOTALL | re.IGNORECASE)
     if not text_match:
         raise HTTPException(400, "No document text found in prompt")
