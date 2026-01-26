@@ -847,7 +847,7 @@ if not JUDGE0_KEY:
 # ---------- Pydantic Models ----------
 class DocumentAnalysisRequest(BaseModel):
     text: str
-    analysis_type: str = "summary"  // summary, entities, sentiment, keywords
+    analysis_type: str = "summary" # // summary, entities, sentiment, keywords
 
 class TranslationRequest(BaseModel):
     text: str
@@ -882,12 +882,12 @@ class PersonalizationRequest(BaseModel):
     behavior_patterns: Dict[str, Any] = {}
 
 class DataVisualizationRequest(BaseModel):
-    data: str  // JSON or CSV format
-    chart_type: str = "auto"  // auto, bar, line, pie, scatter, heatmap
+    data: str  #// JSON or CSV format
+    chart_type: str = "auto"  #// auto, bar, line, pie, scatter, heatmap
     options: Dict[str, Any] = {}
 
 class VoiceCloningRequest(BaseModel):
-    voice_sample: str  // Base64 encoded audio
+    voice_sample: str # // Base64 encoded audio
     text: str
     voice_name: str
 
