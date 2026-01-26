@@ -4911,7 +4911,7 @@ async def ask_universal(request: Request, response: Response):
                 "max_tokens": 1500
             }
 
-            try {
+            try :
                 async with httpx.AsyncClient(timeout=None) as client:
                     async with client.stream(
                         "POST",
