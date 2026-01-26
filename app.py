@@ -189,7 +189,7 @@ class UserIdentityService:
         anonymous_uuid = anonymous_info["uuid"]
         nickname = anonymous_info["friendly_name"]
 
-        // --- FIX 1: Handle duplicate nickname error gracefully ---
+       # // --- FIX 1: Handle duplicate nickname error gracefully ---
         try:
             await asyncio.to_thread(
                 lambda: self.supabase.table("visitor_users")
@@ -243,7 +243,7 @@ class UserIdentityService:
             # Re-raise the exception to prevent the app from continuing in an invalid state
             raise HTTPException(status_code=500, detail="Could not identify user.")
 
-        // --- END OF FIX 1 ---
+       # // --- END OF FIX 1 ---
 
         # 3️⃣ Set cookie
         response.set_cookie(
