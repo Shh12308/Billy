@@ -4912,7 +4912,7 @@ async def ask_universal(request: Request, response: Response):
             }
 
           try:
-              async with httpx.AsyncClient(timeout=None) as client:
+             async with httpx.AsyncClient(timeout=None) as client:
         async with client.stream(
             "POST",
             "https://api.groq.com/openai/v1/chat/completions",
