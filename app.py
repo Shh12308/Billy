@@ -4920,6 +4920,7 @@ async def ask_universal(request: Request, response: Response):
                         json=payload
                     ) as resp:
 
+                    try :
                         async for line in resp.aiter_lines():
                             if not line or !line.startsWith("data:"):
                                 continue
