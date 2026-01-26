@@ -4727,13 +4727,13 @@ async def ask_universal(request: Request, response: Response):
             )
 
             if visitor_resp.data:
-                v = visitor_resp.data[0]
-                    yield User(
-                    id=v["id"],
-                    anonymous=True,
-                    session_token=v["session_token"],
-                    device_fingerprint=v.get("device_fingerprint"),
-                )
+    v = visitor_resp.data[0]
+    yield User(
+        id=v["id"],
+        anonymous=True,
+        session_token=v["session_token"],
+        device_fingerprint=v.get("device_fingerprint"),
+    )
 
         except Exception as e:
             logger.warning(f"Visitor lookup failed: {e}")
