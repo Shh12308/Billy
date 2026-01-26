@@ -4709,7 +4709,7 @@ async def ask_universal(request: Request, response: Response):
     
     role = body.get("role", "user")
     stream = bool(body.get("stream", False))
-    conversation_id = body.get("conversation_id")  // Get conversation_id from request body
+    conversation_id = body.get("conversation_id") #  // Get conversation_id from request body
 
     session_token = request.cookies.get("session_token")
 
