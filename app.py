@@ -5548,7 +5548,7 @@ async def text_to_speech(request: Request):
 
     payload = {
         "model": "tts-1", 
-        "voice": "alloy",  // default voice
+        "voice": "alloy", # // default voice
         "input": text.strip(),
         "format": "mp3"
     }
@@ -6389,7 +6389,7 @@ async def merge_user_data(req: Request, res: Response):
                 value=logged_in_id,
                 httponly=True,
                 samesite="lax",
-                max_age=60 * 60 * 24 * 30  // 30 days
+                max_age=60 * 60 * 24 * 30  #// 30 days
             )
             
             return {"status": "success", "message": "User data merged successfully"}
