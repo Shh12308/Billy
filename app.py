@@ -4898,7 +4898,7 @@ async def ask_universal(request: Request, response: Response):
     if stream:
 
         async def event_generator(messages, conversation_id, supabase):
-    assistant_reply = ""
+            assistant_reply = ""
     yield sse({"type": "starting"})
     yield ": heartbeat\n\n"
 
