@@ -4912,13 +4912,18 @@ async def ask_universal(request: Request, response: Response):
             }
 
           try:
-              async with httpx.AsyncClient(timeout=None) as client:
-                  async with client.stream(
-                      "POST",
-                      "https://api.groq.com/openai/v1/chat/completions",
-                      headers=get_groq_headers(),
-                      json=payload
-                  ) as resp:
+               async with httpx.AsyncClient(timeout=None) as client:
+               async with client.stream(
+            "POST",
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers=get_groq_headers(),
+            json=payload
+        ) as resp:
+            # handle the response
+            data = await resp.aread()
+            print(data)
+except Exception as e:
+    print(f"Error: {e}")
 
             try:
                 async for line in resp.aiter_lines():
