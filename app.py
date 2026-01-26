@@ -4897,47 +4897,41 @@ async def ask_universal(request: Request, response: Response):
   #  // -------------------------------
     if stream:
 
-        async def event_generator():
-            assistant_reply = ""
-            yield sse({"type": "starting"})
-            yield ": heartbeat\n\n"
+        async def event_generator(messages, conversation_id, supabase):
+    assistant_reply = ""
+    yield sse({"type": "starting"})
+    yield ": heartbeat\n\n"
 
-            payload = {
-                "model": CHAT_MODEL,
-                "messages": messages,
-                "tools": TOOLS,
-                "tool_choice": "auto",
-                "stream": True,
-                "max_tokens": 1500
-            }
+    payload = {
+        "model": CHAT_MODEL,
+        "messages": messages,
+        "tools": TOOLS,
+        "tool_choice": "auto",
+        "stream": True,
+        "max_tokens": 1500
+    }
 
-try:
-    async with httpx.AsyncClient(timeout=None) as client:
-        async with client.stream(
-            "POST",
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers=get_groq_headers(),
-            json=payload
-        ) as resp:
-            # handle response here
-            data = await resp.aread()
-            print(data)
-except Exception as e:
-    print(f"Error: {e}")
+    try:
+        async with httpx.AsyncClient(timeout=None) as client:
+            async with client.stream(
+                "POST",
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers=get_groq_headers(),
+                json=payload
+            ) as resp:
 
-            try:
                 async for line in resp.aiter_lines():
                     if not line or not line.startswith("data:"):
                         continue
 
-                    data = line[5:].strip()
-                    if data == "[DONE]":
+                    data_line = line[5:].strip()
+                    if data_line == "[DONE]":
                         break
 
                     try:
-                        chunk = json.loads(data)
+                        chunk = json.loads(data_line)
 
-                        # Fixed: Check if chunk has choices before accessing
+                        # Handle normal token stream
                         if "choices" in chunk and len(chunk["choices"]) > 0:
                             delta = chunk["choices"][0].get("delta", {})
                             content = delta.get("content")
@@ -4945,7 +4939,7 @@ except Exception as e:
                                 assistant_reply += content
                                 yield sse({"type": "token", "text": content})
 
-                        # Handle error messages in the stream
+                        # Handle errors in the stream
                         elif "error" in chunk:
                             error_msg = chunk["error"].get("message", "Unknown error")
                             yield sse({"type": "error", "message": error_msg})
@@ -4956,34 +4950,35 @@ except Exception as e:
                     except Exception as e:
                         logger.error(f"Error processing stream chunk: {e}")
                         continue
-            except Exception as e:
-                logger.error(f"Stream error: {e}")
-except Exception as e:
-    logger.error(f"HTTP client error: {e}")
 
-            finally:
-                if assistant_reply.strip():
-                    await asyncio.to_thread(
-                        lambda: supabase.table("messages")
-                        .insert({
-                            "conversation_id": conversation_id,
-                            "role": "assistant", # --- FIX 3: Corrected role ---
-                            "content": assistant_reply
-                        })
-                        .execute()
-                    )
+    except Exception as e:
+        logger.error(f"HTTP client error: {e}")
 
-                yield sse({"type": "done"})
+    finally:
+        # Save final assistant reply
+        if assistant_reply.strip():
+            await asyncio.to_thread(
+                lambda: supabase.table("messages")
+                .insert({
+                    "conversation_id": conversation_id,
+                    "role": "assistant",
+                    "content": assistant_reply
+                })
+                .execute()
+            )
+        yield sse({"type": "done"})
 
-        return StreamingResponse(
-            event_generator(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "connection": "keep-alive",
-                "x-accel-buffering": "no"
-            }
-        )
+
+def build_response(messages, conversation_id, supabase):
+    return StreamingResponse(
+        event_generator(messages, conversation_id, supabase),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "connection": "keep-alive",
+            "x-accel-buffering": "no"
+        }
+    )
 
   #  // -------------------------------
   #  // NON-STREAM MODE
