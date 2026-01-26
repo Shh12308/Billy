@@ -1369,10 +1369,10 @@ async def duckduckgo_search(q: str):
       #  // RelatedTopics can contain nested topics or single items; handle both.
         for item in data.get("RelatedTopics", []):
             if isinstance(item, dict):
-                // Some items are like {"Text": "...", "FirstURL": "..."}
+                #// Some items are like {"Text": "...", "FirstURL": "..."}
                 if item.get("Text"):
                     results.append({"title": item.get("Text"), "url": item.get("FirstURL")})
-                // Some are category blocks with "Topics" list
+               # // Some are category blocks with "Topics" list
                 elif item.get("Topics"):
                     for t in item.get("Topics", []):
                         if t.get("Text"):
