@@ -4911,46 +4911,50 @@ async def ask_universal(request: Request, response: Response):
                 "max_tokens": 1500
             }
 
+          try:
+    async with httpx.AsyncClient(timeout=None) as client:
+        async with client.stream(
+            "POST",
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers=get_groq_headers(),
+            json=payload
+        ) as resp:
+
             try:
-                async with httpx.AsyncClient(timeout=None) as client:
-                    async with client.stream(
-                        "POST",
-                        "https://api.groq.com/openai/v1/chat/completions",
-                        headers=get_groq_headers(),
-                        json=payload
-                    ) as resp:
+                async for line in resp.aiter_lines():
+                    if not line or not line.startswith("data:"):
+                        continue
+
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
 
                     try:
-                        async for line in resp.aiter_lines():
-                            if not line or not line.startswith("data:"):
-                                continue
+                        chunk = json.loads(data)
 
-                            data = line[5:].strip()
-                            if data == "[DONE]":
-                                break
+                        # Fixed: Check if chunk has choices before accessing
+                        if "choices" in chunk and len(chunk["choices"]) > 0:
+                            delta = chunk["choices"][0].get("delta", {})
+                            content = delta.get("content")
+                            if content:
+                                assistant_reply += content
+                                yield sse({"type": "token", "text": content})
 
-                            try:
-                                chunk = json.loads(data)
-                                
-                            #    // Fixed: Check if chunk has choices before accessing
-                                if "choices" in chunk and len(chunk["choices"]) > 0:
-                                    delta = chunk["choices"][0].get("delta", {})
-                                    content = delta.get("content")
-                                    if content:
-                                        assistant_reply += content
-                                        yield sse({"type": "token", "text": content})
-                                
-                             #   // Handle error messages in the stream
-                                elif "error" in chunk:
-                                    error_msg = chunk["error"].get("message", "Unknown error")
-                                    yield sse({"type": "error", "message": error_msg})
-                                    break
-                                    
-                            except json.JSONDecodeError:
-                                continue
-                            except Exception as e:
-                                logger.error(f"Error processing stream chunk: {e}")
-                                continue
+                        # Handle error messages in the stream
+                        elif "error" in chunk:
+                            error_msg = chunk["error"].get("message", "Unknown error")
+                            yield sse({"type": "error", "message": error_msg})
+                            break
+
+                    except json.JSONDecodeError:
+                        continue
+                    except Exception as e:
+                        logger.error(f"Error processing stream chunk: {e}")
+                        continue
+            except Exception as e:
+                logger.error(f"Stream error: {e}")
+except Exception as e:
+    logger.error(f"HTTP client error: {e}")
 
             finally:
                 if assistant_reply.strip():
