@@ -1420,7 +1420,7 @@ def build_contextual_prompt(user_id: str, message: str) -> str:
         
      #   // Build context from messages
         context = "Recent conversation:\n"
-        for msg in reversed(msg_response.data):  // Reverse to show chronological order
+        for msg in reversed(msg_response.data): # // Reverse to show chronological order
             context += f"{msg['role']}: {msg['content']}\n"
         
      #   // Get user preferences if they exist
@@ -1479,7 +1479,7 @@ def get_or_create_conversation(user_id: str) -> str:
         return conversation_id
     except Exception as e:
         logger.error(f"Failed to get or create conversation: {e}")
-        return str(uuid.uuid4())  // Fallback
+        return str(uuid.uuid4())  #// Fallback
         
 
 def build_system_prompt(artifact: Union[str, None]):
