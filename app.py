@@ -4911,15 +4911,15 @@ async def ask_universal(request: Request, response: Response):
                 "max_tokens": 1500
             }
 
-          try:
-               async with httpx.AsyncClient(timeout=None) as client:
-               async with client.stream(
+try:
+    async with httpx.AsyncClient(timeout=None) as client:
+        async with client.stream(
             "POST",
             "https://api.groq.com/openai/v1/chat/completions",
             headers=get_groq_headers(),
             json=payload
         ) as resp:
-            # handle the response
+            # handle response here
             data = await resp.aread()
             print(data)
 except Exception as e:
