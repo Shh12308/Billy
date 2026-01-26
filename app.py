@@ -4911,7 +4911,7 @@ async def ask_universal(request: Request, response: Response):
                 "max_tokens": 1500
             }
 
-            try :
+            try:
                 async with httpx.AsyncClient(timeout=None) as client:
                     async with client.stream(
                         "POST",
@@ -4920,9 +4920,9 @@ async def ask_universal(request: Request, response: Response):
                         json=payload
                     ) as resp:
 
-                    try :
+                    try:
                         async for line in resp.aiter_lines():
-                            if not line or !line.startsWith("data:"):
+                            if not line or not line.startswith("data:"):
                                 continue
 
                             data = line[5:].strip()
@@ -4958,7 +4958,7 @@ async def ask_universal(request: Request, response: Response):
                         lambda: supabase.table("messages")
                         .insert({
                             "conversation_id": conversation_id,
-                            "role": "assistant", // --- FIX 3: Corrected role ---
+                            "role": "assistant", # --- FIX 3: Corrected role ---
                             "content": assistant_reply
                         })
                         .execute()
@@ -5042,7 +5042,7 @@ async def edit_message(
 async def stream_endpoint():
     async def event_generator():
         for i in range(1, 6):
-            // Check if client disconnected
+            # Check if client disconnected
             if await request.is_disconnected():
                 break
             yield sse({"message": f"This is chunk {i}"})
@@ -5115,7 +5115,7 @@ async def regenerate(req: Request, res: Response, tts: bool = False, samples: in
         try:
         #    // --- IMAGE (OPTIONAL) ---
             if any(w in prompt.lower() for w in ("image", "draw", "illustrate", "painting", "art", "picture")):
-                try {
+                try:
                     yield sse({"status": "image_start", "message": "Regenerating image"})
 
                     img_payload = {
@@ -5136,7 +5136,7 @@ async def regenerate(req: Request, res: Response, tts: bool = False, samples: in
 
                     yield sse({"status": "image_done"})
 
-                } catch Exception:
+                except Exception:
                     logger.exception("Image regenerate failed")
                     yield sse({"status": "image_error"})
 
@@ -5160,7 +5160,7 @@ async def regenerate(req: Request, res: Response, tts: bool = False, samples: in
                     json=payload
                 ) as resp:
                     async for line in resp.aiter_lines():
-                        if not line.startsWith("data:"):
+                        if not line.startswith("data:"):
                             continue
 
                         data = line[len("data:"):].strip()
@@ -5174,7 +5174,7 @@ async def regenerate(req: Request, res: Response, tts: bool = False, samples: in
 
         #    // --- TTS (OPTIONAL) ---
             if tts:
-                try {
+                try:
                     tts_payload = {
                         "model": "tts-1",
                         "voice": "alloy",
@@ -5204,23 +5204,23 @@ async def regenerate(req: Request, res: Response, tts: bool = False, samples: in
                         "audio": base64.b64encode(audio_buffer).decode()
                     })
 
-                } catch Exception:
+                except Exception:
                     logger.exception("TTS regenerate failed")
                     yield sse({"status": "tts_error"})
 
             yield sse({"status": "done"})
 
         except asyncio.CancelledError:
-    logger.info(f"Regenerate cancelled for user {user_id}")
-    yield sse({"status": "stopped"})
-    raise
+            logger.info(f"Regenerate cancelled for user {user_id}")
+            yield sse({"status": "stopped"})
+            raise
 
         finally:
        #     // ✅ CLEANUP
             active_streams.pop(user_id, None)
-            try {
+            try:
                 supabase.table("active_streams").delete().eq("user_id", user_id).execute()
-            } catch Exception as e:
+            except Exception as e:
                 logger.error(f"Failed to cleanup active stream: {e}")
 
     return StreamingResponse(
@@ -5233,7 +5233,7 @@ async def regenerate(req: Request, res: Response, tts: bool = False, samples: in
         }
     )
 
-// Fixed the syntax error in the video endpoint
+# Fixed the syntax error in the video endpoint
 @app.post("/video")
 async def generate_video(request: Request):
     """
@@ -5244,7 +5244,7 @@ async def generate_video(request: Request):
     prompt = body.get("prompt", "").strip()
     user = await get_or_create_user(request, Response())
     user_id = user.id
-    samples = max(1, int(body.get("samples", 1)))  // Fixed missing closing parenthesis
+    samples = max(1, int(body.get("samples", 1)))  # Fixed missing closing parenthesis
 
     if not prompt:
         raise HTTPException(400, "prompt required")
@@ -5253,10 +5253,10 @@ async def generate_video(request: Request):
 
     video_urls = []
 
-    try {
+    try:
         async with httpx.AsyncClient(timeout=600.0) as client:
             headers = {"Authorization": f"Bearer {HF_API_KEY}"}
-            for _ in range(samples) {
+            for _ in range(samples):
                 payload = {"inputs": prompt}
 
                 r = await client.post(
@@ -5292,7 +5292,7 @@ async def generate_video(request: Request):
                 signed = supabase.storage.from_("ai-videos").create_signed_url(storage_path, 60*60)
                 video_urls.append(signed["signedURL"])
 
-    } catch Exception as e {
+    except Exception as e:
         raise HTTPException(500, f"Video generation failed: {str(e)}")
 
     if not video_urls:
@@ -5307,11 +5307,10 @@ async def image_gen(request: Request):
     user = await get_or_create_user(request, Response())
     user_id = user.id
 
-    try {
+    try:
         samples = max(1, int(body.get("samples", 1)))
-    } catch Exception {
+    except Exception:
         samples = 1
-    }
 
     return_base64 = bool(body.get("base64", False))
 
@@ -5351,11 +5350,10 @@ async def image_stream(req: Request, res: Response):
     body = await req.json()
     prompt = body.get("prompt", "")
 
-    try {
+    try:
         samples = max(1, int(body.get("samples", 1)))
-    } catch Exception {
+    except Exception:
         samples = 1
-    }
 
     return_base64 = bool(body.get("base64", False))
 
@@ -5375,16 +5373,16 @@ async def image_stream(req: Request, res: Response):
 
     #    // Also register in database
         stream_id = str(uuid.uuid4())
-        try {
+        try:
             supabase.table("active_streams").insert({
                 "user_id": user_id,
                 "stream_id": stream_id,
                 "started_at": datetime.now().isoformat()
             }).execute()
-        } catch Exception as e:
+        except Exception as e:
             logger.error(f"Failed to register stream: {e}")
 
-        try {
+        try:
         #    // --- initial message ---
             yield sse({"status": "starting", "message": "Preparing request"})
             await asyncio.sleep(0)
@@ -5422,7 +5420,7 @@ async def image_stream(req: Request, res: Response):
             urls = []
 
             data_list = jr.get("data", [])
-            if !data_list:
+            if not data_list:
                 yield sse({"status": "warning", "message": "No data returned from provider"})
 
             for i, d in enumerate(data_list, start=1):
@@ -5433,11 +5431,10 @@ async def image_stream(req: Request, res: Response):
                 await asyncio.sleep(0)
 
                 b64 = d.get("b64_json")
-                if (!b64) {
+                if not b64:
                     continue
-                }
 
-                try {
+                try:
                     image_bytes = base64.b64decode(b64)
                     filename = f"{unique_filename('png')}"
                  #   // Upload to anonymous folder
@@ -5448,7 +5445,7 @@ async def image_stream(req: Request, res: Response):
                     )
                     urls.append(signed["signedURL"])
 
-                } catch Exception as e:
+                except Exception as e:
                     logger.exception("Supabase upload failed in stream")
                     yield sse({
                         "status": "error",
@@ -5457,7 +5454,7 @@ async def image_stream(req: Request, res: Response):
 
             yield sse({"status": "done", "images": urls})
 
-        } catch asyncio.CancelledError:
+        except asyncio.CancelledError:
             logger.info(f"Image stream cancelled for user {user_id}")
             yield sse({"status": "stopped"})
             raise
@@ -5469,9 +5466,9 @@ async def image_stream(req: Request, res: Response):
         finally:
           #  // ✅ CLEANUP
             active_streams.pop(user_id, None)
-            try {
+            try:
                 supabase.table("active_streams").delete().eq("user_id", user_id).execute()
-            } catch Exception as e:
+            except Exception as e:
                 logger.error(f"Failed to cleanup active stream: {e}")
 
     return StreamingResponse(
@@ -5499,7 +5496,7 @@ async def img2img(request: Request, file: UploadFile = File(...), prompt: str = 
         raise HTTPException(400, "no OpenAI API key configured")
 
     urls = []
-    try {
+    try:
         async with httpx.AsyncClient(timeout=120.0) as client:
             files = {"image": (file.filename, content, file.content_type or "video/mpeg")}
             data = {"prompt": prompt, "n": 1, "size": "1024x1024"}
@@ -5517,7 +5514,7 @@ async def img2img(request: Request, file: UploadFile = File(...), prompt: str = 
                     upload_image_to_supabase(image_bytes, supabase_fname, user_id)
                     signed = supabase.storage.from_("ai-images").create_signed_url(supabase_fname, 60*60)
                     urls.append(signed["signedURL"])
-    } catch Exception {
+    except Exception:
         logger.exception("img2img DALL-E edit failed")
         raise HTTPException(400, "img2img failed")
 
@@ -5536,15 +5533,14 @@ async def text_to_speech(request: Request):
         raise HTTPException(500, "Missing OPENAI_API_KEY")
 
   #  // Try JSON first
-    try {
+    try:
         data = await request.json()
         text = data.get("text", None)
-    } catch Exception {
+    except Exception:
   #      // Fallback: read raw text from body
         text = (await request.body()).decode("utf-8")
-    }
 
-    if (!text || !text.strip()) {
+    if not text or not text.strip():
         raise HTTPException(400, "Missing 'text' in request")
 
     payload = {
@@ -5559,7 +5555,7 @@ async def text_to_speech(request: Request):
         "Content-Type": "application/json"
     }
 
-    try {
+    try:
         async with httpx.AsyncClient(timeout=60.0) as client:
             r = await client.post(
                 "https://api.openai.com/v1/audio/speech",
@@ -5573,12 +5569,12 @@ async def text_to_speech(request: Request):
                 media_type="audio/mpeg"
             )
 
-    } catch httpx.HTTPStatusError as e {
+    except httpx.HTTPStatusError as e:
         return JSONResponse(
             {"error": f"OpenAI HTTP error: {e.response.status_code}", "detail": e.response.text},
             status_code=500
         )
-    } catch Exception as e {
+    except Exception as e:
         return JSONResponse(
             {"error": "TTS request failed", "detail": str(e)},
             status_code=500
@@ -5618,16 +5614,16 @@ async def tts_stream(req: Request, res: Response):
 
   #      // Also register in database
         stream_id = str(uuid.uuid4())
-        try {
+        try:
             supabase.table("active_streams").insert({
                 "user_id": user_id,
                 "stream_id": stream_id,
                 "started_at": datetime.now().isoformat()
             }).execute()
-        } catch Exception as e:
+        except Exception as e:
             logger.error(f"Failed to register stream: {e}")
 
-        try {
+        try:
             async with httpx.AsyncClient(timeout=None) as client:
                 async with client.stream(
                     "POST",
@@ -5639,22 +5635,21 @@ async def tts_stream(req: Request, res: Response):
                         if chunk:
                             yield chunk
 
-        } catch asyncio.CancelledError {
+        except asyncio.CancelledError:
             logger.info(f"TTS stream cancelled for user {user_id}")
             raise
 
-        } catch Exception as e {
+        except Exception as e:
             logger.exception("TTS streaming failed")
             #// Audio streams cannot emit JSON errors safely mid-stream
 
-        } finally {
+        finally:
            # // ✅ CLEANUP
             active_streams.pop(user_id, None)
-            try {
+            try:
                 supabase.table("active_streams").delete().eq("user_id", user_id).execute()
-            } catch Exception as e {
+            except Exception as e:
                 logger.error(f"Failed to cleanup active stream: {e}")
-            }
 
     return StreamingResponse(
         audio_streamer(),
@@ -5677,9 +5672,8 @@ async def vision_analyze(
     user_id = user.id
     content = await file.read()
 
-    if (!content) {
+    if not content:
         raise HTTPException(400, "empty file")
-    }
 
 #    // Load image
     img = Image.open(BytesIO(content)).convert("RGB")
@@ -5741,17 +5735,16 @@ async def vision_analyze(
  #   // 3️⃣ DOMINANT COLORS
   #  // =========================
     hex_colors = []
-    try {
-        from sklearn.cluster import KMeans  // Added import inside function to avoid import error if sklearn is not installed
+    try:
+        from sklearn.cluster import KMeans  # Added import inside function to avoid import error if sklearn is not installed
         pixels = np_img.reshape(-1, 3)
         kmeans = KMeans(n_clusters=5, random_state=0).fit(pixels)
         hex_colors = [
             '#%02x%02x%02x' % tuple(map(int, c))
             for c in kmeans.cluster_centers_
         ]
-    } catch Exception {
+    except Exception:
         pass
-    }
 
     #// =========================
    # // 4️⃣ UPLOAD TO SUPABASE
@@ -5781,7 +5774,7 @@ async def vision_analyze(
    # // 5️⃣ SAVE HISTORY
    # // =========================
     analysis_id = str(uuid.uuid4())
-    try {
+    try:
         supabase.table("vision_history").insert({
             "id": analysis_id,
             "user_id": user_id,
@@ -5791,9 +5784,8 @@ async def vision_analyze(
             "faces": face_count,
             "created_at": datetime.now().isoformat()
         }).execute()
-    } catch Exception as e {
+    except Exception as e:
         logger.error(f"Failed to save vision analysis: {e}")
-    }
 
     return {
         "objects": detections,
@@ -5810,14 +5802,13 @@ async def vision_history(req: Request, res: Response):
     user = await get_or_create_user(req, res)
     user_id = user.id
 
-    try {
+    try:
         response = supabase.table("vision_history").select("*").eq("user_id", user_id).order("created_at", desc=True).limit(50).execute()
         rows = response.data if response.data else []
         return rows
-    } catch Exception as e {
+    except Exception as e:
         logger.error(f"Failed to get vision history: {e}")
         return []
-}
 
 #// ---------- Code generation ----------
 @app.post("/code")
@@ -5860,7 +5851,7 @@ async def code_gen(req: Request, res: Response):
     response = {
         "language": language,
         "generated_code": code,
-        "user_id": user_id  // Include user_id in response
+        "user_id": user_id  # Include user_id in response
     }
 
    # // ✅ Run via Judge0
@@ -5870,7 +5861,7 @@ async def code_gen(req: Request, res: Response):
         response["execution"] = execution
 
   #  // Save code generation record (with error handling for missing table)
-    try {
+    try:
         supabase.table("code_generations").insert({
             "id": str(uuid.uuid4()),
             "user_id": user_id,
@@ -5879,11 +5870,9 @@ async def code_gen(req: Request, res: Response):
             "code": code,
             "created_at": datetime.now().isoformat()
         }).execute()
-    } catch Exception as e {
+    except Exception as e:
         logger.error(f"Failed to save code generation record (table might not exist): {e}")
        # // Don't fail the request, just log the error
-    }
-
     return response
 
 @app.get("/search")
@@ -5892,28 +5881,25 @@ async def duck_search(q: str = Query(..., min_length=1)):
     Lightweight search endpoint backed by DuckDuckGo Instant Answer API.
     Example: /search?q=python+asyncio
     """
-    try {
+    try:
         return await duckduckgo_search(q)
-    } catch httpx.HTTPStatusError as e {
+    except httpx.HTTPStatusError as e:
         logger.exception("DuckDuckGo returned HTTP error")
         raise HTTPException(502, "duckduckgo_error")
-    } catch Exception {
+    except Exception:
         logger.exception("DuckDuckGo search failed")
         raise HTTPException(500, "search_failed")
-    }
 
 #// ---------- STT ----------
 @app.post("/stt")
 async def speech_to_text(file: UploadFile = File(...)):
     content = await file.read()
-    if (!content) {
+    if not content:
         raise HTTPException(400, "empty file")
-    }
 
     openai_api_key = os.getenv("OPENAI_API_KEY")
-    if (!openai_api_key) {
+    if not openai_api_key:
         raise HTTPException(500, "Missing OPENAI_API_KEY")
-    }
 
     url = "https://api.openai.com/v1/audio/transcriptions"
 
@@ -5946,7 +5932,7 @@ async def new_chat(req: Request, res: Response):
     user_id = user.id
     cid = str(uuid.uuid4())
 
-    try {
+    try:
         supabase.table("conversations").insert({
             "id": cid,
             "user_id": user_id,
@@ -5954,9 +5940,8 @@ async def new_chat(req: Request, res: Response):
             "created_at": datetime.now().isoformat(),
             "updated_at": datetime.now().isoformat()
         }).execute()
-    } catch Exception as e {
+    except Exception as e:
         logger.error(f"Failed to create new chat: {e}")
-    }
 
     return {"conversation_id": cid}
 
@@ -5967,12 +5952,11 @@ async def send_message(conversation_id: str, req: Request, res: Response):
     body = await req.json()
     text = body.get("message")
 
-    if (!text) {
+    if not text:
         raise HTTPException(400, "message required")
-    }
 
     msg_id = str(uuid.uuid4())
-    try {
+    try:
         supabase.table("messages").insert({
             "id": msg_id,
             "conversation_id": conversation_id,
@@ -5980,11 +5964,10 @@ async def send_message(conversation_id: str, req: Request, res: Response):
             "content": text,
             "created_at": datetime.now().isoformat()
         }).execute()
-    } catch Exception as e {
+    except Exception as e:
         logger.error(f"Failed to save user message: {e}")
-    }
 
-    try {
+    try:
         msg_response = supabase.table("messages").select("role, content").eq("conversation_id", conversation_id).order("created_at").execute()
         rows = msg_response.data if msg_response.data else []
         messages = [{"role": row["role"], "content": row["content"]} for row in rows]
@@ -6014,10 +5997,9 @@ async def send_message(conversation_id: str, req: Request, res: Response):
         }).execute()
 
         return {"reply": reply}
-    } catch Exception as e {
+    except Exception as e:
         logger.error(f"Failed to process message: {e}")
         raise HTTPException(500, "Failed to process message")
-}
 
 #// ----------------------------------
 #// LIST CHATS
@@ -6027,14 +6009,13 @@ async def list_chats(req: Request, res: Response):
     user = await get_or_create_user(req, res)
     user_id = user.id
 
-    try {
+    try:
         response = supabase.table("conversations").select("*").eq("user_id", user_id).order("updated_at", desc=True).execute()
         rows = response.data if response.data else []
         return rows
-    } catch Exception as e {
+    except Exception as e:
         logger.error(f"Failed to list chats: {e}")
         return []
-    }
 
 #// ----------------------------------
 #// SEARCH CHATS
@@ -6044,35 +6025,34 @@ async def search_chats(q: str, req: Request, res: Response):
     user = await get_or_create_user(req, res)
     user_id = user.id
 
-    try {
+    try:
         response = supabase.table("conversations").select("id, title").eq("user_id", user_id).ilike("title", f"%{q}%").order("updated_at", desc=True).execute()
         rows = response.data if response.data else []
         return rows
-    } catch Exception as e {
+    except Exception as e:
         logger.error(f"Failed to search chats: {e}")
         return []
-    }
 
 #// ----------------------------------
 #// PIN / ARCHIVE
 #// ----------------------------------
 @app.post("/chat/{id}/pin")
 async def pin_chat(id: str):
-    try {
+    try:
         supabase.table("conversations").update({
             "updated_at": datetime.now().isoformat()
         }).eq("id", id).execute()
-    } catch Exception as e {
+    except Exception as e:
         logger.error(f"Failed to pin chat: {e}")
     return {"status": "pinned"}
 
 @app.post("/chat/{id}/archive")
 async def archive_chat(id: str):
-    try {
+    try:
         supabase.table("conversations").update({
             "updated_at": datetime.now().isoformat()
         }).eq("id", id).execute()
-    } catch Exception as e {
+    except Exception as e:
         logger.error(f"Failed to archive chat: {e}")
     return {"status": "archived"}
 
@@ -6081,11 +6061,11 @@ async def archive_chat(id: str):
 #// ----------------------------------
 @app.post("/chat/{id}/folder")
 async def move_folder(id: str, folder: Optional[str] = None):
-    try {
+    try:
         supabase.table("conversations").update({
             "updated_at": datetime.now().isoformat()
         }).eq("id", id).execute()
-    } catch Exception as e {
+    except Exception as e:
         logger.error(f"Failed to move chat to folder: {e}")
     return {"status": "moved"}
 
@@ -6096,13 +6076,12 @@ async def move_folder(id: str, folder: Optional[str] = None):
 async def share_chat(id: str):
     token = uuid.uuid4().hex
 
-    try {
+    try:
         supabase.table("conversations").update({
             "updated_at": datetime.now().isoformat()
         }).eq("id", id).execute()
-    } catch Exception as e {
+    except Exception as e:
         logger.error(f"Failed to share chat: {e}")
-    }
 
     return {"share_url": f"/share/{token}"}
 
@@ -6128,7 +6107,7 @@ async def chat_stream_endpoint(conversation_id: str, user_id: str, messages: lis
     """
     async def event_generator():
         async for token_sse in stream_llm(user_id, conversation_id, messages):
-            yield token_sse  // only yield here, no return
+            yield token_sse  # only yield here, no return
 
     #// Return StreamingResponse from the endpoint, not inside the generator
     return StreamingResponse(
@@ -6222,27 +6201,25 @@ async def set_preferences(request: Request, response: Response):
     preferences = body.get("preferences", {})
     
   #  // Upsert preferences
-    try {
+    try:
         existing = supabase.table("profiles").select("id").eq("id", user_id).execute()
         
-        if existing.data {
+        if existing.data:
           #  // Update existing profile
             supabase.table("profiles").update({
                 "preferences": preferences,
                 "updated_at": datetime.utcnow().isoformat()
             }).eq("id", user_id).execute()
-        } else {
+        else:
           #  // Create new profile
             supabase.table("profiles").insert({
                 "id": user_id,
                 "preferences": preferences,
                 "created_at": datetime.utcnow().isoformat()
             }).execute()
-        }
-    } catch Exception as e {
+    except Exception as e:
         logger.error(f"Failed to save preferences: {e}")
         raise HTTPException(500, "Failed to save preferences")
-    }
     
     return {"status": "success"}
 
@@ -6286,7 +6263,7 @@ async def get_user_info(req: Request, res: Response):
     user_id = user.id
     
 #    // Get additional user data from database
-    try {
+    try:
         user_response = supabase.table("users").select("*").eq("id", user_id).execute()
         user_data = user_response.data[0] if user_response.data else None
         
@@ -6303,15 +6280,15 @@ async def get_user_info(req: Request, res: Response):
             "id": user.id,
             "email": user.email,
             "anonymous": user.anonymous,
-            "created_at": user_data.get("created_at") if user_data else null,
-            "last_seen": user_data.get("last_seen") if user_data else null,
+            "created_at": user_data.get("created_at") if user_data else None,
+            "last_seen": user_data.get("last_seen") if user_data else None,
             "stats": {
                 "images": images_count.count if hasattr(images_count, 'count') else 0,
                 "videos": videos_count.count if hasattr(videos_count, 'count') else 0,
                 "conversations": conversations_count.count if hasattr(conversations_count, 'count') else 0
             }
         }
-    } catch Exception as e:
+    except Exception as e:
         logger.error(f"Failed to get user info: {e}")
         return {
             "id": user.id,
@@ -6325,61 +6302,54 @@ async def get_user_info(req: Request, res: Response):
 async def merge_user_data(req: Request, res: Response):
     
     session_token = req.cookies.get("session_token")
-    if (!session_token) {
+    if not session_token:
         raise HTTPException(400, "No session token found")
-    }
     
 #    // Get the logged-in user from JWT token
     auth_header = req.headers.get("authorization")
-    if (!auth_header || !auth_header.startsWith("Bearer ")) {
+    if not auth_header or not auth_header.startswith("Bearer "):
         raise HTTPException(400, "No authorization token found")
-    }
     
     token = auth_header.split(" ")[1]
-    try {
+    try:
    #     // Verify JWT token with frontend Supabase
-        if (!frontend_supabase) {
+        if not frontend_supabase:
             raise HTTPException(500, "Frontend Supabase not configured")
-        }
         
         user_response = frontend_supabase.auth.get_user(token)
-        if (!user_response.user) {
+        if not user_response.user:
             raise HTTPException(401, "Invalid token")
-        }
         
         logged_in_id = user_response.user.id
         
     #    // Get the anonymous user ID from session token
         visitor_response = supabase.table("visitor_users").select("id").eq("session_token", session_token).execute()
-        if (!visitor_response.data) {
+        if not visitor_response.data:
             raise HTTPException(404, "Anonymous user not found")
-        }
         
         anonymous_id = visitor_response.data[0]["id"]
         
      #   // Merge data in the backend
-        try {
+        try:
           #  // Update all records from anonymous user to logged-in user
             tables_to_merge = ["images", "videos", "conversations", "messages", "memory", "vision_history", "code_generations"]
             
-            for (const table of tables_to_merge) {
+            for table in tables_to_merge:
                 supabase.table(table).update({"user_id": logged_in_id}).eq("user_id", anonymous_id).execute()
-            }
             
           #  // Create or update the logged-in user in the backend
             existing_user = supabase.table("users").select("*").eq("id", logged_in_id).execute()
-            if (!existing_user.data) {
+            if not existing_user.data:
                 supabase.table("users").insert({
                     "id": logged_in_id,
                     "email": user_response.user.email,
                     "created_at": datetime.now().isoformat(),
                     "last_seen": datetime.now().isoformat()
                 }).execute()
-            } else {
+            else:
                 supabase.table("users").update({
                     "last_seen": datetime.now().isoformat()
                 }).eq("id", logged_in_id).execute()
-            }
             
          #   // Delete the anonymous user
             supabase.table("visitor_users").delete().eq("id", anonymous_id).execute()
@@ -6394,13 +6364,12 @@ async def merge_user_data(req: Request, res: Response):
             )
             
             return {"status": "success", "message": "User data merged successfully"}
-        } catch Exception as e {
+        except Exception as e:
             logger.error(f"Failed to merge user data: {e}")
-            raise HTTPException(500, `Failed to merge user data: ${str(e)}`)
-    } catch Exception as e {
+            raise HTTPException(500, f"Failed to merge user data: {str(e)}")
+    except Exception as e:
         logger.error(f"Error verifying JWT token: {e}")
-        raise HTTPException(401, `Invalid token: ${str(e)}`)
-    }
+        raise HTTPException(401, f"Invalid token: {str(e)}")
 
 @app.on_event("shutdown")
 async def shutdown_event():
