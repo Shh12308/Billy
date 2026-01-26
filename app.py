@@ -1993,7 +1993,7 @@ async def document_analysis(prompt: str, user_id: str, stream: bool = False):
         async def event_generator():
             yield sse({"type": "starting", "message": "Analyzing document..."})
             
-            // Extract entities
+       #     // Extract entities
             if analysis_type in ["summary", "entities"]:
                 yield sse({"type": "progress", "message": "Extracting entities..."})
                 entities = extract_entities(text)
