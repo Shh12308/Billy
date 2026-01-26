@@ -932,7 +932,7 @@ def create_knowledge_graph(entities, relationship_type="related"):
    # // Add edges (simple example - in a real implementation, you'd use NLP to find relationships)
     for i, entity1 in enumerate(entities):
         for entity2 in entities[i+1:]:
-            // Simple similarity based on string overlap
+           # // Simple similarity based on string overlap
             similarity = len(set(entity1.lower().split()) & set(entity2.lower().split()))
             if similarity > 0:
                 G.add_edge(entity1, entity2, weight=similarity, type=relationship_type)
@@ -1001,7 +1001,7 @@ def analyze_code_quality(code, language, focus_areas):
     
    # // Security checks
     if "security" in focus_areas:
-        // Check for common security issues
+     #   // Check for common security issues
         if language == "python":
             if "eval(" in code:
                 results["security"].append("Use of eval() function detected - potential security risk")
