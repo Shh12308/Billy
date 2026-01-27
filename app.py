@@ -183,6 +183,7 @@ class UserIdentityService:
     device_fingerprint = generate_device_fingerprint(request)
     new_session_token = str(uuid.uuid4())
 
+    try:
     await asyncio.to_thread(
         lambda: supabase.table("visitor_users")
             .insert({
@@ -209,48 +210,48 @@ class UserIdentityService:
         session_token=new_session_token,
     )
 
-    except Exception as e:
-        if 'duplicate key value violates unique constraint "visitor_users_nickname_key"' in str(e):
-            logger.warning("Duplicate nickname — fetching existing visitor")
+except Exception as e:
+    if 'duplicate key value violates unique constraint "visitor_users_nickname_key"' in str(e):
+        logger.warning("Duplicate nickname — fetching existing visitor")
 
-            visitor_resp = await asyncio.to_thread(
+        visitor_resp = await asyncio.to_thread(
+            lambda: supabase
+                .table("visitor_users")
+                .select("id, device_fingerprint")
+                .eq("device_fingerprint", device_fingerprint)
+                .limit(1)
+                .execute()
+        )
+
+        if visitor_resp.data:
+            v = visitor_resp.data[0]
+
+            await asyncio.to_thread(
                 lambda: supabase
                     .table("visitor_users")
-                    .select("id, device_fingerprint")
-                    .eq("device_fingerprint", device_fingerprint)
-                    .limit(1)
+                    .update({"session_token": new_session_token})
+                    .eq("id", v["id"])
                     .execute()
             )
 
-            if visitor_resp.data:
-                v = visitor_resp.data[0]
+            response.set_cookie(
+                key="session_token",
+                value=new_session_token,
+                httponly=True,
+                samesite="lax",
+                secure=False,
+                max_age=60 * 60 * 24 * 365,
+            )
 
-                await asyncio.to_thread(
-                    lambda: supabase
-                        .table("visitor_users")
-                        .update({"session_token": new_session_token})
-                        .eq("id", v["id"])
-                        .execute()
-                )
+            return User(
+                id=v["id"],
+                anonymous=True,
+                device_fingerprint=v.get("device_fingerprint"),
+                session_token=new_session_token,
+            )
 
-                response.set_cookie(
-                    key="session_token",
-                    value=new_session_token,
-                    httponly=True,
-                    samesite="lax",
-                    secure=False,
-                    max_age=60 * 60 * 24 * 365,
-                )
-
-                return User(
-                    id=v["id"],
-                    anonymous=True,
-                    session_token=new_session_token,
-                    device_fingerprint=device_fingerprint,
-                )
-
-        logger.critical(f"Failed to create visitor user: {e}")
-        raise HTTPException(status_code=500, detail="Could not identify user")
+    logger.exception("Failed to create visitor user")
+    raise
 
     # 3️⃣ Set cookie for new visitor
     response.set_cookie(
