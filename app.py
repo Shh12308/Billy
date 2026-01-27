@@ -598,7 +598,7 @@ async def save_code_generation_record(user_id: str, language: str, prompt: str, 
 
 # Fixed get_or_create_user function
 async def get_or_create_user(req: Request, res: Response) -> User:
-    return await user_identity_service.get_or_create_user(req, res)
+    return await get_or_create_user(req, res)
 
 def init_supabase_tables():
     print("Supabase schema assumed present — skipping RPC table creation")
@@ -4472,7 +4472,7 @@ async def chat_stream(req: Request, res: Response, tts: bool = False, samples: i
 async def chat_endpoint(request: Request, response: Response):
     """Main chat endpoint with user memory"""
    # // Get or create user with stable UUID
-    user = await user_identity_service.get_or_create_user(request, response)
+    user = await get_or_create_user(request, response)
     user_id = user.id
     
    # // Parse request
@@ -6118,7 +6118,7 @@ async def multimodal_search_endpoint(request: MultimodalSearchRequest, req: Requ
 @app.post("/user/preferences")
 async def set_preferences(request: Request, response: Response):
     """Store user preferences"""
-    user = await user_identity_service.get_or_create_user(request, response)
+    user = await get_or_create_user(request, response)
     user_id = user.id
     
     body = await request.json()
