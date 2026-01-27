@@ -150,49 +150,46 @@ class UserIdentityService:
             "friendly_name": f"{adjectives[adj_index]}{nouns[noun_index]}-{fp_short}"
         }
         
-    async def get_or_create_user(self, request: Request, response: Response) -> User:
-        # This entire block must be indented
-        now = datetime.utcnow()  # This was line 155 - needs to be indented
-    
-        # 1️⃣ Try existing visitor via cookie
-        session_token = request.cookies.get("session_token")
+    async def get_or_create_user(request: Request, response: Response) -> User:
+    now = datetime.utcnow()
 
-        if session_token:
-            try:
-                visitor_resp = await asyncio.to_thread(
-                    lambda: (
-                        supabase
-                        .table("visitor_users")
-                        .select("id, device_fingerprint, session_token")
-                        .eq("session_token", session_token)
-                        .limit(1)
-                        .execute()
-                    )
+    # 1️⃣ Try existing visitor via cookie
+    session_token = request.cookies.get("session_token")
+
+    if session_token:
+        try:
+            visitor_resp = await asyncio.to_thread(
+                lambda: supabase
+                    .table("visitor_users")
+                    .select("id, device_fingerprint, session_token")
+                    .eq("session_token", session_token)
+                    .limit(1)
+                    .execute()
+            )
+
+            if visitor_resp.data:
+                v = visitor_resp.data[0]
+                return User(
+                    id=v["id"],
+                    anonymous=True,
+                    session_token=v["session_token"],
+                    device_fingerprint=v.get("device_fingerprint"),
                 )
 
-                if visitor_resp.data:
-                    v = visitor_resp.data[0]
-                    return User(
-                        id=v["id"],
-                        anonymous=True,
-                        session_token=v["session_token"],
-                        device_fingerprint=v.get("device_fingerprint"),
-                    )
+        except Exception as e:
+            logger.warning(f"Visitor lookup failed: {e}")
 
-            except Exception as e:
-                logger.warning(f"Visitor lookup failed: {e}")
-        
-        # 2️⃣ Create new visitor
-        device_fingerprint = self.generate_device_fingerprint(request)
-        new_session_token = str(uuid.uuid4())
-        anonymous_info = self.generate_anonymous_id(device_fingerprint)
-        anonymous_uuid = anonymous_info["uuid"]
-        nickname = anonymous_info["friendly_name"]
+    # 2️⃣ Create new visitor
+    device_fingerprint = generate_device_fingerprint(request)
+    new_session_token = str(uuid.uuid4())
+    anonymous_info = generate_anonymous_id(device_fingerprint)
+    anonymous_uuid = anonymous_info["uuid"]
+    nickname = anonymous_info["friendly_name"]
 
-       # // --- FIX 1: Handle duplicate nickname error gracefully ---
-        try:
-            await asyncio.to_thread(
-                lambda: self.supabase.table("visitor_users")
+    try:
+        await asyncio.to_thread(
+            lambda: supabase
+                .table("visitor_users")
                 .insert({
                     "id": anonymous_uuid,
                     "nickname": nickname,
@@ -200,67 +197,67 @@ class UserIdentityService:
                     "session_token": new_session_token,
                 })
                 .execute()
-            )
-        except Exception as e:
-            # Check if it's the specific "duplicate nickname" error
-            if 'duplicate key value violates unique constraint "visitor_users_nickname_key"' in str(e):
-                logger.warning(f"Visitor user already exists, fetching by device fingerprint.")
-                # Fetch the existing user by their device fingerprint
-                visitor_resp = await asyncio.to_thread(
-                    lambda: self.supabase.table("visitor_users")
-                    .select("id, device_fingerprint, session_token")
+        )
+
+    except Exception as e:
+        if 'duplicate key value violates unique constraint "visitor_users_nickname_key"' in str(e):
+            logger.warning("Duplicate nickname — fetching existing visitor")
+
+            visitor_resp = await asyncio.to_thread(
+                lambda: supabase
+                    .table("visitor_users")
+                    .select("id, device_fingerprint")
                     .eq("device_fingerprint", device_fingerprint)
                     .limit(1)
                     .execute()
-                )
-                if visitor_resp.data:
-                    v = visitor_resp.data[0]
-                    # Update the session token for this existing user
-                    await asyncio.to_thread(
-                        lambda: self.supabase.table("visitor_users")
+            )
+
+            if visitor_resp.data:
+                v = visitor_resp.data[0]
+
+                await asyncio.to_thread(
+                    lambda: supabase
+                        .table("visitor_users")
                         .update({"session_token": new_session_token})
                         .eq("id", v["id"])
                         .execute()
-                    )
-                    # Set the new cookie and return the existing user
-                    response.set_cookie(
-                        key="session_token",
-                        value=new_session_token,
-                        httponly=True,
-                        samesite="lax",
-                        secure=False,
-                        max_age=60 * 60 * 24 * 365
-                    )
-                    return User(
-                        id=v["id"],
-                        anonymous=True,
-                        session_token=new_session_token,
-                        device_fingerprint=v.get("device_fingerprint"),
-                    )
-            
-            # If it's a different error or we couldn't find the user, then it's a critical failure
-            logger.critical(f"Failed to create or retrieve visitor user: {e}")
-            # Re-raise the exception to prevent the app from continuing in an invalid state
-            raise HTTPException(status_code=500, detail="Could not identify user.")
+                )
 
-       # // --- END OF FIX 1 ---
+                response.set_cookie(
+                    key="session_token",
+                    value=new_session_token,
+                    httponly=True,
+                    samesite="lax",
+                    secure=False,
+                    max_age=60 * 60 * 24 * 365,
+                )
 
-        # 3️⃣ Set cookie
-        response.set_cookie(
-            key="session_token",
-            value=new_session_token,
-            httponly=True,
-            samesite="lax",
-            secure=False,
-            max_age=60 * 60 * 24 * 365
-        )
+                return User(
+                    id=v["id"],
+                    anonymous=True,
+                    session_token=new_session_token,
+                    device_fingerprint=device_fingerprint,
+                )
 
-        return User(
-            id=anonymous_uuid,
-            anonymous=True,
-            device_fingerprint=device_fingerprint,
-            session_token=new_session_token
-        )
+        logger.critical(f"Failed to create visitor user: {e}")
+        raise HTTPException(status_code=500, detail="Could not identify user")
+
+    # 3️⃣ Set cookie for new visitor
+    response.set_cookie(
+        key="session_token",
+        value=new_session_token,
+        httponly=True,
+        samesite="lax",
+        secure=False,
+        max_age=60 * 60 * 24 * 365,
+    )
+
+    return User(
+        id=anonymous_uuid,
+        anonymous=True,
+        device_fingerprint=device_fingerprint,
+        session_token=new_session_token,
+    )
 
     def merge_visitor_to_user(self, user_id: str, session_token: str):
         """
@@ -4695,33 +4692,35 @@ def is_valid_uuid(uuid_string):
 
 @app.post("/ask/universal")
 async def ask_universal(request: Request, response: Response):
-  #  // -------------------------------
- #   // Extract request data FIRST
-  # // -------------------------------
+    # -------------------------------
+    # Extract request data
+    # -------------------------------
     body = await request.json()
     prompt = body.get("prompt", "").strip()
-    
-#    // Use our new user ID system
-    user = await get_or_create_user(request, Response())
-    user_id = user.id
-    
     role = body.get("role", "user")
     stream = bool(body.get("stream", False))
-    conversation_id = body.get("conversation_id") #  // Get conversation_id from request body
+    conversation_id = body.get("conversation_id")
+
+    if not prompt:
+        raise HTTPException(status_code=400, detail="prompt required")
+
+    # -------------------------------
+    # User resolution
+    # -------------------------------
+    user = await get_or_create_user(request, Response())
+    user_id = user.id
 
     session_token = request.cookies.get("session_token")
 
     if session_token:
         try:
             visitor_resp = await asyncio.to_thread(
-                lambda: (
-                    supabase
+                lambda: supabase
                     .table("visitor_users")
                     .select("id, device_fingerprint, session_token")
                     .eq("session_token", session_token)
                     .limit(1)
                     .execute()
-                )
             )
 
             if visitor_resp.data:
@@ -4732,19 +4731,16 @@ async def ask_universal(request: Request, response: Response):
                     session_token=v["session_token"],
                     device_fingerprint=v.get("device_fingerprint"),
                 )
+                user_id = user.id
 
         except Exception as e:
             logger.warning(f"Visitor lookup failed: {e}")
 
-    if not prompt:
-        raise HTTPException(status_code=400, detail="prompt required")
-
-#    // -------------------------------
- #   // Detect intent
- #   // -------------------------------
+    # -------------------------------
+    # Detect intent
+    # -------------------------------
     intent = detect_intent(prompt)
 
- #   // Updated intent_map with all handlers
     intent_map = {
         "document_analysis": document_analysis,
         "translation": translate_text,
@@ -4756,7 +4752,6 @@ async def ask_universal(request: Request, response: Response):
         "ai_personalization": personalize_ai,
         "data_visualization": visualize_data,
         "voice_cloning": clone_voice,
-      #  // Added all missing handlers
         "image": image_generation_handler,
         "img2img": img2img_handler,
         "vision": vision_handler,
@@ -4779,17 +4774,12 @@ async def ask_universal(request: Request, response: Response):
         "stop": stop_handler,
         "vision_history": vision_history_handler,
         "get_user_info": get_user_info_handler,
-        "merge_user_data": merge_user_data_handler
+        "merge_user_data": merge_user_data_handler,
     }
 
     if intent in intent_map:
-    #    // Pass the user_id to all intent handlers
         return await intent_map[intent](prompt, user_id, stream)
 
-#    // -------------------------------
-#    // --- FIX 3: Correctly Determine Conversation ID ---
-#    // -------------------------------
- #   // If a conversation_id is provided, use it. Otherwise, get/create the most recent one.
     # -------------------------------
     # Determine / validate conversation_id
     # -------------------------------
@@ -4805,93 +4795,61 @@ async def ask_universal(request: Request, response: Response):
         )
 
         if not conv_check.data:
-            conversation_id = get_or_create_conversation(
+            conversation_id = await get_or_create_conversation(
                 user_id=user_id,
                 conversation_id=None
             )
     else:
-        conversation_id = get_or_create_conversation(
+        conversation_id = await get_or_create_conversation(
             user_id=user_id,
             conversation_id=None
         )
 
-    # Load history
-    messages = []
+    # -------------------------------
+    # Load conversation history
+    # -------------------------------
     history = await load_memory(conversation_id)
-    messages.extend(history)
-#    // -------------------------------
-#    // --- END OF FIX 3 ---
-#    // -------------------------------
 
-#    // -------------------------------
-#    // SAFE PROFILE FETCH / CREATE
-#    // -------------------------------
+    # -------------------------------
+    # Profile fetch / create
+    # -------------------------------
     personality = "friendly"
     nickname = ""
 
     try:
-       # // Fixed profile query - removed maybe_single() which was causing 406 error
         profile_resp = await asyncio.to_thread(
-            lambda: supabase.table("profiles")
-            .select("nickname, personality")
-            .eq("id", user_id)
-            .execute()
+            lambda: supabase
+                .table("profiles")
+                .select("nickname, personality")
+                .eq("id", user_id)
+                .execute()
         )
 
-     #   // Check if profile exists and has data
-        if profile_resp and profile_resp.data and len(profile_resp.data) > 0:
-            profile_data = profile_resp.data[0]
-            personality = profile_data.get("personality") or personality
-            nickname = profile_data.get("nickname") or generate_random_nickname()
+        if profile_resp.data:
+            profile = profile_resp.data[0]
+            personality = profile.get("personality") or personality
+            nickname = profile.get("nickname") or generate_random_nickname()
         else:
-          #  // Default profile if no data
-            default_profile = {
-                "id": user_id,
-                "nickname": generate_random_nickname(),
-                "personality": personality
-            }
-
+            nickname = generate_random_nickname()
             await asyncio.to_thread(
-                lambda: supabase.table("profiles")
-                .insert(default_profile)
-                .execute()
+                lambda: supabase.table("profiles").insert({
+                    "id": user_id,
+                    "nickname": nickname,
+                    "personality": personality,
+                }).execute()
             )
-
-            nickname = default_profile["nickname"]
 
     except Exception as e:
         logger.warning(f"Profile fetch/create failed: {e}")
         nickname = generate_random_nickname()
-        
-    #    // Try to create a fallback profile
-        try:
-            default_profile = {
-                "id": user_id,
-                "nickname": nickname,
-                "personality": personality
-            }
-            
-            await asyncio.to_thread(
-                lambda: supabase.table("profiles")
-                .insert(default_profile)
-                .execute()
-            )
-        except Exception as fallback_error:
-            logger.error(f"Failed to create fallback profile: {fallback_error}")
 
-#    // -------------------------------
- #   // Prepare system prompt
- #   // -------------------------------
+    # -------------------------------
+    # Build system prompt
+    # -------------------------------
     system_prompt = (
         PERSONALITY_MAP.get(personality, PERSONALITY_MAP["friendly"])
         + f"\nUser nickname: {nickname}\n"
         "You are a ChatGPT-style multimodal assistant.\n"
-        "You can call tools when useful.\n"
-        "RULES:\n"
-        "- web_search is ONLY for real-world information lookup\n"
-        "- run_code is ONLY for Python, math, or text processing\n"
-        "- NEVER use run_code for images, media, or creative generation\n"
-        "- If the user asks for images, respond with text only\n"
         "Maintain memory and context.\n"
     )
 
@@ -4899,15 +4857,14 @@ async def ask_universal(request: Request, response: Response):
     messages.extend(history)
     messages.append({"role": "user", "content": prompt})
 
-#    // -------------------------------
- #   // STREAM MODE
-  #  // -------------------------------
+    # -------------------------------
+    # STREAM MODE
+    # -------------------------------
     if stream:
 
         async def event_generator():
             assistant_reply = ""
             yield sse({"type": "starting"})
-            yield ": heartbeat\n\n"
 
             payload = {
                 "model": CHAT_MODEL,
@@ -4915,7 +4872,7 @@ async def ask_universal(request: Request, response: Response):
                 "tools": TOOLS,
                 "tool_choice": "auto",
                 "stream": True,
-                "max_tokens": 1500
+                "max_tokens": 1500,
             }
 
             try:
@@ -4924,54 +4881,32 @@ async def ask_universal(request: Request, response: Response):
                         "POST",
                         "https://api.groq.com/openai/v1/chat/completions",
                         headers=get_groq_headers(),
-                        json=payload
+                        json=payload,
                     ) as resp:
-
                         async for line in resp.aiter_lines():
                             if not line or not line.startswith("data:"):
                                 continue
 
-                            data_line = line[5:].strip()
-                            if data_line == "[DONE]":
+                            data = line[5:].strip()
+                            if data == "[DONE]":
                                 break
 
-                            try:
-                                chunk = json.loads(data_line)
+                            chunk = json.loads(data)
+                            delta = chunk["choices"][0]["delta"]
+                            content = delta.get("content")
 
-                                # Handle normal token stream
-                                if "choices" in chunk and len(chunk["choices"]) > 0:
-                                    delta = chunk["choices"][0].get("delta", {})
-                                    content = delta.get("content")
-                                    if content:
-                                        assistant_reply += content
-                                        yield sse({"type": "token", "text": content})
-
-                                # Handle errors in the stream
-                                elif "error" in chunk:
-                                    error_msg = chunk["error"].get("message", "Unknown error")
-                                    yield sse({"type": "error", "message": error_msg})
-                                    break
-
-                            except json.JSONDecodeError:
-                                continue
-                            except Exception as e:
-                                logger.error(f"Error processing stream chunk: {e}")
-                                continue
-
-            except Exception as e:
-                logger.error(f"HTTP client error: {e}")
+                            if content:
+                                assistant_reply += content
+                                yield sse({"type": "token", "text": content})
 
             finally:
-                # Save final assistant reply
                 if assistant_reply.strip():
                     await asyncio.to_thread(
-                        lambda: supabase.table("messages")
-                        .insert({
+                        lambda: supabase.table("messages").insert({
                             "conversation_id": conversation_id,
                             "role": "assistant",
-                            "content": assistant_reply
-                        })
-                        .execute()
+                            "content": assistant_reply,
+                        }).execute()
                     )
                 yield sse({"type": "done"})
 
@@ -4980,27 +4915,25 @@ async def ask_universal(request: Request, response: Response):
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
-                "connection": "keep-alive",
-                "x-accel-buffering": "no"
-            }
+                "x-accel-buffering": "no",
+            },
         )
 
-  #  // -------------------------------
-  #  // NON-STREAM MODE
-  #  // -------------------------------
-    def safe_generate():
-        try:
-            asyncio.run(generate_ai_response(conversation_id, user_id, messages))
-        except Exception as e:
-            logger.error(f"Background generation failed: {e}")
-
+    # -------------------------------
+    # NON-STREAM MODE
+    # -------------------------------
     background_tasks = BackgroundTasks()
-    background_tasks.add_task(safe_generate)
+    background_tasks.add_task(
+        generate_ai_response,
+        conversation_id,
+        user_id,
+        messages,
+    )
 
     return {
         "status": "processing",
         "conversation_id": conversation_id,
-        "user_id": user_id
+        "user_id": user_id,
     }
     
 @app.post("/message/{message_id}/edit")
