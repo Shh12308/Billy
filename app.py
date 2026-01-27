@@ -184,14 +184,14 @@ class UserIdentityService:
     new_session_token = str(uuid.uuid4())
 
     try:
-    await asyncio.to_thread(
-        lambda: supabase.table("visitor_users")
-            .insert({
-                "id": new_session_token,
-                "device_fingerprint": device_fingerprint,
-                "session_token": new_session_token,
-            })
-            .execute()
+        await asyncio.to_thread(
+            lambda: supabase.table("visitor_users")
+                .insert({
+                    "id": new_session_token,
+                    "device_fingerprint": device_fingerprint,
+                    "session_token": new_session_token,
+                })
+                .execute()
     )
 
     response.set_cookie(
