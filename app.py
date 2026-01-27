@@ -117,45 +117,23 @@ class User(BaseModel):
     session_token: Optional[str] = None
 
 # User Identity Service
-class UserIdentityService:
-    def __init__(self, supabase_client):
-        self.supabase = supabase_client
+# Assume your User model looks like this:
+class User:
+    def __init__(self, id, anonymous=True, session_token=None, device_fingerprint=None):
+        self.id = id
+        self.anonymous = anonymous
+        self.session_token = session_token
+        self.device_fingerprint = device_fingerprint
 
-    def generate_device_fingerprint(self, request: Request) -> str:
-        fingerprint_data = (
-            f"{request.headers.get('user-agent', '')}-"
-            f"{request.client.host if request.client else ''}-"
-            f"{request.headers.get('accept-language', '')}"
-        )
-        return hashlib.sha256(fingerprint_data.encode()).hexdigest()
+# Example device fingerprint function
+def generate_device_fingerprint(request: Request) -> str:
+    return request.headers.get("user-agent", "unknown-device") + str(uuid.uuid4())
 
-    def generate_anonymous_id(self, device_fingerprint: str) -> dict:
-        """Generate a consistent, recognizable anonymous ID based on device fingerprint"""
-        # Generate a proper UUID for the database
-        user_uuid = str(uuid.uuid4())
-        
-        # Use the first 8 characters of the device fingerprint hash
-        fp_short = device_fingerprint[:8]
-        
-        # Generate a random adjective and noun combination
-        adjectives = ["Silent", "Swift", "Bright", "Calm", "Bold", "Quiet", "Sharp", "Gentle", "Cool", "Warm"]
-        nouns = ["Explorer", "Visitor", "Creator", "Thinker", "Builder", "Dreamer", "Seeker", "Maker", "Writer", "Artist"]
-        
-        # Use the fingerprint to deterministically select adjective and noun
-        adj_index = int(device_fingerprint[8:10], 16) % len(adjectives)
-        noun_index = int(device_fingerprint[10:12], 16) % len(nouns)
-        
-        return {
-            "uuid": user_uuid,
-            "friendly_name": f"{adjectives[adj_index]}{nouns[noun_index]}-{fp_short}"
-        }
-        
 async def get_or_create_user(request: Request, response: Response) -> User:
     now = datetime.utcnow()
-
-    # 1️⃣ Try existing visitor via cookie
     session_token = request.cookies.get("session_token")
 
+    # 1️⃣ Try existing visitor via cookie
     if session_token:
         try:
             visitor_resp = await asyncio.to_thread(
@@ -175,84 +153,88 @@ async def get_or_create_user(request: Request, response: Response) -> User:
                     session_token=v["session_token"],
                     device_fingerprint=v.get("device_fingerprint"),
                 )
-
         except Exception as e:
-            logger.warning(f"Visitor lookup failed: {e}")
+            # Optional: log a warning if lookup fails
+            print(f"Visitor lookup failed: {e}")
 
-# 2️⃣ Create new visitor
-device_fingerprint = generate_device_fingerprint(request)
-new_session_token = str(uuid.uuid4())
+    # 2️⃣ Create new visitor
+    device_fingerprint = generate_device_fingerprint(request)
+    new_session_token = str(uuid.uuid4())
 
-try:
-    # Use a normal function instead of a multiline lambda
-    def insert_visitor():
-        return supabase.table("visitor_users").insert({
-            "id": new_session_token,
-            "device_fingerprint": device_fingerprint,
-            "session_token": new_session_token,
-        }).execute()
-
-    await asyncio.to_thread(insert_visitor)
-
-    # Set cookie and return user inside the try block
-    response.set_cookie(
-        key="session_token",
-        value=new_session_token,
-        httponly=True,
-        samesite="lax",
-        secure=False,
-        max_age=60 * 60 * 24 * 365,
-    )
-
-    return User(
-        id=new_session_token,
-        anonymous=True,
-        device_fingerprint=device_fingerprint,
-        session_token=new_session_token,
-    )
-
-except Exception as e:
-    if 'duplicate key value violates unique constraint "visitor_users_nickname_key"' in str(e):
-        logger.warning("Duplicate nickname — fetching existing visitor")
-
-        def fetch_existing():
-            return supabase.table("visitor_users") \
-                .select("id, device_fingerprint") \
-                .eq("device_fingerprint", device_fingerprint) \
-                .limit(1) \
+    try:
+        # Insert new visitor
+        await asyncio.to_thread(
+            lambda: supabase.table("visitor_users")
+                .insert({
+                    "id": new_session_token,
+                    "device_fingerprint": device_fingerprint,
+                    "session_token": new_session_token,
+                })
                 .execute()
+        )
 
-        visitor_resp = await asyncio.to_thread(fetch_existing)
+        # Set cookie
+        response.set_cookie(
+            key="session_token",
+            value=new_session_token,
+            httponly=True,
+            samesite="lax",
+            secure=False,
+            max_age=60 * 60 * 24 * 365,
+        )
 
-        if visitor_resp.data:
-            v = visitor_resp.data[0]
+        return User(
+            id=new_session_token,
+            anonymous=True,
+            device_fingerprint=device_fingerprint,
+            session_token=new_session_token,
+        )
 
-            def update_token():
-                return supabase.table("visitor_users") \
-                    .update({"session_token": new_session_token}) \
-                    .eq("id", v["id"]) \
+    except Exception as e:
+        # Handle duplicate key errors
+        if 'duplicate key value violates unique constraint "visitor_users_nickname_key"' in str(e):
+            print("Duplicate nickname — fetching existing visitor")
+            visitor_resp = await asyncio.to_thread(
+                lambda: supabase
+                    .table("visitor_users")
+                    .select("id, device_fingerprint")
+                    .eq("device_fingerprint", device_fingerprint)
+                    .limit(1)
                     .execute()
-
-            await asyncio.to_thread(update_token)
-
-            response.set_cookie(
-                key="session_token",
-                value=new_session_token,
-                httponly=True,
-                samesite="lax",
-                secure=False,
-                max_age=60 * 60 * 24 * 365,
             )
 
-            return User(
-                id=v["id"],
-                anonymous=True,
-                device_fingerprint=v.get("device_fingerprint"),
-                session_token=new_session_token,
-            )
+            if visitor_resp.data:
+                v = visitor_resp.data[0]
 
-    logger.exception("Failed to create visitor user")
-    raise
+                # Update session_token for existing visitor
+                await asyncio.to_thread(
+                    lambda: supabase
+                        .table("visitor_users")
+                        .update({"session_token": new_session_token})
+                        .eq("id", v["id"])
+                        .execute()
+                )
+
+                # Set cookie
+                response.set_cookie(
+                    key="session_token",
+                    value=new_session_token,
+                    httponly=True,
+                    samesite="lax",
+                    secure=False,
+                    max_age=60 * 60 * 24 * 365,
+                )
+
+                return User(
+                    id=v["id"],
+                    anonymous=True,
+                    device_fingerprint=v.get("device_fingerprint"),
+                    session_token=new_session_token,
+                )
+
+        # If any other error occurs, raise
+        print(f"Failed to create visitor user: {e}")
+        raise
 
     # 3️⃣ Set cookie for new visitor
     response.set_cookie(
