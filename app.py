@@ -109,40 +109,44 @@ if FRONTEND_SUPABASE_URL and FRONTEND_SUPABASE_ANON_KEY:
 security = HTTPBearer()
 
 # User model for authentication
-class User(BaseModel):
-    id: str
-    email: Optional[str] = None
-    anonymous: bool = True
-    device_fingerprint: Optional[str] = None
-    session_token: Optional[str] = None
-
-# User Identity Service
-# Assume your User model looks like this:
 class User:
-    def __init__(self, id, anonymous=True, session_token=None, device_fingerprint=None):
+    def __init__(
+        self,
+        id: str,
+        anonymous: bool = True,
+        session_token: str | None = None,
+        device_fingerprint: str | None = None,
+    ):
         self.id = id
         self.anonymous = anonymous
         self.session_token = session_token
         self.device_fingerprint = device_fingerprint
 
-# Example device fingerprint function
-def generate_device_fingerprint(request: Request) -> str:
-    return request.headers.get("user-agent", "unknown-device") + str(uuid.uuid4())
 
+# -----------------------------
+# Device fingerprint
+# -----------------------------
+def generate_device_fingerprint(request: Request) -> str:
+    # simple + stable fingerprint
+    return request.headers.get("user-agent", "unknown-device")
+
+
+# -----------------------------
+# Get or create anonymous user
+# -----------------------------
 async def get_or_create_user(request: Request, response: Response) -> User:
-    now = datetime.utcnow()
     session_token = request.cookies.get("session_token")
 
-    # 1️⃣ Try existing visitor via cookie
+    # 1️⃣ Existing visitor via cookie
     if session_token:
         try:
             visitor_resp = await asyncio.to_thread(
                 lambda: supabase
-                    .table("visitor_users")
-                    .select("id, device_fingerprint, session_token")
-                    .eq("session_token", session_token)
-                    .limit(1)
-                    .execute()
+                .table("visitor_users")
+                .select("id, device_fingerprint, session_token")
+                .eq("session_token", session_token)
+                .limit(1)
+                .execute()
             )
 
             if visitor_resp.data:
@@ -153,27 +157,28 @@ async def get_or_create_user(request: Request, response: Response) -> User:
                     session_token=v["session_token"],
                     device_fingerprint=v.get("device_fingerprint"),
                 )
+
         except Exception as e:
-            # Optional: log a warning if lookup fails
-            print(f"Visitor lookup failed: {e}")
+            logger.warning(f"Visitor lookup failed: {e}")
 
     # 2️⃣ Create new visitor
     device_fingerprint = generate_device_fingerprint(request)
     new_session_token = str(uuid.uuid4())
 
     try:
-        # Insert new visitor
         await asyncio.to_thread(
-            lambda: supabase.table("visitor_users")
-                .insert({
+            lambda: supabase
+            .table("visitor_users")
+            .insert(
+                {
                     "id": new_session_token,
                     "device_fingerprint": device_fingerprint,
                     "session_token": new_session_token,
-                })
-                .execute()
+                }
+            )
+            .execute()
         )
 
-        # Set cookie
         response.set_cookie(
             key="session_token",
             value=new_session_token,
@@ -191,31 +196,28 @@ async def get_or_create_user(request: Request, response: Response) -> User:
         )
 
     except Exception as e:
-        # Handle duplicate key errors
-        if 'duplicate key value violates unique constraint "visitor_users_nickname_key"' in str(e):
-            print("Duplicate nickname — fetching existing visitor")
+        # Handle duplicate visitor (race condition)
+        if "duplicate key" in str(e).lower():
             visitor_resp = await asyncio.to_thread(
                 lambda: supabase
-                    .table("visitor_users")
-                    .select("id, device_fingerprint")
-                    .eq("device_fingerprint", device_fingerprint)
-                    .limit(1)
-                    .execute()
+                .table("visitor_users")
+                .select("id, device_fingerprint")
+                .eq("device_fingerprint", device_fingerprint)
+                .limit(1)
+                .execute()
             )
 
             if visitor_resp.data:
                 v = visitor_resp.data[0]
 
-                # Update session_token for existing visitor
                 await asyncio.to_thread(
                     lambda: supabase
-                        .table("visitor_users")
-                        .update({"session_token": new_session_token})
-                        .eq("id", v["id"])
-                        .execute()
+                    .table("visitor_users")
+                    .update({"session_token": new_session_token})
+                    .eq("id", v["id"])
+                    .execute()
                 )
 
-                # Set cookie
                 response.set_cookie(
                     key="session_token",
                     value=new_session_token,
@@ -232,160 +234,142 @@ async def get_or_create_user(request: Request, response: Response) -> User:
                     session_token=new_session_token,
                 )
 
-        # If any other error occurs, raise
-        print(f"Failed to create visitor user: {e}")
+        logger.exception("Failed to create visitor user")
         raise
 
-    # 3️⃣ Set cookie for new visitor
-    response.set_cookie(
-        key="session_token",
-        value=new_session_token,
-        httponly=True,
-        samesite="lax",
-        secure=False,
-        max_age=60 * 60 * 24 * 365,
+
+# -----------------------------
+# Merge visitor → real user
+# -----------------------------
+def merge_visitor_to_user(user_id: str, session_token: str):
+    visitor = (
+        supabase.table("visitor_users")
+        .select("id")
+        .eq("session_token", session_token)
+        .execute()
     )
 
-    return User(
-        id=anonymous_uuid,
-        anonymous=True,
-        device_fingerprint=device_fingerprint,
-        session_token=new_session_token,
-    )
+    if not visitor.data:
+        return
 
-    def merge_visitor_to_user(self, user_id: str, session_token: str):
-        """
-        Move all anonymous data to real user on login
-        """
-        visitor = (
-            self.supabase.table("visitor_users")
-            .select("id")
-            .eq("session_token", session_token)
-            .execute()
-        )
+    visitor_id = visitor.data[0]["id"]
 
-        if not visitor.data:
-            return
+    supabase.table("conversations") \
+        .update({"user_id": user_id}) \
+        .eq("user_id", visitor_id) \
+        .execute()
 
-        visitor_id = visitor.data[0]["id"]
+    supabase.table("visitor_users") \
+        .delete() \
+        .eq("id", visitor_id) \
+        .execute()
 
-        # Move conversations
-        self.supabase.table("conversations") \
-            .update({"user_id": user_id}) \
-            .eq("user_id", visitor_id) \
-            .execute()
 
-        # Delete visitor row
-        self.supabase.table("visitor_users") \
-            .delete() \
-            .eq("id", visitor_id) \
-            .execute()
-
-# Initialize UserIdentityService
-user_identity_service = UserIdentityService(supabase)
-
-# Background task management
+# -----------------------------
+# Background task system
+# -----------------------------
 background_executor = ThreadPoolExecutor(max_workers=10)
-active_tasks: Dict[str, Dict[str, Any]] = {}  # task_id -> task_info
+
 
 class TaskManager:
     def __init__(self):
-        self.active_tasks = {}
-    
+        self.active_tasks: Dict[str, Dict[str, Any]] = {}
+
     def create_task(self, user_id: str, task_type: str, params: Dict[str, Any]) -> str:
-        """Create a new background task and return its ID"""
         task_id = str(uuid.uuid4())
-        
-        # Store task info
-        self.active_tasks[task_id] = {
+
+        task = {
+            "id": task_id,
             "user_id": user_id,
             "type": task_type,
             "params": params,
             "status": "queued",
-            "created_at": datetime.now().isoformat(),
+            "created_at": datetime.utcnow().isoformat(),
             "result": None,
-            "error": None
+            "error": None,
         }
-        
-        # Save to database
+
+        self.active_tasks[task_id] = task
+
         try:
-            supabase.table("background_tasks").insert({
-                "id": task_id,
-                "user_id": user_id,
-                "task_type": task_type,
-                "params": json.dumps(params),
-                "status": "queued",
-                "created_at": datetime.now().isoformat()
-            }).execute()
+            supabase.table("background_tasks").insert(
+                {
+                    "id": task_id,
+                    "user_id": user_id,
+                    "task_type": task_type,
+                    "params": json.dumps(params),
+                    "status": "queued",
+                    "created_at": task["created_at"],
+                }
+            ).execute()
         except Exception as e:
-            logger.error(f"Failed to save task to database: {e}")
-        
+            logger.error(f"Failed to persist task: {e}")
+
         return task_id
-    
+
     def update_task_status(self, task_id: str, status: str, result=None, error=None):
-        """Update task status and optionally result/error"""
-        if task_id in self.active_tasks:
-            self.active_tasks[task_id]["status"] = status
+        if task_id not in self.active_tasks:
+            return
+
+        task = self.active_tasks[task_id]
+        task["status"] = status
+        task["result"] = result
+        task["error"] = error
+
+        try:
+            update_data = {"status": status}
             if result is not None:
-                self.active_tasks[task_id]["result"] = result
+                update_data["result"] = json.dumps(result)
             if error is not None:
-                self.active_tasks[task_id]["error"] = error
-            
-            # Update in database
-            try:
-                update_data = {"status": status}
-                if result is not None:
-                    update_data["result"] = json.dumps(result)
-                if error is not None:
-                    update_data["error"] = error
-                
-                supabase.table("background_tasks").update(update_data).eq("id", task_id).execute()
-            except Exception as e:
-                logger.error(f"Failed to update task in database: {e}")
-    
-    def get_task(self, task_id: str) -> Dict[str, Any]:
-        """Get task information"""
+                update_data["error"] = str(error)
+
+            supabase.table("background_tasks").update(update_data).eq(
+                "id", task_id
+            ).execute()
+        except Exception as e:
+            logger.error(f"Failed to update task: {e}")
+
+    def get_task(self, task_id: str) -> Dict[str, Any] | None:
         if task_id in self.active_tasks:
             return self.active_tasks[task_id]
-        
-        # Try to fetch from database
+
         try:
-            response = supabase.table("background_tasks").select("*").eq("id", task_id).execute()
-            if response.data:
-                task = response.data[0]
-                # Parse JSON fields
-                if "params" in task and isinstance(task["params"], str):
-                    task["params"] = json.loads(task["params"])
-                if "result" in task and isinstance(task["result"], str):
+            resp = supabase.table("background_tasks").select("*").eq(
+                "id", task_id
+            ).execute()
+            if resp.data:
+                task = resp.data[0]
+                task["params"] = json.loads(task["params"])
+                if task.get("result"):
                     task["result"] = json.loads(task["result"])
-                
-                # Cache in memory
                 self.active_tasks[task_id] = task
                 return task
         except Exception as e:
-            logger.error(f"Failed to fetch task from database: {e}")
-        
+            logger.error(f"Failed to fetch task: {e}")
+
         return None
-    
+
     def get_user_tasks(self, user_id: str) -> List[Dict[str, Any]]:
-        """Get all tasks for a user"""
         try:
-            response = supabase.table("background_tasks").select("*").eq("user_id", user_id).order("created_at", desc=True).execute()
-            tasks = response.data if response.data else []
-            
-            # Parse JSON fields
-            for task in tasks:
-                if "params" in task and isinstance(task["params"], str):
-                    task["params"] = json.loads(task["params"])
-                if "result" in task and isinstance(task["result"], str):
-                    task["result"] = json.loads(task["result"])
-            
+            resp = (
+                supabase.table("background_tasks")
+                .select("*")
+                .eq("user_id", user_id)
+                .order("created_at", desc=True)
+                .execute()
+            )
+
+            tasks = resp.data or []
+            for t in tasks:
+                t["params"] = json.loads(t["params"])
+                if t.get("result"):
+                    t["result"] = json.loads(t["result"])
             return tasks
         except Exception as e:
-            logger.error(f"Failed to fetch user tasks from database: {e}")
+            logger.error(f"Failed to fetch user tasks: {e}")
             return []
 
-# Initialize the task manager
+
 task_manager = TaskManager()
 
 # WebSocket connection manager
