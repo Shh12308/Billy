@@ -4795,7 +4795,8 @@ async def ask_universal(request: Request, response: Response):
 # -------------------------------
 if conversation_id:
     # Verify this conversation belongs to the user
-    conv_check = await asyncio.to_thread(
+    async def some_function():
+        conv_check = await asyncio.to_thread(check_conversation)
         supabase.table("conversations")
         .select("id")
         .eq("id", conversation_id)
@@ -6389,3 +6390,8 @@ async def merge_user_data(req: Request, res: Response):
 @app.on_event("shutdown")
 async def shutdown_event():
     scheduler.shutdown()
+
+@app.post("/check")
+async def check():
+    conv_check = await asyncio.to_thread(run_check)
+    return conv_check
