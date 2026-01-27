@@ -4794,16 +4794,19 @@ async def ask_universal(request: Request, response: Response):
 # Determine / validate conversation_id
 # -------------------------------
 if conversation_id:
-    # Verify this conversation belongs to the user
     async def some_function():
-        conv_check = await asyncio.to_thread(check_conversation)
-        supabase.table("conversations")
-        .select("id")
-        .eq("id", conversation_id)
-        .eq("user_id", user_id)
-        .limit(1)
-        .execute()
-    )
+        conv_check = await asyncio.to_thread(
+            lambda: supabase
+                .table("conversations")
+                .select("id")
+                .eq("id", conversation_id)
+                .eq("user_id", user_id)
+                .limit(1)
+                .execute()
+        )
+        return conv_check
+
+    conv_check = await some_function()
 
     # If invalid, create or fetch most recent conversation
     if not conv_check.data:
