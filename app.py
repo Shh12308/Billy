@@ -151,7 +151,7 @@ class UserIdentityService:
         }
         
     async def get_or_create_user(request: Request, response: Response) -> User:
-        now = datetime.utcnow()
+    now = datetime.utcnow()
 
     # 1️⃣ Try existing visitor via cookie
     session_token = request.cookies.get("session_token")
@@ -182,22 +182,32 @@ class UserIdentityService:
     # 2️⃣ Create new visitor
     device_fingerprint = generate_device_fingerprint(request)
     new_session_token = str(uuid.uuid4())
-    anonymous_info = generate_anonymous_id(device_fingerprint)
-    anonymous_uuid = anonymous_info["uuid"]
-    nickname = anonymous_info["friendly_name"]
 
-    try:
-        await asyncio.to_thread(
-            lambda: supabase
-                .table("visitor_users")
-                .insert({
-                    "id": anonymous_uuid,
-                    "nickname": nickname,
-                    "device_fingerprint": device_fingerprint,
-                    "session_token": new_session_token,
-                })
-                .execute()
-        )
+    await asyncio.to_thread(
+        lambda: supabase.table("visitor_users")
+            .insert({
+                "id": new_session_token,
+                "device_fingerprint": device_fingerprint,
+                "session_token": new_session_token,
+            })
+            .execute()
+    )
+
+    response.set_cookie(
+        key="session_token",
+        value=new_session_token,
+        httponly=True,
+        samesite="lax",
+        secure=False,
+        max_age=60 * 60 * 24 * 365,
+    )
+
+    return User(
+        id=new_session_token,
+        anonymous=True,
+        device_fingerprint=device_fingerprint,
+        session_token=new_session_token,
+    )
 
     except Exception as e:
         if 'duplicate key value violates unique constraint "visitor_users_nickname_key"' in str(e):
