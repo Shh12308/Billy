@@ -4497,7 +4497,7 @@ async def chat_stream(req: Request, res: Response, tts: bool = False, samples: i
 async def chat_endpoint(request: Request, response: Response):
     """Main chat endpoint with user memory"""
    # // Get or create user with stable UUID
-    user = user_identity_service.get_or_create_user(request, response)
+    user = await user_identity_service.get_or_create_user(request, response)
     user_id = user.id
     
    # // Parse request
@@ -4697,9 +4697,7 @@ def is_valid_uuid(uuid_string):
 async def ask_universal(request: Request, response: Response):
   #  // -------------------------------
  #   // Extract request data FIRST
-  #/* LuxStream CSS - Modern Streaming Platform */
-
-#  // -------------------------------
+  # // -------------------------------
     body = await request.json()
     prompt = body.get("prompt", "").strip()
     
@@ -4727,13 +4725,13 @@ async def ask_universal(request: Request, response: Response):
             )
 
             if visitor_resp.data:
-    v = visitor_resp.data[0]
-    yield User(
-        id=v["id"],
-        anonymous=True,
-        session_token=v["session_token"],
-        device_fingerprint=v.get("device_fingerprint"),
-    )
+                v = visitor_resp.data[0]
+                user = User(
+                    id=v["id"],
+                    anonymous=True,
+                    session_token=v["session_token"],
+                    device_fingerprint=v.get("device_fingerprint"),
+                )
 
         except Exception as e:
             logger.warning(f"Visitor lookup failed: {e}")
@@ -4897,88 +4895,86 @@ async def ask_universal(request: Request, response: Response):
   #  // -------------------------------
     if stream:
 
-        async def event_generator(messages, conversation_id, supabase):
+        async def event_generator():
             assistant_reply = ""
-    yield sse({"type": "starting"})
-    yield ": heartbeat\n\n"
+            yield sse({"type": "starting"})
+            yield ": heartbeat\n\n"
 
-    payload = {
-        "model": CHAT_MODEL,
-        "messages": messages,
-        "tools": TOOLS,
-        "tool_choice": "auto",
-        "stream": True,
-        "max_tokens": 1500
-    }
+            payload = {
+                "model": CHAT_MODEL,
+                "messages": messages,
+                "tools": TOOLS,
+                "tool_choice": "auto",
+                "stream": True,
+                "max_tokens": 1500
+            }
 
-    try:
-        async with httpx.AsyncClient(timeout=None) as client:
-            async with client.stream(
-                "POST",
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers=get_groq_headers(),
-                json=payload
-            ) as resp:
+            try:
+                async with httpx.AsyncClient(timeout=None) as client:
+                    async with client.stream(
+                        "POST",
+                        "https://api.groq.com/openai/v1/chat/completions",
+                        headers=get_groq_headers(),
+                        json=payload
+                    ) as resp:
 
-                async for line in resp.aiter_lines():
-                    if not line or not line.startswith("data:"):
-                        continue
+                        async for line in resp.aiter_lines():
+                            if not line or not line.startswith("data:"):
+                                continue
 
-                    data_line = line[5:].strip()
-                    if data_line == "[DONE]":
-                        break
+                            data_line = line[5:].strip()
+                            if data_line == "[DONE]":
+                                break
 
-                    try:
-                        chunk = json.loads(data_line)
+                            try:
+                                chunk = json.loads(data_line)
 
-                        # Handle normal token stream
-                        if "choices" in chunk and len(chunk["choices"]) > 0:
-                            delta = chunk["choices"][0].get("delta", {})
-                            content = delta.get("content")
-                            if content:
-                                assistant_reply += content
-                                yield sse({"type": "token", "text": content})
+                                # Handle normal token stream
+                                if "choices" in chunk and len(chunk["choices"]) > 0:
+                                    delta = chunk["choices"][0].get("delta", {})
+                                    content = delta.get("content")
+                                    if content:
+                                        assistant_reply += content
+                                        yield sse({"type": "token", "text": content})
 
-                        # Handle errors in the stream
-                        elif "error" in chunk:
-                            error_msg = chunk["error"].get("message", "Unknown error")
-                            yield sse({"type": "error", "message": error_msg})
-                            break
+                                # Handle errors in the stream
+                                elif "error" in chunk:
+                                    error_msg = chunk["error"].get("message", "Unknown error")
+                                    yield sse({"type": "error", "message": error_msg})
+                                    break
 
-                    except json.JSONDecodeError:
-                        continue
-                    except Exception as e:
-                        logger.error(f"Error processing stream chunk: {e}")
-                        continue
+                            except json.JSONDecodeError:
+                                continue
+                            except Exception as e:
+                                logger.error(f"Error processing stream chunk: {e}")
+                                continue
 
-    except Exception as e:
-        logger.error(f"HTTP client error: {e}")
+            except Exception as e:
+                logger.error(f"HTTP client error: {e}")
 
-    finally:
-        # Save final assistant reply
-        if assistant_reply.strip():
-            await asyncio.to_thread(
-                lambda: supabase.table("messages")
-                .insert({
-                    "conversation_id": conversation_id,
-                    "role": "assistant",
-                    "content": assistant_reply
-                })
-                .execute()
-            )
-        yield sse({"type": "done"})
+            finally:
+                # Save final assistant reply
+                if assistant_reply.strip():
+                    await asyncio.to_thread(
+                        lambda: supabase.table("messages")
+                        .insert({
+                            "conversation_id": conversation_id,
+                            "role": "assistant",
+                            "content": assistant_reply
+                        })
+                        .execute()
+                    )
+                yield sse({"type": "done"})
 
-
-def build_response(messages, conversation_id, supabase):
-    return StreamingResponse(
-        event_generator(messages, conversation_id, supabase),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "connection": "keep-alive",
-            "x-accel-buffering": "no"
-        }
-    )
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "connection": "keep-alive",
+                "x-accel-buffering": "no"
+            }
+        )
 
   #  // -------------------------------
   #  // NON-STREAM MODE
@@ -4989,9 +4985,10 @@ def build_response(messages, conversation_id, supabase):
         except Exception as e:
             logger.error(f"Background generation failed: {e}")
 
+    background_tasks = BackgroundTasks()
     background_tasks.add_task(safe_generate)
 
-    yield {
+    return {
         "status": "processing",
         "conversation_id": conversation_id,
         "user_id": user_id
@@ -5043,7 +5040,7 @@ async def edit_message(
         raise HTTPException(500, "Failed to edit message")
 
 @app.get("/stream")
-async def stream_endpoint():
+async def stream_endpoint(request: Request):
     async def event_generator():
         for i in range(1, 6):
             # Check if client disconnected
@@ -5068,11 +5065,14 @@ async def stream_endpoint():
 #// Stop endpoint
 #// -----------------------------
 @app.post("/stop")
-async def stop(user=Depends(auth)):
-    task = active_streams.get(user.id)
+async def stop(request: Request, response: Response):
+    user = await get_or_create_user(request, response)
+    user_id = user.id
+    
+    task = active_streams.get(user_id)
     if task:
         task.cancel()
-        del active_streams[user.id]
+        del active_streams[user_id]
         return {"stopped": True}
     return {"stopped": False}
     
@@ -6115,7 +6115,7 @@ async def chat_stream_endpoint(conversation_id: str, user_id: str, messages: lis
 
     #// Return StreamingResponse from the endpoint, not inside the generator
     return StreamingResponse(
-    event_generator(),
+        event_generator(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache"},
     )
@@ -6198,7 +6198,7 @@ async def multimodal_search_endpoint(request: MultimodalSearchRequest, req: Requ
 @app.post("/user/preferences")
 async def set_preferences(request: Request, response: Response):
     """Store user preferences"""
-    user = user_identity_service.get_or_create_user(request, response)
+    user = await user_identity_service.get_or_create_user(request, response)
     user_id = user.id
     
     body = await request.json()
