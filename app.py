@@ -179,21 +179,22 @@ class UserIdentityService:
         except Exception as e:
             logger.warning(f"Visitor lookup failed: {e}")
 
-    # 2️⃣ Create new visitor
-    device_fingerprint = generate_device_fingerprint(request)
-    new_session_token = str(uuid.uuid4())
+# 2️⃣ Create new visitor
+device_fingerprint = generate_device_fingerprint(request)
+new_session_token = str(uuid.uuid4())
 
-    try:
-        await asyncio.to_thread(
-            lambda: supabase.table("visitor_users")
-                .insert({
-                    "id": new_session_token,
-                    "device_fingerprint": device_fingerprint,
-                    "session_token": new_session_token,
-                })
-                .execute()
-    )
+try:
+    # Use a normal function instead of a multiline lambda
+    def insert_visitor():
+        return supabase.table("visitor_users").insert({
+            "id": new_session_token,
+            "device_fingerprint": device_fingerprint,
+            "session_token": new_session_token,
+        }).execute()
 
+    await asyncio.to_thread(insert_visitor)
+
+    # Set cookie and return user inside the try block
     response.set_cookie(
         key="session_token",
         value=new_session_token,
@@ -214,25 +215,25 @@ except Exception as e:
     if 'duplicate key value violates unique constraint "visitor_users_nickname_key"' in str(e):
         logger.warning("Duplicate nickname — fetching existing visitor")
 
-        visitor_resp = await asyncio.to_thread(
-            lambda: supabase
-                .table("visitor_users")
-                .select("id, device_fingerprint")
-                .eq("device_fingerprint", device_fingerprint)
-                .limit(1)
+        def fetch_existing():
+            return supabase.table("visitor_users") \
+                .select("id, device_fingerprint") \
+                .eq("device_fingerprint", device_fingerprint) \
+                .limit(1) \
                 .execute()
-        )
+
+        visitor_resp = await asyncio.to_thread(fetch_existing)
 
         if visitor_resp.data:
             v = visitor_resp.data[0]
 
-            await asyncio.to_thread(
-                lambda: supabase
-                    .table("visitor_users")
-                    .update({"session_token": new_session_token})
-                    .eq("id", v["id"])
+            def update_token():
+                return supabase.table("visitor_users") \
+                    .update({"session_token": new_session_token}) \
+                    .eq("id", v["id"]) \
                     .execute()
-            )
+
+            await asyncio.to_thread(update_token)
 
             response.set_cookie(
                 key="session_token",
