@@ -4790,21 +4790,32 @@ async def ask_universal(request: Request, response: Response):
 #    // --- FIX 3: Correctly Determine Conversation ID ---
 #    // -------------------------------
  #   // If a conversation_id is provided, use it. Otherwise, get/create the most recent one.
-    if conversation_id:
-      #  // Verify this conversation belongs to the user before using it
-        conv_check = await asyncio.to_thread(
-            supabase.table("conversations")
-            .select("id")
-            .eq("id", conversation_id)
-            .eq("user_id", user_id)
-            .execute()
+# -------------------------------
+# Determine / validate conversation_id
+# -------------------------------
+if conversation_id:
+    # Verify this conversation belongs to the user
+    conv_check = await asyncio.to_thread(
+        supabase.table("conversations")
+        .select("id")
+        .eq("id", conversation_id)
+        .eq("user_id", user_id)
+        .limit(1)
+        .execute()
+    )
+
+    # If invalid, create or fetch most recent conversation
+    if not conv_check.data:
+        conversation_id = get_or_create_conversation(
+            user_id=user_id,
+            conversation_id=None
         )
-        if not conv_check.data:
-          #  // If the provided ID is invalid, fall back to creating a new one
-            conversation_id = get_or_create_conversation(user_id)
-    else:
-    #    // If no ID was provided, get/create the most recent conversation for the user
-        conversation_id = get_or_create_conversation(user_id)
+else:
+    # No conversation_id provided → get or create one
+    conversation_id = get_or_create_conversation(
+        user_id=user_id,
+        conversation_id=None
+    )
 
 #    // Now, load the history for the CORRECT conversation_id
     messages = []
