@@ -5678,7 +5678,7 @@ async def vision_analyze(
   #  // =========================
     hex_colors = []
     try:
-    from sklearn.cluster import KMeans
+        from sklearn.cluster import KMeans
     kmeans = KMeans(n_clusters=5, random_state=0).fit(pixels)
     hex_colors = [
         '#%02x%02x%02x' % tuple(map(int, c))
