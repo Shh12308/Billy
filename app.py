@@ -4669,6 +4669,23 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
 #// 🚀 UNIVERSAL MULTIMODAL ENDPOINT — /ask/universal
 #// =========================================================
 
+def load_conversation_history(user_id: str, limit: int = 20):
+    """Load conversation history for a user"""
+    try:
+        # Get most recent conversation
+        conv_response = supabase.table("conversations").select("id").eq("user_id", user_id).order("updated_at", desc=True).limit(1).execute()
+        
+        if not conv_response.data:
+            conversation_id = conv_response.data[0]["id"]
+            
+            # Get recent messages from this conversation
+            msg_response = supabase.table("messages").select("role, content").eq("conversation_id", conversation_id).order("created_at", "asc").limit(limit).execute()
+            
+            return [{"role": row["role"], "content": row["content"]} for row in msg_response.data]
+    except Exception as e:
+        logger.error(f"Failed to load conversation history: {e}")
+    return []
+    
 @app.post("/ask/universal")
 async def ask_universal(request: Request, response: Response):
     # -------------------------------
@@ -4755,7 +4772,7 @@ async def ask_universal(request: Request, response: Response):
     # -------------------------------
     # Load conversation history
     # -------------------------------
-    history = load_conversation_history(user_id)
+    history = load_conversation_history(user_id, limit=20)
     
     # -------------------------------
     # Get user profile
