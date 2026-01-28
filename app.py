@@ -5676,18 +5676,23 @@ async def vision_analyze(
   #  // =========================
  #   // 3️⃣ DOMINANT COLORS
   #  // =========================
-    hex_colors = []
-    try:
-        from sklearn.cluster import KMeans
+hex_colors = []
+
+try:
+    from sklearn.cluster import KMeans
+
     kmeans = KMeans(n_clusters=5, random_state=0).fit(pixels)
     hex_colors = [
         '#%02x%02x%02x' % tuple(map(int, c))
         for c in kmeans.cluster_centers_
     ]
+
 except ImportError:
     logger.warning("sklearn not installed, skipping color analysis")
     hex_colors = []
+
 except Exception:
+    logger.exception("Color clustering failed")
     hex_colors = []
 
     #// =========================
