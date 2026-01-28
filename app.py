@@ -4764,7 +4764,7 @@ async def ask_universal(request: Request, response: Response):
     # -------------------------------
     # Load conversation history
     # -------------------------------
-    history = await load_memory(conversation_id)
+    history = load_memory(conversation_id)
 
     # -------------------------------
     # Profile fetch / create
