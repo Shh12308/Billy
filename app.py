@@ -4684,35 +4684,13 @@ async def ask_universal(request: Request, response: Response):
         raise HTTPException(status_code=400, detail="prompt required")
 
     # -------------------------------
-    # User resolution
+    # User resolution - FIX: Get user first
     # -------------------------------
     user = await get_or_create_user(request, response)
+    user_id = user.id  # Assign user_id here
 
-    session_token = request.cookies.get("session_token")
-
-    if session_token:
-        try:
-            visitor_resp = await asyncio.to_thread(
-                lambda: supabase
-                    .table("visitor_users")
-                    .select("id, device_fingerprint, session_token")
-                    .eq("session_token", session_token)
-                    .limit(1)
-                    .execute()
-            )
-
-            if visitor_resp.data:
-                v = visitor_resp.data[0]
-                user = User(
-                    id=v["id"],
-                    anonymous=True,
-                    session_token=v["session_token"],
-                    device_fingerprint=v.get("device_fingerprint"),
-                )
-                user_id = user.id
-
-        except Exception as e:
-            logger.warning(f"Visitor lookup failed: {e}")
+    # Remove the duplicate user lookup code that follows
+    # (delete the section that starts with "session_token = request.cookies.get("session_token")")
 
     # -------------------------------
     # Detect intent
