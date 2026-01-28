@@ -5821,10 +5821,6 @@ async def code_gen(req: Request, res: Response):
 
 @app.get("/search")
 async def duck_search(q: str = Query(..., min_length=1)):
-    """
-    Lightweight search endpoint backed by DuckDuckGo Instant Answer API.
-    Example: /search?q=python+asyncio
-    """
     try:
         return await duckduckgo_search(q)
     except httpx.HTTPStatusError as e:
