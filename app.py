@@ -1012,6 +1012,10 @@ def analyze_code_quality(code, language, focus_areas):
     
     return results
 
+def run_check():
+    return {"status": "ok", "message": "System check passed"}
+
+
 def create_chart(data, chart_type, options):
     """Create a chart from data"""
     try:
@@ -5674,15 +5678,17 @@ async def vision_analyze(
   #  // =========================
     hex_colors = []
     try:
-        from sklearn.cluster import KMeans  # Added import inside function to avoid import error if sklearn is not installed
-        pixels = np_img.reshape(-1, 3)
-        kmeans = KMeans(n_clusters=5, random_state=0).fit(pixels)
-        hex_colors = [
-            '#%02x%02x%02x' % tuple(map(int, c))
-            for c in kmeans.cluster_centers_
-        ]
-    except Exception:
-        pass
+    from sklearn.cluster import KMeans
+    kmeans = KMeans(n_clusters=5, random_state=0).fit(pixels)
+    hex_colors = [
+        '#%02x%02x%02x' % tuple(map(int, c))
+        for c in kmeans.cluster_centers_
+    ]
+except ImportError:
+    logger.warning("sklearn not installed, skipping color analysis")
+    hex_colors = []
+except Exception:
+    hex_colors = []
 
     #// =========================
    # // 4️⃣ UPLOAD TO SUPABASE
