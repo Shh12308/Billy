@@ -4740,7 +4740,7 @@ async def ask_universal(request: Request, response: Response):
         "share_chat": share_chat_handler,
         "view_shared_chat": view_shared_chat_handler,
         "edit_message": edit_message_handler,
-        history = load_conversation_history(user_id, limit=20),
+        "history = load_conversation_history(user_id, limit=20),
         "get_user_info": get_user_info_handler,
         "merge_user_data": merge_user_data_handler,
     }
