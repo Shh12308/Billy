@@ -135,8 +135,10 @@ def generate_device_fingerprint(request: Request) -> str:
 # Get or create anonymous user
 # -----------------------------
 # Fixed get_or_create_user function
-async def get_or_create_user(req: Request, res: Response) -> User:
-    session_token = req.cookies.get("session_token")
+# Find the get_or_create_user function (around line 580-650) and replace it with this corrected version:
+
+async def get_or_create_user(request: Request, response: Response) -> User:
+    session_token = request.cookies.get("session_token")
 
     # 1️⃣ Existing visitor via cookie
     if session_token:
@@ -163,7 +165,7 @@ async def get_or_create_user(req: Request, res: Response) -> User:
             logger.warning(f"Visitor lookup failed: {e}")
 
     # 2️⃣ Create new visitor
-    device_fingerprint = generate_device_fingerprint(req)
+    device_fingerprint = generate_device_fingerprint(request)
     new_session_token = str(uuid.uuid4())
 
     try:
@@ -180,7 +182,7 @@ async def get_or_create_user(req: Request, res: Response) -> User:
             .execute()
         )
 
-        res.set_cookie(
+        response.set_cookie(
             key="session_token",
             value=new_session_token,
             httponly=True,
@@ -219,7 +221,7 @@ async def get_or_create_user(req: Request, res: Response) -> User:
                     .execute()
                 )
 
-                res.set_cookie(
+                response.set_cookie(
                     key="session_token",
                     value=new_session_token,
                     httponly=True,
@@ -237,8 +239,7 @@ async def get_or_create_user(req: Request, res: Response) -> User:
 
         logger.exception("Failed to create visitor user")
         raise
-
-
+        
 # -----------------------------
 # Merge visitor → real user
 # -----------------------------
@@ -4686,8 +4687,7 @@ async def ask_universal(request: Request, response: Response):
     # -------------------------------
     # User resolution
     # -------------------------------
-    user = await get_or_create_user(request, response)  # Use response, not Response()
-    user_id = user.id
+    user = await get_or_create_user(request, response)
 
     session_token = request.cookies.get("session_token")
 
