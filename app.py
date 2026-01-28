@@ -4685,6 +4685,30 @@ def load_conversation_history(user_id: str, limit: int = 20):
     except Exception as e:
         logger.error(f"Failed to load conversation history: {e}")
     return []
+
+def get_or_create_conversation_id(user_id: str) -> str:
+    """Get existing conversation or create new one"""
+    try:
+        # Try to get most recent conversation
+        response = supabase.table("conversations").select("id").eq("user_id", user_id).order("updated_at", desc=True).limit(1).execute()
+        
+        if response.data:
+            return response.data[0]["id"]
+        
+        # Create new conversation
+        conversation_id = str(uuid.uuid4())
+        supabase.table("conversations").insert({
+            "id": conversation_id,
+            "user_id": user_id,
+            "title": "New Chat",
+            "created_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat()
+        }).execute()
+        
+        return conversation_id
+    except Exception as e:
+        logger.error(f"Failed to get or create conversation: {e}")
+        return str(uuid.uuid4())  # Fallback
     
 @app.post("/ask/universal")
 async def ask_universal(request: Request, response: Response):
@@ -4740,7 +4764,7 @@ async def ask_universal(request: Request, response: Response):
         "share_chat": share_chat_handler,
         "view_shared_chat": view_shared_chat_handler,
         "edit_message": edit_message_handler,
-        "history = load_conversation_history(user_id, limit=20),
+        "regenerate": regenerate_handler,
         "get_user_info": get_user_info_handler,
         "merge_user_data": merge_user_data_handler,
     }
