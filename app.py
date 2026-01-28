@@ -5689,61 +5689,59 @@ try:
 
 except ImportError:
     logger.warning("sklearn not installed, skipping color analysis")
-    hex_colors = []
 
 except Exception:
     logger.exception("Color clustering failed")
-    hex_colors = []
 
-    #// =========================
-   # // 4️⃣ UPLOAD TO SUPABASE
-   # // =========================
-    #// Use anonymous folder for storage
-    raw_path = f"anonymous/raw/{uuid.uuid4().hex}.png"
-    ann_path = f"anonymous/annotated/{uuid.uuid4().hex}.png"
+# =========================
+# 4️⃣ UPLOAD TO SUPABASE
+# =========================
+raw_path = f"anonymous/raw/{uuid.uuid4().hex}.png"
+ann_path = f"anonymous/annotated/{uuid.uuid4().hex}.png"
 
-    _, ann_buf = cv2.imencode(".png", annotated)
+_, ann_buf = cv2.imencode(".png", annotated)
 
-    supabase.storage.from_("ai-images").upload(
-        raw_path,
-        content,
-        {"content-type": "image/png"}
-    )
+supabase.storage.from_("ai-images").upload(
+    raw_path,
+    content,
+    {"content-type": "image/png"}
+)
 
-    supabase.storage.from_("ai-images").upload(
-        ann_path,
-        ann_buf.tobytes(),
-        {"content-type": "image/png"}
-    )
+supabase.storage.from_("ai-images").upload(
+    ann_path,
+    ann_buf.tobytes(),
+    {"content-type": "image/png"}
+)
 
-    raw_url = supabase.storage.from_("ai-images").create_signed_url(raw_path, 3600)["signedURL"]
-    ann_url = supabase.storage.from_("ai-images").create_signed_url(ann_path, 3600)["signedURL"]
+raw_url = supabase.storage.from_("ai-images").create_signed_url(raw_path, 3600)["signedURL"]
+ann_url = supabase.storage.from_("ai-images").create_signed_url(ann_path, 3600)["signedURL"]
 
     #// =========================
    # // 5️⃣ SAVE HISTORY
    # // =========================
-    analysis_id = str(uuid.uuid4())
-    try:
-        supabase.table("vision_history").insert({
-            "id": analysis_id,
-            "user_id": user_id,
-            "image_path": raw_path,
-            "annotated_path": ann_path,
-            "detections": json.dumps(detections),
-            "faces": face_count,
-            "created_at": datetime.now().isoformat()
-        }).execute()
-    except Exception as e:
-        logger.error(f"Failed to save vision analysis: {e}")
+analysis_id = str(uuid.uuid4())
 
-    return {
-        "objects": detections,
-        "faces_detected": face_count,
-        "dominant_colors": hex_colors,
-        "image_url": raw_url,
-        "annotated_image_url": ann_url,
-        "user_id": user_id
-    }
+try:
+    supabase.table("vision_history").insert({
+        "id": analysis_id,
+        "user_id": user_id,
+        "image_path": raw_path,
+        "annotated_path": ann_path,
+        "detections": json.dumps(detections),
+        "faces": face_count,
+        "created_at": datetime.now().isoformat()
+    }).execute()
+except Exception as e:
+    logger.error(f"Failed to save vision analysis: {e}")
+
+return {
+    "objects": detections,
+    "faces_detected": face_count,
+    "dominant_colors": hex_colors,
+    "image_url": raw_url,
+    "annotated_image_url": ann_url,
+    "user_id": user_id
+}
 
 #// Update the vision_history function to use the new user model
 @app.get("/vision/history")
