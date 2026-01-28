@@ -601,9 +601,6 @@ async def save_code_generation_record(user_id: str, language: str, prompt: str, 
         logger.error(f"Failed to save code generation record: {e}")
 
 # Fixed get_or_create_user function
-async def get_or_create_user(req: Request, res: Response) -> User:
-    return await get_or_create_user(req, res)
-
 def init_supabase_tables():
     print("Supabase schema assumed present — skipping RPC table creation")
 
@@ -5171,7 +5168,7 @@ async def generate_video(request: Request):
     prompt = body.get("prompt", "").strip()
     user = await get_or_create_user(request, Response())
     user_id = user.id
-    samples = max(1, int(body.get("samples", 1)))  # Fixed missing closing parenthesis
+    samples = max(1, int(body.get("samples", 1)))  # Added missing closing parenthesis
 
     if not prompt:
         raise HTTPException(400, "prompt required")
