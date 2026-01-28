@@ -137,6 +137,8 @@ def generate_device_fingerprint(request: Request) -> str:
 # Fixed get_or_create_user function
 # Find the get_or_create_user function (around line 580-650) and replace it with this corrected version:
 
+# Replace the ENTIRE get_or_create_user function (around line 580-650) with this:
+
 async def get_or_create_user(request: Request, response: Response) -> User:
     session_token = request.cookies.get("session_token")
 
