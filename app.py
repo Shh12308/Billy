@@ -4851,6 +4851,11 @@ async def ask_universal(request: Request, response: Response):
     # Add current user message
     messages.append({"role": "user", "content": prompt})
 
+    # Log the messages for debugging
+    logger.info(f"Sending {len(messages)} messages to Groq API")
+    for i, msg in enumerate(messages):
+        logger.info(f"Message {i}: role={msg['role']}, content_length={len(msg.get('content', ''))}")
+
     # -------------------------------
     # STREAM MODE
     # -------------------------------
@@ -4866,6 +4871,9 @@ async def ask_universal(request: Request, response: Response):
                 "max_tokens": 1500,
             }
 
+            # Log the payload for debugging
+            logger.info(f"Groq API payload: {json.dumps(payload, indent=2)}")
+
             try:
                 async with httpx.AsyncClient(timeout=None) as client:
                     async with client.stream(
@@ -4874,6 +4882,12 @@ async def ask_universal(request: Request, response: Response):
                         headers=get_groq_headers(),
                         json=payload,
                     ) as resp:
+                        logger.info(f"Groq API response status: {resp.status_code}")
+                        
+                        if resp.status_code != 200:
+                            error_text = await resp.aread()
+                            logger.error(f"Groq API error response: {error_text.decode()}")
+                        
                         async for line in resp.aiter_lines():
                             if not line or not line.startswith("data:"):
                                 continue
@@ -4936,6 +4950,9 @@ async def ask_universal(request: Request, response: Response):
             "max_tokens": 1500
         }
 
+        # Log the payload for debugging
+        logger.info(f"Groq API payload: {json.dumps(payload, indent=2)}")
+
         headers = {
             "Authorization": f"Bearer {GROQ_API_KEY}",
             "Content-Type": "application/json"
@@ -4984,7 +5001,7 @@ async def ask_universal(request: Request, response: Response):
     except Exception as e:
         logger.error(f"Failed to generate response: {e}")
         raise HTTPException(500, f"Failed to generate response: {str(e)}")
-    
+        
 @app.post("/message/{message_id}/edit")
 async def edit_message(
     message_id: str,
