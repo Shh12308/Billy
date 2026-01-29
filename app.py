@@ -4964,27 +4964,25 @@ async def ask_universal(request: Request, response: Response):
                     continue
 
             finally:
-                    if assistant_reply.strip():
-                    # Save the message to the database
-                    await asyncio.to_thread(
-                        lambda: supabase.table("messages").insert({
-                            "id": str(uuid.uuid4()),
-                            "conversation_id": conversation_id,
-                            "user_id": user_id,
-                            "role": "assistant",
-                            "content": assistant_reply,
-                            "created_at": datetime.utcnow().isoformat()
-                        }).execute()
-                    )
-                    
-                    # Update conversation timestamp
-                    await asyncio.to_thread(
-                        lambda: supabase.table("conversations").update({
-                            "updated_at": datetime.utcnow().isoformat()
-                        }).eq("id", conversation_id).execute()
-                    )
-                    
-                    yield sse({"type": "done"})
+        if assistant_reply.strip():
+            await asyncio.to_thread(
+                lambda: supabase.table("messages").insert({
+                    "id": str(uuid.uuid4()),
+                    "conversation_id": conversation_id,
+                    "user_id": user_id,
+                    "role": "assistant",
+                    "content": assistant_reply,
+                    "created_at": datetime.utcnow().isoformat()
+                }).execute()
+            )
+
+            await asyncio.to_thread(
+                lambda: supabase.table("conversations").update({
+                    "updated_at": datetime.utcnow().isoformat()
+                }).eq("id", conversation_id).execute()
+            )
+
+            yield sse({"type": "done"})
 
         return StreamingResponse(
             event_generator(),
