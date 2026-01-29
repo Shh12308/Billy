@@ -140,15 +140,14 @@ def generate_device_fingerprint(request: Request) -> str:
 
 # Replace your current get_or_create_user function with this improved version
 async def get_or_create_user(request: Request, response: Response) -> User:
-    # Try to get existing session token from cookie
+    # 1️⃣ Try to get existing session token from cookie
     session_token = request.cookies.get("session_token")
     
     if session_token:
         try:
-            # Check if this session token exists in our database
+            # Check if this session token exists in the database
             user_resp = await asyncio.to_thread(
-                lambda: supabase
-                .table("users")
+                lambda: supabase.table("users")
                 .select("*")
                 .eq("session_token", session_token)
                 .limit(1)
@@ -157,15 +156,15 @@ async def get_or_create_user(request: Request, response: Response) -> User:
             
             if user_resp.data:
                 user_data = user_resp.data[0]
-                # Update last seen
+
+                # Update last_seen to current UTC time
                 await asyncio.to_thread(
-                    lambda: supabase
-                    .table("users")
+                    lambda: supabase.table("users")
                     .update({"last_seen": datetime.utcnow().isoformat()})
                     .eq("id", user_data["id"])
                     .execute()
                 )
-                
+
                 return User(
                     id=user_data["id"],
                     anonymous=False,
@@ -174,50 +173,50 @@ async def get_or_create_user(request: Request, response: Response) -> User:
                 )
         except Exception as e:
             logger.warning(f"User lookup failed: {e}")
-    
-    # If no valid session, create a new user
-    device_fingerprint = generate_device_fingerprint(request)
+
+    # 2️⃣ No valid session? Create a new user
+    device_fingerprint = generate_device_fingerprint(request)  # Make sure this function exists
     new_session_token = str(uuid.uuid4())
     user_id = str(uuid.uuid4())
-    
-try:
-    # create new user
-    await asyncio.to_thread(
-        lambda: supabase
-        .table("users")
-        .insert({
-            "id": user_id,
-            "session_token": new_session_token,
-            "device_fingerprint": device_fingerprint,
-            "created_at": datetime.utcnow().isoformat(),
-            "last_seen": datetime.now(timezone.utc).isoformat()
-        })
-        .execute()
-    )
 
-    # set cookie inside try block
-    response.set_cookie(
-        key="session_token",
-        value=new_session_token,
-        max_age=60 * 60 * 24 * 30,
-        expires=(datetime.utcnow() + timedelta(days=30)).strftime("%a, %d %b %Y %H:%M:%S GMT"),
-        path="/",
-        domain=None,
-        secure=False,
-        httponly=True,
-        samesite="lax"
-    )
+    try:
+        # Insert new user record
+        await asyncio.to_thread(
+            lambda: supabase.table("users").insert({
+                "id": user_id,
+                "session_token": new_session_token,
+                "device_fingerprint": device_fingerprint,
+                "created_at": datetime.utcnow().isoformat(),
+                "last_seen": datetime.utcnow().isoformat()  # UTC-safe
+            }).execute()
+        )
 
-    return User(
-        id=user_id,
-        anonymous=False,
-        session_token=new_session_token,
-        device_fingerprint=device_fingerprint,
-    )
+        # Set cookie expiration properly (HTTP-date string)
+        expires = (datetime.utcnow() + timedelta(days=30))
+        expires_str = expires.strftime("%a, %d %b %Y %H:%M:%S GMT")
 
-except Exception as e:
-    logger.error(f"Failed to create user: {e}")
-    raise HTTPException(500, "Failed to create user session")
+        # Set session cookie
+        response.set_cookie(
+            key="session_token",
+            value=new_session_token,
+            max_age=60 * 60 * 24 * 30,  # 30 days in seconds
+            expires=expires_str,
+            path="/",
+            secure=False,  # Set True in production with HTTPS
+            httponly=True,
+            samesite="lax"
+        )
+
+        return User(
+            id=user_id,
+            anonymous=False,
+            session_token=new_session_token,
+            device_fingerprint=device_fingerprint,
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to create user: {e}")
+        raise HTTPException(500, "Failed to create user session")
         
 # -----------------------------
 # Merge visitor → real user
