@@ -180,8 +180,8 @@ async def get_or_create_user(request: Request, response: Response) -> User:
     new_session_token = str(uuid.uuid4())
     user_id = str(uuid.uuid4())
     
-   try:
-    # Create new user
+try:
+    # create new user
     await asyncio.to_thread(
         lambda: supabase
         .table("users")
@@ -194,20 +194,20 @@ async def get_or_create_user(request: Request, response: Response) -> User:
         })
         .execute()
     )
-    
-    # Set the cookie with proper settings (inside the try)
+
+    # set cookie inside try block
     response.set_cookie(
         key="session_token",
         value=new_session_token,
-        max_age=60 * 60 * 24 * 30,  # 30 days in seconds
+        max_age=60 * 60 * 24 * 30,
         expires=(datetime.utcnow() + timedelta(days=30)).strftime("%a, %d %b %Y %H:%M:%S GMT"),
         path="/",
-        domain=None,                # current domain
-        secure=False,               # True in production HTTPS
+        domain=None,
+        secure=False,
         httponly=True,
         samesite="lax"
     )
-    
+
     return User(
         id=user_id,
         anonymous=False,
