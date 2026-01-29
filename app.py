@@ -4810,7 +4810,28 @@ async def ask_universal(request: Request, response: Response):
     nickname = profile.get("nickname", f"User{user_id[:8]}")
 
     # -------------------------------
-    # Build system prompt with user context
+    # Save user message
+    # -------------------------------
+    await asyncio.to_thread(
+        lambda: supabase.table("messages").insert({
+            "id": str(uuid.uuid4()),
+            "conversation_id": conversation_id,
+            "user_id": user_id,
+            "role": "user",
+            "content": prompt,
+            "created_at": datetime.utcnow().isoformat()
+        }).execute()
+    )
+    
+    # Update conversation timestamp
+    await asyncio.to_thread(
+        lambda: supabase.table("conversations").update({
+            "updated_at": datetime.utcnow().isoformat()
+        }).eq("id", conversation_id).execute()
+    )
+
+    # -------------------------------
+    # Build messages for API call
     # -------------------------------
     system_prompt = (
         PERSONALITY_MAP.get(personality, PERSONALITY_MAP["friendly"])
@@ -4899,38 +4920,52 @@ async def ask_universal(request: Request, response: Response):
     # -------------------------------
     # NON-STREAM MODE
     # -------------------------------
-    # Save user message
-    await asyncio.to_thread(
-        lambda: supabase.table("messages").insert({
-            "id": str(uuid.uuid4()),
+    try:
+        payload = {
+            "model": CHAT_MODEL,
+            "messages": messages,
+            "max_tokens": 1500
+        }
+
+        headers = {
+            "Authorization": f"Bearer {GROQ_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.post(GROQ_URL, headers=headers, json=payload)
+            r.raise_for_status()
+            response_data = r.json()
+        
+        assistant_reply = response_data["choices"][0]["message"]["content"]
+        
+        # Store assistant message
+        await asyncio.to_thread(
+            lambda: supabase.table("messages").insert({
+                "id": str(uuid.uuid4()),
+                "conversation_id": conversation_id,
+                "user_id": user_id,
+                "role": "assistant",
+                "content": assistant_reply,
+                "created_at": datetime.utcnow().isoformat()
+            }).execute()
+        )
+        
+        # Update conversation timestamp
+        await asyncio.to_thread(
+            lambda: supabase.table("conversations").update({
+                "updated_at": datetime.utcnow().isoformat()
+            }).eq("id", conversation_id).execute()
+        )
+        
+        return {
+            "reply": assistant_reply,
             "conversation_id": conversation_id,
-            "user_id": user_id,
-            "role": "user",
-            "content": prompt,
-            "created_at": datetime.utcnow().isoformat()
-        }).execute()
-    )
-    
-    # Update conversation timestamp
-    await asyncio.to_thread(
-        lambda: supabase.table("conversations").update({
-            "updated_at": datetime.utcnow().isoformat()
-        }).eq("id", conversation_id).execute()
-    )
-
-    background_tasks = BackgroundTasks()
-    background_tasks.add_task(
-        generate_ai_response,
-        conversation_id,
-        user_id,
-        messages,
-    )
-
-    return {
-        "status": "processing",
-        "conversation_id": conversation_id,
-        "user_id": user_id,
-    }
+            "user_id": user_id
+        }
+    except Exception as e:
+        logger.error(f"Failed to generate response: {e}")
+        raise HTTPException(500, "Failed to generate response")
     
 @app.post("/message/{message_id}/edit")
 async def edit_message(
