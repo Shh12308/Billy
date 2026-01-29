@@ -4964,7 +4964,7 @@ async def ask_universal(request: Request, response: Response):
                     continue
 
             finally:
-                if assistant_reply.strip():
+                    if assistant_reply.strip():
                     # Save the message to the database
                     await asyncio.to_thread(
                         lambda: supabase.table("messages").insert({
