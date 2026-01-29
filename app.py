@@ -196,17 +196,17 @@ async def get_or_create_user(request: Request, response: Response) -> User:
         )
         
         # Set the cookie with proper settings
-        response.set_cookie(
-            key="session_token",
-            value=new_session_token,
-            max_age=60 * 60 * 24 * 30,  # 30 days
-            expires=datetime.utcnow() + timedelta(days=30),
-            path="/",
-            domain=None,  # Will use current domain
-            secure=False,  # Set to True in production with HTTPS
-            httponly=True,
-            samesite="lax"
-        )
+response.set_cookie(
+    key="session_token",
+    value=new_session_token,
+    max_age=60 * 60 * 24 * 30,  # 30 days in seconds
+    expires=expires_str,        # Correct HTTP-date string
+    path="/",
+    domain=None,                # current domain
+    secure=False,               # True in production HTTPS
+    httponly=True,
+    samesite="lax"
+)
         
         return User(
             id=user_id,
