@@ -18,7 +18,7 @@ from typing import Optional, Dict, Any, List, Union
 from io import BytesIO, StringIO
 import re
 import math
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor
 
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
