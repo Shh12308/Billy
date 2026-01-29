@@ -18,7 +18,7 @@ from typing import Optional, Dict, Any, List, Union
 from io import BytesIO, StringIO
 import re
 import math
-from datetime import datetime, timedelta
+from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -190,7 +190,7 @@ async def get_or_create_user(request: Request, response: Response) -> User:
                 "session_token": new_session_token,
                 "device_fingerprint": device_fingerprint,
                 "created_at": datetime.utcnow().isoformat(),
-                "last_seen": datetime.utcnow().isoformat()
+                "last_seen": datetime.now(timezone.utc).isoformat()
             })
             .execute()
         )
@@ -577,7 +577,7 @@ def save_image_record(user_id, prompt, path, is_nsfw):
             "prompt": prompt,
             "image_path": path,
             "is_nsfw": is_nsfw,
-            "created_at": datetime.now().isoformat()
+            "created_at": datetime.now(timezone.utc).isoformat()
         }).execute()
     except Exception as e:
         logger.error(f"Failed to save image record: {e}")
@@ -5725,7 +5725,7 @@ async def vision_analyze(
             "annotated_path": ann_path,
             "detections": json.dumps(detections),
             "faces": face_count,
-            "created_at": datetime.now().isoformat()
+            "created_at": datetime.now(timezone.utc).isoformat()
         }).execute()
     except Exception as e:
         logger.error(f"Failed to save vision analysis: {e}")
