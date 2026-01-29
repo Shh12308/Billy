@@ -4905,7 +4905,7 @@ async def ask_universal(request: Request, response: Response):
             "id": str(uuid.uuid4()),
             "conversation_id": conversation_id,
             "user_id": user_id,
-            "key": "user",
+            "role": "user",
             "content": prompt,
             "created_at": datetime.utcnow().isoformat()
         }).execute()
