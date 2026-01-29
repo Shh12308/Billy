@@ -651,7 +651,8 @@ logger.info(f"GROQ key present: {bool(GROQ_API_KEY)}")
 # -------------------
 # Models
 # -------------------
-CHAT_MODEL = os.getenv("CHAT_MODEL", "llama3-8b-8192")
+# Update this line in your code
+CHAT_MODEL = os.getenv("CHAT_MODEL", "llama3-groq-8b-8192-tool-use-preview")  # Using a currently supported model
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions" # // Added missing URL
 
 # TTS/STT are handled via ElevenLabs now
@@ -4713,7 +4714,30 @@ def get_or_create_conversation_id(user_id: str) -> str:
     except Exception as e:
         logger.error(f"Failed to get or create conversation: {e}")
         return str(uuid.uuid4())  # Fallback
+
+# Add this function to check and update the model if needed
+def get_valid_groq_model():
+    """Get a valid Groq model, with fallbacks in case the configured model is deprecated"""
+    configured_model = os.getenv("CHAT_MODEL", "llama3-groq-8b-8192-tool-use-preview")
     
+    # List of currently supported models in order of preference
+    supported_models = [
+        "llama3-groq-70b-8192-tool-use-preview",
+        "llama3-groq-8b-8192-tool-use-preview",
+        "mixtral-8x7b-32768",
+        "gemma-7b-it"
+    ]
+    
+    # If the configured model is in our list of supported models, use it
+    if configured_model in supported_models:
+        return configured_model
+    
+    # Otherwise, use the first supported model in our list
+    return supported_models[0]
+
+# Update the CHAT_MODEL initialization
+CHAT_MODEL = get_valid_groq_model()
+
 @app.post("/ask/universal")
 async def ask_universal(request: Request, response: Response):
     # -------------------------------
@@ -4851,10 +4875,8 @@ async def ask_universal(request: Request, response: Response):
     # Add current user message
     messages.append({"role": "user", "content": prompt})
 
-    # Log the messages for debugging
-    logger.info(f"Sending {len(messages)} messages to Groq API")
-    for i, msg in enumerate(messages):
-        logger.info(f"Message {i}: role={msg['role']}, content_length={len(msg.get('content', ''))}")
+    # Get a valid model
+    model = get_valid_groq_model()
 
     # -------------------------------
     # STREAM MODE
@@ -4865,14 +4887,11 @@ async def ask_universal(request: Request, response: Response):
             yield sse({"type": "starting"})
 
             payload = {
-                "model": CHAT_MODEL,
+                "model": model,  # Using the validated model
                 "messages": messages,
                 "stream": True,
                 "max_tokens": 1500,
             }
-
-            # Log the payload for debugging
-            logger.info(f"Groq API payload: {json.dumps(payload, indent=2)}")
 
             try:
                 async with httpx.AsyncClient(timeout=None) as client:
@@ -4882,11 +4901,34 @@ async def ask_universal(request: Request, response: Response):
                         headers=get_groq_headers(),
                         json=payload,
                     ) as resp:
-                        logger.info(f"Groq API response status: {resp.status_code}")
-                        
                         if resp.status_code != 200:
                             error_text = await resp.aread()
-                            logger.error(f"Groq API error response: {error_text.decode()}")
+                            error_data = json.loads(error_text.decode())
+                            
+                            # If it's a model deprecation error, try with a fallback model
+                            if error_data.get("error", {}).get("code") == "model_decommissioned":
+                                logger.warning(f"Model {model} is deprecated, trying fallback")
+                                fallback_model = "mixtral-8x7b-32768"  # Known stable model
+                                payload["model"] = fallback_model
+                                
+                                # Retry with fallback model
+                                async with client.stream(
+                                    "POST",
+                                    "https://api.groq.com/openai/v1/chat/completions",
+                                    headers=get_groq_headers(),
+                                    json=payload,
+                                ) as fallback_resp:
+                                    if fallback_resp.status_code != 200:
+                                        error_text = await fallback_resp.aread()
+                                        logger.error(f"Fallback model also failed: {error_text.decode()}")
+                                        yield sse({"type": "error", "message": "All available models are currently unavailable"})
+                                        return
+                                    
+                                    resp = fallback_resp
+                            else:
+                                logger.error(f"Groq API error: {error_text.decode()}")
+                                yield sse({"type": "error", "message": "Error communicating with AI service"})
+                                return
                         
                         async for line in resp.aiter_lines():
                             if not line or not line.startswith("data:"):
@@ -4945,13 +4987,10 @@ async def ask_universal(request: Request, response: Response):
     # -------------------------------
     try:
         payload = {
-            "model": CHAT_MODEL,
+            "model": model,  # Using the validated model
             "messages": messages,
             "max_tokens": 1500
         }
-
-        # Log the payload for debugging
-        logger.info(f"Groq API payload: {json.dumps(payload, indent=2)}")
 
         headers = {
             "Authorization": f"Bearer {GROQ_API_KEY}",
@@ -4960,6 +4999,20 @@ async def ask_universal(request: Request, response: Response):
         
         async with httpx.AsyncClient(timeout=30) as client:
             r = await client.post(GROQ_URL, headers=headers, json=payload)
+            
+            # If it's a model deprecation error, try with a fallback model
+            if r.status_code == 400:
+                try:
+                    error_data = r.json()
+                    if error_data.get("error", {}).get("code") == "model_decommissioned":
+                        logger.warning(f"Model {model} is deprecated, trying fallback")
+                        fallback_model = "mixtral-8x7b-32768"  # Known stable model
+                        payload["model"] = fallback_model
+                        
+                        # Retry with fallback model
+                        r = await client.post(GROQ_URL, headers=headers, json=payload)
+                except:
+                    pass  # If we can't parse the error, just continue with the original response
             
             # Log the response for debugging
             logger.info(f"Groq API response status: {r.status_code}")
