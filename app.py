@@ -5617,14 +5617,14 @@ async def vision_analyze(
     if not content:
         raise HTTPException(400, "empty file")
 
-#    // Load image
+    # Load image
     img = Image.open(BytesIO(content)).convert("RGB")
     np_img = np.array(img)
     annotated = np_img.copy()
 
-#    // =========================
-#    // 1️⃣ YOLO OBJECT DETECTION
-#    // =========================
+    # =========================
+    # 1️⃣ YOLO OBJECT DETECTION
+    # =========================
     obj_results = get_yolo_objects()(np_img, conf=0.25)
     detections = []
 
@@ -5640,8 +5640,7 @@ async def vision_analyze(
                 "bbox": [x1, y1, x2, y2]
             })
 
-      #      // Draw box
-            cv2.rectangle(annotated, (x1,y1), (x2,y2), (0,255,0), 2)
+            cv2.rectangle(annotated, (x1, y1), (x2, y2), (0,255,0), 2)
             cv2.putText(
                 annotated,
                 f"{label} {conf:.2f}",
@@ -5652,9 +5651,9 @@ async def vision_analyze(
                 2
             )
 
-#    // =========================
-#    // 2️⃣ FACE DETECTION
-  #  // =========================
+    # =========================
+    # 2️⃣ FACE DETECTION
+    # =========================
     face_results = get_yolo_faces()(np_img)
     face_count = 0
 
@@ -5673,75 +5672,72 @@ async def vision_analyze(
                 2
             )
 
-  #  // =========================
- #   // 3️⃣ DOMINANT COLORS
-  #  // =========================
-hex_colors = []
+    # =========================
+    # 3️⃣ DOMINANT COLORS
+    # =========================
+    hex_colors = []
 
-try:
-    from sklearn.cluster import KMeans
+    try:
+        from sklearn.cluster import KMeans
+        kmeans = KMeans(n_clusters=5, random_state=0).fit(pixels)
+        hex_colors = [
+            '#%02x%02x%02x' % tuple(map(int, c))
+            for c in kmeans.cluster_centers_
+        ]
+    except ImportError:
+        logger.warning("sklearn not installed, skipping color analysis")
+    except Exception:
+        logger.exception("Color clustering failed")
 
-    kmeans = KMeans(n_clusters=5, random_state=0).fit(pixels)
-    hex_colors = [
-        '#%02x%02x%02x' % tuple(map(int, c))
-        for c in kmeans.cluster_centers_
-    ]
+    # =========================
+    # 4️⃣ UPLOAD TO SUPABASE
+    # =========================
+    raw_path = f"anonymous/raw/{uuid.uuid4().hex}.png"
+    ann_path = f"anonymous/annotated/{uuid.uuid4().hex}.png"
 
-except ImportError:
-    logger.warning("sklearn not installed, skipping color analysis")
+    _, ann_buf = cv2.imencode(".png", annotated)
 
-except Exception:
-    logger.exception("Color clustering failed")
+    supabase.storage.from_("ai-images").upload(
+        raw_path,
+        content,
+        {"content-type": "image/png"}
+    )
 
-# =========================
-# 4️⃣ UPLOAD TO SUPABASE
-# =========================
-raw_path = f"anonymous/raw/{uuid.uuid4().hex}.png"
-ann_path = f"anonymous/annotated/{uuid.uuid4().hex}.png"
+    supabase.storage.from_("ai-images").upload(
+        ann_path,
+        ann_buf.tobytes(),
+        {"content-type": "image/png"}
+    )
 
-_, ann_buf = cv2.imencode(".png", annotated)
+    raw_url = supabase.storage.from_("ai-images").create_signed_url(raw_path, 3600)["signedURL"]
+    ann_url = supabase.storage.from_("ai-images").create_signed_url(ann_path, 3600)["signedURL"]
 
-supabase.storage.from_("ai-images").upload(
-    raw_path,
-    content,
-    {"content-type": "image/png"}
-)
+    # =========================
+    # 5️⃣ SAVE HISTORY
+    # =========================
+    analysis_id = str(uuid.uuid4())
 
-supabase.storage.from_("ai-images").upload(
-    ann_path,
-    ann_buf.tobytes(),
-    {"content-type": "image/png"}
-)
+    try:
+        supabase.table("vision_history").insert({
+            "id": analysis_id,
+            "user_id": user_id,
+            "image_path": raw_path,
+            "annotated_path": ann_path,
+            "detections": json.dumps(detections),
+            "faces": face_count,
+            "created_at": datetime.now().isoformat()
+        }).execute()
+    except Exception as e:
+        logger.error(f"Failed to save vision analysis: {e}")
 
-raw_url = supabase.storage.from_("ai-images").create_signed_url(raw_path, 3600)["signedURL"]
-ann_url = supabase.storage.from_("ai-images").create_signed_url(ann_path, 3600)["signedURL"]
-
-    #// =========================
-   # // 5️⃣ SAVE HISTORY
-   # // =========================
-analysis_id = str(uuid.uuid4())
-
-try:
-    supabase.table("vision_history").insert({
-        "id": analysis_id,
-        "user_id": user_id,
-        "image_path": raw_path,
-        "annotated_path": ann_path,
-        "detections": json.dumps(detections),
-        "faces": face_count,
-        "created_at": datetime.now().isoformat()
-    }).execute()
-except Exception as e:
-    logger.error(f"Failed to save vision analysis: {e}")
-
-return {
-    "objects": detections,
-    "faces_detected": face_count,
-    "dominant_colors": hex_colors,
-    "image_url": raw_url,
-    "annotated_image_url": ann_url,
-    "user_id": user_id
-}
+    return {
+        "objects": detections,
+        "faces_detected": face_count,
+        "dominant_colors": hex_colors,
+        "image_url": raw_url,
+        "annotated_image_url": ann_url,
+        "user_id": user_id
+    }
 
 #// Update the vision_history function to use the new user model
 @app.get("/vision/history")
