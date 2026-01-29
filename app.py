@@ -4840,8 +4840,15 @@ async def ask_universal(request: Request, response: Response):
         "Maintain memory and context.\n"
     )
 
+    # Create a clean messages array
     messages = [{"role": "system", "content": system_prompt}]
-    messages.extend(history)
+    
+    # Add history (but filter out any system messages to avoid duplicates)
+    for msg in history:
+        if msg["role"] != "system":
+            messages.append(msg)
+    
+    # Add current user message
     messages.append({"role": "user", "content": prompt})
 
     # -------------------------------
@@ -4855,8 +4862,6 @@ async def ask_universal(request: Request, response: Response):
             payload = {
                 "model": CHAT_MODEL,
                 "messages": messages,
-                "tools": TOOLS,
-                "tool_choice": "auto",
                 "stream": True,
                 "max_tokens": 1500,
             }
@@ -4877,13 +4882,17 @@ async def ask_universal(request: Request, response: Response):
                             if data == "[DONE]":
                                 break
 
-                            chunk = json.loads(data)
-                            delta = chunk["choices"][0]["delta"]
-                            content = delta.get("content")
+                            try:
+                                chunk = json.loads(data)
+                                delta = chunk["choices"][0]["delta"]
+                                content = delta.get("content")
 
-                            if content:
-                                assistant_reply += content
-                                yield sse({"type": "token", "text": content})
+                                if content:
+                                    assistant_reply += content
+                                    yield sse({"type": "token", "text": content})
+                            except (json.JSONDecodeError, KeyError, IndexError) as e:
+                                logger.error(f"Error processing stream chunk: {e}")
+                                continue
 
             finally:
                 if assistant_reply.strip():
@@ -4934,6 +4943,12 @@ async def ask_universal(request: Request, response: Response):
         
         async with httpx.AsyncClient(timeout=30) as client:
             r = await client.post(GROQ_URL, headers=headers, json=payload)
+            
+            # Log the response for debugging
+            logger.info(f"Groq API response status: {r.status_code}")
+            if r.status_code != 200:
+                logger.error(f"Groq API error response: {r.text}")
+                
             r.raise_for_status()
             response_data = r.json()
         
@@ -4963,9 +4978,12 @@ async def ask_universal(request: Request, response: Response):
             "conversation_id": conversation_id,
             "user_id": user_id
         }
+    except httpx.HTTPStatusError as e:
+        logger.error(f"HTTP error from Groq API: {e.response.status_code} - {e.response.text}")
+        raise HTTPException(status_code=e.response.status_code, detail=f"Groq API error: {e.response.text}")
     except Exception as e:
         logger.error(f"Failed to generate response: {e}")
-        raise HTTPException(500, "Failed to generate response")
+        raise HTTPException(500, f"Failed to generate response: {str(e)}")
     
 @app.post("/message/{message_id}/edit")
 async def edit_message(
