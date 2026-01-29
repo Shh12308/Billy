@@ -180,43 +180,44 @@ async def get_or_create_user(request: Request, response: Response) -> User:
     new_session_token = str(uuid.uuid4())
     user_id = str(uuid.uuid4())
     
-    try:
-        # Create new user
-        await asyncio.to_thread(
-            lambda: supabase
-            .table("users")
-            .insert({
-                "id": user_id,
-                "session_token": new_session_token,
-                "device_fingerprint": device_fingerprint,
-                "created_at": datetime.utcnow().isoformat(),
-                "last_seen": datetime.now(timezone.utc).isoformat()
-            })
-            .execute()
-        )
-        
-        # Set the cookie with proper settings
-response.set_cookie(
-    key="session_token",
-    value=new_session_token,
-    max_age=60 * 60 * 24 * 30,  # 30 days in seconds
-    expires=expires_str,        # Correct HTTP-date string
-    path="/",
-    domain=None,                # current domain
-    secure=False,               # True in production HTTPS
-    httponly=True,
-    samesite="lax"
-)
-        
-        return User(
-            id=user_id,
-            anonymous=False,
-            session_token=new_session_token,
-            device_fingerprint=device_fingerprint,
-        )
-    except Exception as e:
-        logger.error(f"Failed to create user: {e}")
-        raise HTTPException(500, "Failed to create user session")
+   try:
+    # Create new user
+    await asyncio.to_thread(
+        lambda: supabase
+        .table("users")
+        .insert({
+            "id": user_id,
+            "session_token": new_session_token,
+            "device_fingerprint": device_fingerprint,
+            "created_at": datetime.utcnow().isoformat(),
+            "last_seen": datetime.now(timezone.utc).isoformat()
+        })
+        .execute()
+    )
+    
+    # Set the cookie with proper settings (inside the try)
+    response.set_cookie(
+        key="session_token",
+        value=new_session_token,
+        max_age=60 * 60 * 24 * 30,  # 30 days in seconds
+        expires=(datetime.utcnow() + timedelta(days=30)).strftime("%a, %d %b %Y %H:%M:%S GMT"),
+        path="/",
+        domain=None,                # current domain
+        secure=False,               # True in production HTTPS
+        httponly=True,
+        samesite="lax"
+    )
+    
+    return User(
+        id=user_id,
+        anonymous=False,
+        session_token=new_session_token,
+        device_fingerprint=device_fingerprint,
+    )
+
+except Exception as e:
+    logger.error(f"Failed to create user: {e}")
+    raise HTTPException(500, "Failed to create user session")
         
 # -----------------------------
 # Merge visitor → real user
