@@ -651,7 +651,7 @@ logger.info(f"GROQ key present: {bool(GROQ_API_KEY)}")
 # -------------------
 # Models
 # -------------------
-CHAT_MODEL = os.getenv("CHAT_MODEL", "mixtral-8x7b-32768")
+CHAT_MODEL = os.getenv("CHAT_MODEL", "llama3-70b-8192")
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions" # // Added missing URL
 
 # TTS/STT are handled via ElevenLabs now
