@@ -385,11 +385,11 @@ def upload_image_to_supabase(image_bytes: bytes, filename: str, user_id: str):
     # Save image record with user ID
     try:
         supabase.table("images").insert({
-            "id": str(uuid.uuid4()),
-            "user_id": user_id,
-            "filename": storage_path,
-            "created_at": datetime.now().isoformat()
-        }).execute()
+    "id": str(uuid.uuid4()),
+    "user_id": user_id,
+    "image_path": storage_path,  # Use the correct column name
+    "created_at": datetime.now().isoformat()
+}).execute()
     except Exception as e:
         logger.error(f"Failed to save image record: {e}")
 
@@ -529,15 +529,12 @@ async def generate_video_internal(prompt: str, samples: int = 1, user_id: str = 
                 file_options={"content-type": "video/mp4"}
             )
             
-            # Save video record with user ID
-            # Fix: Use 'storage_path' instead of 'filename' if that's the correct column name
-            supabase.table("videos").insert({
-                "id": str(uuid.uuid4()),
-                "user_id": user_id,
-                "storage_path": storage_path,  # Changed from 'filename' to 'storage_path'
-                "prompt": prompt,
-                "created_at": datetime.now().isoformat()
-            }).execute()
+     supabase.table("videos").insert({
+    "id": str(uuid.uuid4()),
+    "user_id": user_id,
+    "storage_path": storage_path,  # Use the correct column name
+    "created_at": datetime.now().isoformat()
+}).execute()
             
             # Get signed URL
             signed = supabase.storage.from_("ai-videos").create_signed_url(storage_path, 60*60)
@@ -551,12 +548,12 @@ async def generate_video_internal(prompt: str, samples: int = 1, user_id: str = 
 def cache_result(prompt: str, provider: str, result: dict):
     # Store cache in Supabase
     try:
-        supabase.table("cache").insert({
-            "prompt": prompt,
-            "provider": provider,
-            "result": json.dumps(result),
-            "created_at": datetime.now().isoformat()
-        }).execute()
+     supabase.table("cache").insert({
+    "prompt": prompt,
+    "provider": provider,
+    "response": json.dumps(result),  # Use the correct column name
+    "created_at": datetime.now().isoformat()
+}).execute()
     except Exception as e:
         logger.error(f"Failed to cache result: {e}")
 
@@ -656,142 +653,177 @@ CREATOR_INFO = {
     "socials": { "discord":"@nexisphere123_89431", "twitter":"@NexiSphere"},
     "bio": "Created by GoldBoy (17, England). Projects: MZ, LS, SX, CB. Socials: Discord @nexisphere123_89431 Twitter @NexiSphere."
 }
-
-JUDGE0_LANGUAGES = {
+    # --- C / C++ ---
+   JUDGE0_LANGUAGES = {
     # --- C / C++ ---
     "c": 50,
     "c_clang": 49,
     "cpp": 54,
     "cpp_clang": 53,
+    "cpp17": 54,
+    "c++": 54,
 
     # --- Java ---
     "java": 62,
 
     # --- Python ---
     "python": 71,
+    "python3": 71,
     "python2": 70,
-    "micropython": 79,
+    "py": 71,
+    "py3": 71,
 
-    #--- JavaScript / TS ---
+    #--- JavaScript / TypeScript ---
     "javascript": 63,
+    "js": 63,
     "nodejs": 63,
+    "node": 63,
     "typescript": 74,
+    "ts": 74,
 
     #--- Go ---
     "go": 60,
+    "golang": 60,
 
     #--- Rust ---
     "rust": 73,
+    "rs": 73,
 
-    # / .NET ---
+    #--- .NET ---
     "csharp": 51,
+    "c#": 51,
     "fsharp": 87,
+    "f#": 87,
     "dotnet": 51,
+    "vb.net": 94,
 
-    # --- PHP ---
+    #--- PHP ---
     "php": 68,
 
     #--- Ruby ---
     "ruby": 72,
+    "rb": 72,
 
     #--- Swift ---
     "swift": 83,
 
     #--- Kotlin ---
     "kotlin": 78,
+    "kt": 78,
 
-    # --- Scala ---
+    #--- Scala ---
     "scala": 81,
 
     #--- Objective-C ---
     "objective_c": 52,
+    "objc": 52,
 
     #--- Bash / Shell ---
     "bash": 46,
     "sh": 46,
+    "shell": 46,
+    "zsh": 46,
 
     #--- PowerShell ---
     "powershell": 88,
+    "ps1": 88,
 
     #--- Perl ---
     "perl": 85,
+    "pl": 85,
 
-    # --- Lua ---
+    #--- Lua ---
     "lua": 64,
 
-    # --- R ---
+    #--- R ---
     "r": 80,
 
-    # --- Dart ---
+    #--- Dart ---
     "dart": 75,
 
-    # --- Julia ---
+    #--- Julia ---
     "julia": 84,
 
-    # --- Haskell ---
+    #--- Haskell ---
     "haskell": 61,
+    "hs": 61,
 
-    # --- Elixir ---
+    #--- Elixir ---
     "elixir": 57,
+    "ex": 57,
 
     #--- Erlang ---
     "erlang": 58,
+    "erl": 58,
 
     #--- OCaml ---
     "ocaml": 65,
+    "ml": 65,
 
     #--- Crystal ---
     "crystal": 76,
+    "cr": 76,
 
     #--- Nim ---
+    "nim": 77,
     "nim": 77,
 
     #--- Zig ---
     "zig": 86,
 
-    # --- Assembly ---
+    #--- Assembly ---
     "assembly": 45,
+    "asm": 45,
+    "nasm": 45,
 
     #--- COBOL ---
     "cobol": 55,
+    "cbl": 55,
 
     #--- Fortran ---
     "fortran": 59,
+    "f90": 59,
 
-    # --- Prolog ---
+    #--- Prolog ---
     "prolog": 69,
+    "pl": 69,
 
-    # --- Scheme ---
+    #--- Scheme ---
     "scheme": 82,
+    "scm": 82,
 
-    # --- Common Lisp ---
+    #--- Common Lisp ---
     "lisp": 66,
+    "cl": 66,
 
-    # --- Brainf*ck ---
+    #--- Brainf*ck ---
     "brainfuck": 47,
+    "bf": 47,
 
     #--- V ---
     "vlang": 91,
+    "v": 91,
 
     #--- Groovy ---
     "groovy": 56,
 
-   # --- Hack ---
+    #--- Hack ---
     "hack": 67,
 
-    #// --- Pascal ---
+    #--- Pascal ---
     "pascal": 67,
 
-    #// --- Scratch ---
+    #--- Scratch ---
     "scratch": 92,
 
-  #  // --- Solidity ---
+    #--- Solidity ---
     "solidity": 94,
+    "sol": 94,
 
-  #  // --- SQL ---
+    #--- SQL ---
     "sql": 82,
 
-    #// --- Text / Plain ---
+    #--- Text / Plain ---
     "plain_text": 43,
     "text": 43,
 }
@@ -1353,9 +1385,9 @@ async def duckduckgo_search(q: str):
 
 def get_cached_result(prompt: str, provider: str) -> Optional[dict]:
     try:
-        response = supabase.table("cache").select("result").eq("prompt", prompt).eq("provider", provider).order("created_at", desc=True).limit(1).execute()
-        if response.data:
-            return json.loads(response.data[0]["result"])
+response = supabase.table("cache").select("response").eq("prompt", prompt).eq("provider", provider).order("created_at", desc=True).limit(1).execute()
+if response.data:
+    return json.loads(response.data[0]["response"])
     except Exception as e:
         logger.error(f"Failed to get cached result: {e}")
     return None
