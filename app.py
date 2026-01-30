@@ -1372,32 +1372,51 @@ async def run_code_safely(prompt: str):
     lang_id = JUDGE0_LANGUAGES.get(language, 71)
     execution = await run_code_judge0(code, lang_id)
     
-    return {"code": code, "execution": execution}
-
 async def duckduckgo_search(q: str):
     """
     Use DuckDuckGo Instant Answer API (no API key required).
     Returns a simple structured result with abstract, answer and a list of related topics.
     """
     url = "https://api.duckduckgo.com/"
-    params = {"q": q, "format": "json", "no_html":1, "skip_disambig": 1}
+    params = {
+        "q": q,
+        "format": "json",
+        "no_html": 1,
+        "skip_disambig": 1,
+    }
+
     async with httpx.AsyncClient(timeout=10.0) as client:
         r = await client.get(url, params=params)
         r.raise_for_status()
         data = r.json()
 
-        results = []
-      #  // RelatedTopics can contain nested topics or single items; handle both.
-        for item in data.get("RelatedTopics", []):
-            if isinstance(item, dict):
-                #// Some items are like {"Text": "...", "FirstURL": "..."}
-                if item.get("Text"):
-                    results.append({"title": item.get("Text"), "url": item.get("FirstURL")})
-               # // Some are category blocks with "Topics" list
-                elif item.get("Topics"):
-                    for t in item.get("Topics", []):
-                        if t.get("Text"):
-                            results.append({"title": t.get("Text"), "url": t.get("FirstURL")})
+    results = []
+
+    # RelatedTopics can contain nested topics or single items; handle both.
+    for item in data.get("RelatedTopics", []):
+        if isinstance(item, dict):
+
+            # Some items are like {"Text": "...", "FirstURL": "..."}
+            if item.get("Text"):
+                results.append({
+                    "title": item.get("Text"),
+                    "url": item.get("FirstURL"),
+                })
+
+            # Some are category blocks with "Topics" list
+            elif item.get("Topics"):
+                for t in item.get("Topics", []):
+                    if t.get("Text"):
+                        results.append({
+                            "title": t.get("Text"),
+                            "url": t.get("FirstURL"),
+                        })
+
+    return {
+        "abstract": data.get("AbstractText"),
+        "answer": data.get("Answer"),
+        "results": results[:5],
+    }
      #   // Limit results to a reasonable number
         results = results[:10]
 
