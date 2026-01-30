@@ -4888,7 +4888,7 @@ async def ask_universal(request: Request, response: Response):
     # -------------------------------
     if stream:
         async def event_generator():
-    assistant_reply = ""
+            assistant_reply = ""
     yield sse({"type": "starting"})
 
     try:
