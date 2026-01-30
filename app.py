@@ -1528,20 +1528,36 @@ async def logout_user(request: Request, response: Response):
     return {"status": "success", "message": "Logged out successfully"}
 
 async def nsfw_check(prompt: str) -> bool:
-    if not OPENAI_API_KEY: return False
-    async with httpx.AsyncClient(timeout=15) as client:
-        r = await client.post(
-            "https://api.openai.com/v1/moderations",
-            headers={
-                "Authorization": f"Bearer {OPENAI_API_KEY}",
-                "Content-Type": "application/json"
-            },
-            json={"model": "omni-moderation-latest", "input": prompt}
-        )
-        r.raise_for_status()
-        result = r.json()["results"][0]
-        return result["flagged"]
-
+    if not OPENAI_API_KEY: 
+        return False
+    
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.post(
+                "https://api.openai.com/v1/moderations",
+                headers={
+                    "Authorization": f"Bearer {OPENAI_API_KEY}",
+                    "Content-Type": "application/json"
+                },
+                json={"model": "omni-moderation-latest", "input": prompt}
+            )
+            r.raise_for_status()
+            result = r.json()["results"][0]
+            
+            # Log the full moderation result for debugging
+            logger.info(f"Moderation result: {result}")
+            
+            # Only return True for serious violations
+            return result["flagged"] and result["categories"] and any(
+                category in ["sexual", "violence", "self_harm", "hate"]
+                for category in result["categories"]
+            )
+    except Exception as e:
+        logger.error(f"NSFW check failed: {e}")
+        return False
+    
+    return False
+    
 async def get_or_create_conversation(user_id: str, conversation_id: Union[str, None]):
     if conversation_id:
         return conversation_id
