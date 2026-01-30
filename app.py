@@ -654,7 +654,7 @@ CREATOR_INFO = {
     "bio": "Created by GoldBoy (17, England). Projects: MZ, LS, SX, CB. Socials: Discord @nexisphere123_89431 Twitter @NexiSphere."
 }
     # --- C / C++ ---
-   JUDGE0_LANGUAGES = {
+JUDGE0_LANGUAGES = {
     # --- C / C++ ---
     "c": 50,
     "c_clang": 49,
