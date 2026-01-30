@@ -4883,110 +4883,112 @@ async def ask_universal(request: Request, response: Response):
         "gemma-7b-it"
     ]
 
-    # -------------------------------
-    # STREAM MODE
-    # -------------------------------
-    if stream:
-        async def event_generator():
-            assistant_reply = ""
-    yield sse({"type": "starting"})
+   # -------------------------------
+# STREAM MODE
+# -------------------------------
+if stream:
 
-    try:
-        # Try each model until one works
-        for model in models_to_try:
-            try:
-                payload = {
-                    "model": model,
-                    "messages": messages,
-                    "stream": True,
-                    "max_tokens": 1500,
-                }
+    async def event_generator():
+        assistant_reply = ""
+        yield sse({"type": "starting"})
 
-                logger.info(f"Trying model: {model}")
+        try:
+            # Try each model until one works
+            for model in models_to_try:
+                try:
+                    payload = {
+                        "model": model,
+                        "messages": messages,
+                        "stream": True,
+                        "max_tokens": 1500,
+                    }
 
-                async with httpx.AsyncClient(timeout=None) as client:
-                    async with client.stream(
-                        "POST",
-                        "https://api.groq.com/openai/v1/chat/completions",
-                        headers=get_groq_headers(),
-                        json=payload,
-                    ) as resp:
+                    logger.info(f"Trying model: {model}")
 
-                        if resp.status_code != 200:
-                            error_text = await resp.aread()
-                            logger.error(f"Groq API error with {model}: {error_text.decode()}")
+                    async with httpx.AsyncClient(timeout=None) as client:
+                        async with client.stream(
+                            "POST",
+                            GROQ_URL,
+                            headers=get_groq_headers(),
+                            json=payload,
+                        ) as resp:
 
-                            if model == models_to_try[-1]:
-                                yield sse({
-                                    "type": "error",
-                                    "message": "All available models are currently unavailable"
-                                })
-                                return
-                            continue
+                            if resp.status_code != 200:
+                                error_text = await resp.aread()
+                                logger.error(f"Groq API error with {model}: {error_text.decode()}")
 
-                        logger.info(f"Successfully using model: {model}")
-
-                        async for line in resp.aiter_lines():
-                            if not line or not line.startswith("data:"):
+                                if model == models_to_try[-1]:
+                                    yield sse({
+                                        "type": "error",
+                                        "message": "All available models are currently unavailable"
+                                    })
+                                    return
                                 continue
 
-                            data = line[5:].strip()
-                            if data == "[DONE]":
-                                break
+                            logger.info(f"Successfully using model: {model}")
 
-                            try:
-                                chunk = json.loads(data)
-                                delta = chunk["choices"][0]["delta"]
-                                content = delta.get("content")
+                            async for line in resp.aiter_lines():
+                                if not line or not line.startswith("data:"):
+                                    continue
 
-                                if content:
-                                    assistant_reply += content
-                                    yield sse({"type": "token", "text": content})
-                            except Exception as e:
-                                logger.error(f"Stream parse error: {e}")
-                                continue
+                                data = line[5:].strip()
+                                if data == "[DONE]":
+                                    break
 
-                        break  # stop trying models once one works
+                                try:
+                                    chunk = json.loads(data)
+                                    delta = chunk["choices"][0]["delta"]
+                                    content = delta.get("content")
 
-            except Exception as e:
-                logger.error(f"Exception with model {model}: {e}")
-                if model == models_to_try[-1]:
-                    yield sse({
-                        "type": "error",
-                        "message": "All available models are currently unavailable"
-                    })
-                    return
-                continue
+                                    if content:
+                                        assistant_reply += content
+                                        yield sse({"type": "token", "text": content})
 
-    finally:
-        if assistant_reply.strip():
-            await asyncio.to_thread(
-                lambda: supabase.table("messages").insert({
-                    "id": str(uuid.uuid4()),
-                    "conversation_id": conversation_id,
-                    "user_id": user_id,
-                    "role": "assistant",
-                    "content": assistant_reply,
-                    "created_at": datetime.utcnow().isoformat()
-                }).execute()
-            )
+                                except Exception as e:
+                                    logger.error(f"Stream parse error: {e}")
+                                    continue
 
-            await asyncio.to_thread(
-                lambda: supabase.table("conversations").update({
-                    "updated_at": datetime.utcnow().isoformat()
-                }).eq("id", conversation_id).execute()
-            )
+                            break  # stop trying models once one works
 
-            yield sse({"type": "done"})
+                except Exception as e:
+                    logger.error(f"Exception with model {model}: {e}")
+                    if model == models_to_try[-1]:
+                        yield sse({
+                            "type": "error",
+                            "message": "All available models are currently unavailable"
+                        })
+                        return
+                    continue
 
-        return StreamingResponse(
-            event_generator(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "x-accel-buffering": "no",
-            },
-        )
+        finally:
+            if assistant_reply.strip():
+                await asyncio.to_thread(
+                    lambda: supabase.table("messages").insert({
+                        "id": str(uuid.uuid4()),
+                        "conversation_id": conversation_id,
+                        "user_id": user_id,
+                        "role": "assistant",
+                        "content": assistant_reply,
+                        "created_at": datetime.utcnow().isoformat()
+                    }).execute()
+                )
+
+                await asyncio.to_thread(
+                    lambda: supabase.table("conversations").update({
+                        "updated_at": datetime.utcnow().isoformat()
+                    }).eq("id", conversation_id).execute()
+                )
+
+                yield sse({"type": "done"})
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "x-accel-buffering": "no",
+        },
+    )
 
     # -------------------------------
     # NON-STREAM MODE
