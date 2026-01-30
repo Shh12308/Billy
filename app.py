@@ -4716,7 +4716,7 @@ def get_or_create_conversation_id(user_id: str) -> str:
         return str(uuid.uuid4())  # Fallback
 
 # Update the CHAT_MODEL initialization
-CHAT_MODEL = get_valid_groq_model()
+
 
 @app.post("/ask/universal")
 async def ask_universal(request: Request, response: Response):
