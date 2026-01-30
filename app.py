@@ -129,17 +129,9 @@ def generate_device_fingerprint(request: Request) -> str:
     # simple + stable fingerprint
     return request.headers.get("user-agent", "unknown-device")
 
-
 # -----------------------------
 # Get or create anonymous user
 # -----------------------------
-# Fixed get_or_create_user function
-# Find the get_or_create_user function (around line 580-650) and replace it with this corrected version:
-
-# Replace the ENTIRE get_or_create_user function (around line 580-650) with this:
-
-# Replace your current get_or_create_user function with this improved version
-# Replace the entire get_or_create_user function with this corrected version
 async def get_or_create_user(request: Request, response: Response) -> User:
     # 1️⃣ Try to get existing session token from cookie
     session_token = request.cookies.get("session_token")
@@ -245,12 +237,10 @@ def merge_visitor_to_user(user_id: str, session_token: str):
         .eq("id", visitor_id) \
         .execute()
 
-
 # -----------------------------
 # Background task system
 # -----------------------------
 background_executor = ThreadPoolExecutor(max_workers=10)
-
 
 class TaskManager:
     def __init__(self):
@@ -349,7 +339,6 @@ class TaskManager:
         except Exception as e:
             logger.error(f"Failed to fetch user tasks: {e}")
             return []
-
 
 task_manager = TaskManager()
 
@@ -601,7 +590,6 @@ async def save_code_generation_record(user_id: str, language: str, prompt: str, 
 def init_supabase_tables():
     print("Supabase schema assumed present — skipping RPC table creation")
 
-
 # Initialize on startup (safe no-op)
 init_supabase_tables()
 
@@ -653,7 +641,7 @@ logger.info(f"GROQ key present: {bool(GROQ_API_KEY)}")
 # Models
 # -------------------
 # Update this line in your code
-CHAT_MODEL = os.getenv("CHAT_MODEL", "llama-3.1-8b-instant")  # Using a currently supported model
+CHAT_MODEL = os.getenv("CHAT_MODEL", "llama3-70b-8192")  # Using a currently supported model
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions" # // Added missing URL
 
 # TTS/STT are handled via ElevenLabs now
@@ -1016,7 +1004,6 @@ def analyze_code_quality(code, language, focus_areas):
 
 def run_check():
     return {"status": "ok", "message": "System check passed"}
-
 
 def create_chart(data, chart_type, options):
     """Create a chart from data"""
@@ -1456,7 +1443,6 @@ def get_or_create_conversation(user_id: str) -> str:
     except Exception as e:
         logger.error(f"Failed to get or create conversation: {e}")
         return str(uuid.uuid4())  # Fallback
-        
 
 def build_system_prompt(artifact: Union[str, None]):
     base = """
@@ -4716,8 +4702,27 @@ def get_or_create_conversation_id(user_id: str) -> str:
         logger.error(f"Failed to get or create conversation: {e}")
         return str(uuid.uuid4())  # Fallback
 
-# Update the CHAT_MODEL initialization
-
+# Add this function to check available models
+async def check_available_models():
+    """Check which models are available in Groq"""
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get("https://api.groq.com/openai/v1/models", headers=headers)
+            r.raise_for_status()
+            models_data = r.json()
+            
+            # Extract model IDs
+            available_models = [model["id"] for model in models_data.get("data", [])]
+            logger.info(f"Available models: {available_models}")
+            return available_models
+    except Exception as e:
+        logger.error(f"Failed to fetch available models: {e}")
+        return []
 
 @app.post("/ask/universal")
 async def ask_universal(request: Request, response: Response):
@@ -4738,7 +4743,6 @@ async def ask_universal(request: Request, response: Response):
     # -------------------------------
     user = await get_or_create_user(request, response)
     user_id = user.id
-
 
     # -------------------------------
     # Detect intent
@@ -4857,10 +4861,11 @@ async def ask_universal(request: Request, response: Response):
     # Add current user message
     messages.append({"role": "user", "content": prompt})
 
-    # List of models to try in order
+    # List of models to try in order (updated with current models)
     models_to_try = [
-        "llama3-groq-70b-8192-tool-use-preview",
-        "llama3-groq-8b-8192-tool-use-preview",
+        "llama3-70b-8192",
+        "llama3-8b-8192",
+        "mixtral-8x7b-32768",
         "gemma-7b-it"
     ]
 
@@ -6435,6 +6440,14 @@ async def merge_user_data(req: Request, res: Response):
     except Exception as e:
         logger.error(f"Error verifying JWT token: {e}")
         raise HTTPException(401, f"Invalid token: {str(e)}")
+
+@app.on_event("startup")
+async def startup_event():
+    # Start the scheduler
+    scheduler.start()
+    
+    # Check available models
+    await check_available_models()
 
 @app.on_event("shutdown")
 async def shutdown_event():
