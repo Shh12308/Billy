@@ -4888,82 +4888,77 @@ async def ask_universal(request: Request, response: Response):
     # -------------------------------
     if stream:
         async def event_generator():
-            assistant_reply = ""
-            yield sse({"type": "starting"})
+    assistant_reply = ""
+    yield sse({"type": "starting"})
 
-            # Try each model until we find one that works
-            for model in models_to_try:
-                try:
-                    payload = {
-                        "model": model,
-                        "messages": messages,
-                        "stream": True,
-                        "max_tokens": 1500,
-                    }
+    try:
+        # Try each model until one works
+        for model in models_to_try:
+            try:
+                payload = {
+                    "model": model,
+                    "messages": messages,
+                    "stream": True,
+                    "max_tokens": 1500,
+                }
 
-                    logger.info(f"Trying model: {model}")
+                logger.info(f"Trying model: {model}")
 
-                    async with httpx.AsyncClient(timeout=None) as client:
-                        async with client.stream(
-                            "POST",
-                            "https://api.groq.com/openai/v1/chat/completions",
-                            headers=get_groq_headers(),
-                            json=payload,
-                        ) as resp:
-                            if resp.status_code != 200:
-                                error_text = await resp.aread()
-                                try:
-                                    error_data = json.loads(error_text.decode())
-                                    if error_data.get("error", {}).get("code") == "model_decommissioned":
-                                        logger.warning(f"Model {model} is deprecated, trying next model")
-                                        continue
-                                    else:
-                                        logger.error(f"Groq API error with {model}: {error_text.decode()}")
-                                        if model == models_to_try[-1]:  # Last model in list
-                                            yield sse({"type": "error", "message": "All available models are currently unavailable"})
-                                            return
-                                        continue
-                                except:
-                                    logger.error(f"Error parsing error response for model {model}")
-                                    if model == models_to_try[-1]:  # Last model in list
-                                        yield sse({"type": "error", "message": "All available models are currently unavailable"})
-                                        return
-                                    continue
-                            
-                            # If we get here, the model worked
-                            logger.info(f"Successfully using model: {model}")
-                            
-                            async for line in resp.aiter_lines():
-                                if not line or not line.startswith("data:"):
-                                    continue
+                async with httpx.AsyncClient(timeout=None) as client:
+                    async with client.stream(
+                        "POST",
+                        "https://api.groq.com/openai/v1/chat/completions",
+                        headers=get_groq_headers(),
+                        json=payload,
+                    ) as resp:
 
-                                data = line[5:].strip()
-                                if data == "[DONE]":
-                                    break
+                        if resp.status_code != 200:
+                            error_text = await resp.aread()
+                            logger.error(f"Groq API error with {model}: {error_text.decode()}")
 
-                                try:
-                                    chunk = json.loads(data)
-                                    delta = chunk["choices"][0]["delta"]
-                                    content = delta.get("content")
+                            if model == models_to_try[-1]:
+                                yield sse({
+                                    "type": "error",
+                                    "message": "All available models are currently unavailable"
+                                })
+                                return
+                            continue
 
-                                    if content:
-                                        assistant_reply += content
-                                        yield sse({"type": "token", "text": content})
-                                except (json.JSONDecodeError, KeyError, IndexError) as e:
-                                    logger.error(f"Error processing stream chunk: {e}")
-                                    continue
-                            
-                            # Break out of the model loop since we found a working one
-                            break
+                        logger.info(f"Successfully using model: {model}")
 
-                except Exception as e:
-                    logger.error(f"Exception with model {model}: {e}")
-                    if model == models_to_try[-1]:  # Last model in list
-                        yield sse({"type": "error", "message": "All available models are currently unavailable"})
-                        return
-                    continue
+                        async for line in resp.aiter_lines():
+                            if not line or not line.startswith("data:"):
+                                continue
 
-            finally:
+                            data = line[5:].strip()
+                            if data == "[DONE]":
+                                break
+
+                            try:
+                                chunk = json.loads(data)
+                                delta = chunk["choices"][0]["delta"]
+                                content = delta.get("content")
+
+                                if content:
+                                    assistant_reply += content
+                                    yield sse({"type": "token", "text": content})
+                            except Exception as e:
+                                logger.error(f"Stream parse error: {e}")
+                                continue
+
+                        break  # stop trying models once one works
+
+            except Exception as e:
+                logger.error(f"Exception with model {model}: {e}")
+                if model == models_to_try[-1]:
+                    yield sse({
+                        "type": "error",
+                        "message": "All available models are currently unavailable"
+                    })
+                    return
+                continue
+
+    finally:
         if assistant_reply.strip():
             await asyncio.to_thread(
                 lambda: supabase.table("messages").insert({
