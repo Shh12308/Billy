@@ -1072,32 +1072,57 @@ def create_chart(data, chart_type, options):
         return f"<p>Error creating chart: {str(e)}</p>"
 
 #// ---------- Helper Functions ----------
-async def run_code_judge0(code: str, language_id: int):
-    payload = {
-        "language_id": language_id,
-        "source_code": code
-    }
-
-    headers = {
-        "X-RapidAPI-Key": JUDGE0_KEY,
-        "X-RapidAPI-Host": "judge0-ce.p.rapidapi.com",
-        "Content-Type": "application/json"
-    }
-
-    async with httpx.AsyncClient(timeout=30) as client:
-        submit = await client.post(
-            "https://judge0-ce.p.rapidapi.com/submissions?wait=false",
-            json=payload,
-            headers=headers
+async def run_code_judge0(code: str, language_id: int, stdin: str = ""):
+    """Execute code using Judge0 API with proper error handling"""
+    client = get_judge0_client()
+    
+    if not client:
+        return {
+            "error": "Judge0 client not initialized. Check JUDGE0_KEY.",
+            "status": "error"
+        }
+    
+    try:
+        # Submit the code for execution
+        submission = client.submissions.create(
+            source_code=code,
+            language_id=language_id,
+            stdin=stdin,
+            wait=True,
+            base64_encoded=False
         )
-
-        if submit.status_code == 403:
+        
+        # Get the submission token
+        token = submission.get("token")
+        
+        if not token:
             return {
-                "error": "Judge0 execution blocked (403). Check RapidAPI key or plan."
+                "error": "Failed to get submission token from Judge0",
+                "status": "error"
             }
-
-        submit.raise_for_status()
-        return submit.json()
+        
+        # Get the submission result
+        result = client.submissions.get(token)
+        
+        # Format the result for our application
+        return {
+            "stdout": result.get("stdout", ""),
+            "stderr": result.get("stderr", ""),
+            "compile_output": result.get("compile_output", ""),
+            "status": {
+                "id": result.get("status", {}).get("id"),
+                "description": result.get("status", {}).get("description")
+            },
+            "time": result.get("time"),
+            "memory": result.get("memory"),
+            "exit_code": result.get("exit_code")
+        }
+    except Exception as e:
+        logger.error(f"Judge0 execution failed: {str(e)}")
+        return {
+            "error": f"Judge0 execution failed: {str(e)}",
+            "status": "error"
+        }
 
 async def generate_ai_response(conversation_id: str, user_id: str, messages: list):
     """
