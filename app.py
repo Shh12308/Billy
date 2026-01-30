@@ -4723,11 +4723,11 @@ def get_valid_groq_model():
     
     # List of currently supported models in order of preference
     # Updated with the latest models from Groq
-    supported_models = [
-        "llama3-groq-70b-8192-tool-use-preview",
-        "llama3-groq-8b-8192-tool-use-preview",
-        "gemma-7b-it"
-    ]
+    models_to_try = [
+    "llama-3.1-70b-versatile",
+    "llama-3.1-8b-instant",
+    "mixtral-8x7b-32768"
+]
     
     # If the configured model is in our list of supported models, use it
     if configured_model in supported_models:
