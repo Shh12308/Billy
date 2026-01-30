@@ -652,7 +652,7 @@ logger.info(f"GROQ key present: {bool(GROQ_API_KEY)}")
 # Models
 # -------------------
 # Update this line in your code
-CHAT_MODEL = os.getenv("CHAT_MODEL", "llama3-groq-8b-8192-tool-use-preview")  # Using a currently supported model
+CHAT_MODEL = os.getenv("CHAT_MODEL", "llama-3.1-8b-instant")  # Using a currently supported model
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions" # // Added missing URL
 
 # TTS/STT are handled via ElevenLabs now
@@ -4714,27 +4714,6 @@ def get_or_create_conversation_id(user_id: str) -> str:
     except Exception as e:
         logger.error(f"Failed to get or create conversation: {e}")
         return str(uuid.uuid4())  # Fallback
-
-# Add this function to check and update the model if needed
-# Add this function to check and update the model if needed
-def get_valid_groq_model():
-    """Get a valid Groq model, with fallbacks in case the configured model is deprecated"""
-    configured_model = os.getenv("CHAT_MODEL", "llama3-groq-8b-8192-tool-use-preview")
-    
-    # List of currently supported models in order of preference
-    # Updated with the latest models from Groq
-    models_to_try = [
-    "llama-3.1-70b-versatile",
-    "llama-3.1-8b-instant",
-    "mixtral-8x7b-32768"
-]
-    
-    # If the configured model is in our list of supported models, use it
-    if configured_model in supported_models:
-        return configured_model
-    
-    # Otherwise, use the first supported model in our list
-    return supported_models[0]
 
 # Update the CHAT_MODEL initialization
 CHAT_MODEL = get_valid_groq_model()
