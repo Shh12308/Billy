@@ -378,8 +378,9 @@ def upload_image_to_supabase(image_bytes: bytes, filename: str, user_id: str):
         file_options={"content-type": "image/png"}
     )
 
-    if upload.get("error"):
-        raise Exception(upload["error"]["message"])
+    # Fix: Check if upload has an error attribute
+    if hasattr(upload, 'error') and upload.error:
+        raise Exception(upload.error["message"])
 
     # Save image record with user ID
     try:
@@ -529,10 +530,11 @@ async def generate_video_internal(prompt: str, samples: int = 1, user_id: str = 
             )
             
             # Save video record with user ID
+            # Fix: Use 'storage_path' instead of 'filename' if that's the correct column name
             supabase.table("videos").insert({
                 "id": str(uuid.uuid4()),
                 "user_id": user_id,
-                "filename": storage_path,
+                "storage_path": storage_path,  # Changed from 'filename' to 'storage_path'
                 "prompt": prompt,
                 "created_at": datetime.now().isoformat()
             }).execute()
@@ -641,7 +643,7 @@ logger.info(f"GROQ key present: {bool(GROQ_API_KEY)}")
 # Models
 # -------------------
 # Update this line in your code
-CHAT_MODEL = os.getenv("CHAT_MODEL", "llama3-70b-8192")  # Using a currently supported model
+CHAT_MODEL = os.getenv("CHAT_MODEL", "llama-3.1-8b-instant")  # Using a currently supported model
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions" # // Added missing URL
 
 # TTS/STT are handled via ElevenLabs now
@@ -5372,7 +5374,7 @@ async def generate_video(request: Request):
                 supabase.table("videos").insert({
                     "id": str(uuid.uuid4()),
                     "user_id": user_id,
-                    "filename": storage_path,
+                    "storage_path": storage_path,  # Changed from 'filename' to 'storage_path'
                     "prompt": prompt,
                     "created_at": datetime.now().isoformat()
                 }).execute()
