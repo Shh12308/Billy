@@ -4862,12 +4862,13 @@ async def ask_universal(request: Request, response: Response):
     messages.append({"role": "user", "content": prompt})
 
     # List of models to try in order (updated with current models)
-    models_to_try = [
-        "llama3-70b-8192",
-        "llama3-8b-8192",
-        "mixtral-8x7b-32768",
-        "gemma-7b-it"
-    ]
+    # In the ask_universal function, update the models_to_try list to use the available models
+models_to_try = [
+    "llama-3.1-8b-instant",
+    "llama-3.3-70b-versatile",
+    "groq/compound",
+    "qwen/qwen3-32b"
+]
 
      # -------------------------------
     # STREAM MODE
