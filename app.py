@@ -139,6 +139,7 @@ def generate_device_fingerprint(request: Request) -> str:
 # Replace the ENTIRE get_or_create_user function (around line 580-650) with this:
 
 # Replace your current get_or_create_user function with this improved version
+# Replace the entire get_or_create_user function with this corrected version
 async def get_or_create_user(request: Request, response: Response) -> User:
     # 1️⃣ Try to get existing session token from cookie
     session_token = request.cookies.get("session_token")
@@ -175,7 +176,7 @@ async def get_or_create_user(request: Request, response: Response) -> User:
             logger.warning(f"User lookup failed: {e}")
 
     # 2️⃣ No valid session? Create a new user
-    device_fingerprint = generate_device_fingerprint(request)  # Make sure this function exists
+    device_fingerprint = generate_device_fingerprint(request)
     new_session_token = str(uuid.uuid4())
     user_id = str(uuid.uuid4())
 
@@ -187,7 +188,7 @@ async def get_or_create_user(request: Request, response: Response) -> User:
                 "session_token": new_session_token,
                 "device_fingerprint": device_fingerprint,
                 "created_at": datetime.utcnow().isoformat(),
-                "last_seen": datetime.utcnow().isoformat()  # UTC-safe
+                "last_seen": datetime.utcnow().isoformat()
             }).execute()
         )
 
@@ -4737,6 +4738,7 @@ async def ask_universal(request: Request, response: Response):
     # -------------------------------
     user = await get_or_create_user(request, response)
     user_id = user.id
+
 
     # -------------------------------
     # Detect intent
