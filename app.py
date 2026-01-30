@@ -1378,46 +1378,27 @@ async def duckduckgo_search(q: str):
     Returns a simple structured result with abstract, answer and a list of related topics.
     """
     url = "https://api.duckduckgo.com/"
-    params = {
-        "q": q,
-        "format": "json",
-        "no_html": 1,
-        "skip_disambig": 1,
-    }
-
+    params = {"q": q, "format": "json", "no_html": 1, "skip_disambig": 1}
+    
     async with httpx.AsyncClient(timeout=10.0) as client:
         r = await client.get(url, params=params)
         r.raise_for_status()
         data = r.json()
 
-    results = []
-
-    # RelatedTopics can contain nested topics or single items; handle both.
-    for item in data.get("RelatedTopics", []):
-        if isinstance(item, dict):
-
-            # Some items are like {"Text": "...", "FirstURL": "..."}
-            if item.get("Text"):
-                results.append({
-                    "title": item.get("Text"),
-                    "url": item.get("FirstURL"),
-                })
-
-            # Some are category blocks with "Topics" list
-            elif item.get("Topics"):
-                for t in item.get("Topics", []):
-                    if t.get("Text"):
-                        results.append({
-                            "title": t.get("Text"),
-                            "url": t.get("FirstURL"),
-                        })
-
-    return {
-        "abstract": data.get("AbstractText"),
-        "answer": data.get("Answer"),
-        "results": results[:5],
-    }
-     #   // Limit results to a reasonable number
+        results = []
+        # RelatedTopics can contain nested topics or single items; handle both.
+        for item in data.get("RelatedTopics", []):
+            if isinstance(item, dict):
+                # Some items are like {"Text": "...", "FirstURL": "..."}
+                if item.get("Text"):
+                    results.append({"title": item.get("Text"), "url": item.get("FirstURL")})
+                # Some are category blocks with "Topics" list
+                elif item.get("Topics"):
+                    for t in item.get("Topics", []):
+                        if t.get("Text"):
+                            results.append({"title": t.get("Text"), "url": t.get("FirstURL")})
+        
+        # Limit results to a reasonable number - FIXED INDENTATION
         results = results[:10]
 
         return {
@@ -1425,16 +1406,59 @@ async def duckduckgo_search(q: str):
             "abstract": data.get("AbstractText"),
             "answer": data.get("Answer"),
             "results": results
-            }
+        }
 
 def get_cached_result(prompt: str, provider: str) -> Optional[dict]:
     try:
-response = supabase.table("cache").select("response").eq("prompt", prompt).eq("provider", provider).order("created_at", desc=True).limit(1).execute()
-if response.data:
-    return json.loads(response.data[0]["response"])
+        response = supabase.table("cache").select("response").eq("prompt", prompt).eq("provider", provider).order("created_at", desc=True).limit(1).execute()
+        if response.data:
+            return json.loads(response.data[0]["response"])
     except Exception as e:
         logger.error(f"Failed to get cached result: {e}")
     return None
+
+def get_system_prompt(user_message: Optional[str] = None) -> str:
+    base = "You are ZynaraAI1.0: helpful, concise, friendly, and focus entirely on what the user asks. Do not reference your creator or yourself unless explicitly asked."
+    if user_message:
+        base += f" The user said: \"{user_message}\". Tailor your response to this."
+    return base
+
+# Update the build_contextual_prompt function to include user history
+def build_contextual_prompt(user_id: str, message: str) -> str:
+    """Build system prompt with user memory and conversation history"""
+    try:
+        # Get user's recent conversations
+        conv_response = supabase.table("conversations").select("id").eq("user_id", user_id).order("updated_at", desc=True).limit(1).execute()
+        
+        if not conv_response.data:
+            # New user, no history
+            return f"You are a helpful AI assistant. User message: {message}"
+        
+        conversation_id = conv_response.data[0]["id"]
+        
+        # Get recent messages from this conversation
+        msg_response = supabase.table("messages").select("role, content").eq("conversation_id", conversation_id).order("created_at", "asc").limit(10).execute()
+        
+        # Build context from messages
+        context = "Recent conversation:\n"
+        for msg in msg_response.data:
+            context += f"{msg['role']}: {msg['content']}\n"
+        
+        # Get user preferences if they exist
+        profile_response = supabase.table("profiles").select("preferences").eq("id", user_id).execute()
+        if profile_response.data:
+            preferences = profile_response.data[0].get("preferences", {})
+            if preferences:
+                context += f"\nUser preferences: {json.dumps(preferences)}\n"
+        
+        return f"""You are a helpful AI assistant with memory of this user.
+
+{context}
+
+Current message: {message}"""
+    except Exception as e:
+        logger.error(f"Failed to build contextual prompt: {e}")
+        return f"You are a helpful AI assistant. User message: {message}"
 
 def get_system_prompt(user_message: Optional[str] = None) -> str:
     base = "You are ZynaraAI1.0: helpful, concise, friendly, and focus entirely on what the user asks. Do not reference your creator or yourself unless explicitly asked."
