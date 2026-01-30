@@ -529,7 +529,7 @@ async def generate_video_internal(prompt: str, samples: int = 1, user_id: str = 
                 file_options={"content-type": "video/mp4"}
             )
             
-     supabase.table("videos").insert({
+            supabase.table("videos").insert({
     "id": str(uuid.uuid4()),
     "user_id": user_id,
     "storage_path": storage_path,  # Use the correct column name
