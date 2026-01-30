@@ -4724,6 +4724,7 @@ async def check_available_models():
         logger.error(f"Failed to fetch available models: {e}")
         return []
 
+# Replace the entire ask_universal function with this corrected version
 @app.post("/ask/universal")
 async def ask_universal(request: Request, response: Response):
     # -------------------------------
@@ -4862,19 +4863,17 @@ async def ask_universal(request: Request, response: Response):
     messages.append({"role": "user", "content": prompt})
 
     # List of models to try in order (updated with current models)
-    # In the ask_universal function, update the models_to_try list to use the available models
-models_to_try = [
-    "llama-3.1-8b-instant",
-    "llama-3.3-70b-versatile",
-    "groq/compound",
-    "qwen/qwen3-32b"
-]
+    models_to_try = [
+        "llama-3.1-8b-instant",
+        "llama-3.3-70b-versatile",
+        "groq/compound",
+        "qwen/qwen3-32b"
+    ]
 
-     # -------------------------------
+    # -------------------------------
     # STREAM MODE
     # -------------------------------
     if stream:
-
         async def event_generator():
             assistant_reply = ""
             yield sse({"type": "starting"})
