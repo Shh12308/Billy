@@ -232,27 +232,30 @@ async def get_or_create_user(request: Request, response: Response) -> User:
 # Merge visitor → real user
 # -----------------------------
 def merge_visitor_to_user(user_id: str, session_token: str):
-    visitor = (
-        supabase.table("visitor_users")
-        .select("id")
-        .eq("session_token", session_token)
-        .execute()
-    )
+    try:
+        visitor = (
+            supabase.table("visitor_users")
+            .select("id")
+            .eq("session_token", session_token)
+            .execute()
+        )
 
-    if not visitor.data:
-        return
+        if not visitor.data:
+            return
 
-    visitor_id = visitor.data[0]["id"]
+        visitor_id = visitor.data[0]["id"]
 
-    supabase.table("conversations") \
-        .update({"user_id": user_id}) \
-        .eq("user_id", visitor_id) \
-        .execute()
+        supabase.table("conversations") \
+            .update({"user_id": user_id}) \
+            .eq("user_id", visitor_id) \
+            .execute()
 
-    supabase.table("visitor_users") \
-        .delete() \
-        .eq("id", visitor_id) \
-        .execute()
+        supabase.table("visitor_users") \
+            .delete() \
+            .eq("id", visitor_id) \
+            .execute()
+    except Exception as e:
+        logger.error(f"Failed to merge visitor to user: {e}")
 
 # -----------------------------
 # Background task system
@@ -402,11 +405,11 @@ def upload_image_to_supabase(image_bytes: bytes, filename: str, user_id: str):
     # Save image record with user ID
     try:
         supabase.table("images").insert({
-    "id": str(uuid.uuid4()),
-    "user_id": user_id,
-    "image_path": storage_path,  # Use the correct column name
-    "created_at": datetime.now().isoformat()
-}).execute()
+            "id": str(uuid.uuid4()),
+            "user_id": user_id,
+            "image_path": storage_path,  # Use the correct column name
+            "created_at": datetime.now().isoformat()
+        }).execute()
     except Exception as e:
         logger.error(f"Failed to save image record: {e}")
 
@@ -743,12 +746,12 @@ def check_bucket_visibility():
 def cache_result(prompt: str, provider: str, result: dict):
     # Store cache in Supabase
     try:
-     supabase.table("cache").insert({
-    "prompt": prompt,
-    "provider": provider,
-    "response": json.dumps(result),  # Use the correct column name
-    "created_at": datetime.now().isoformat()
-}).execute()
+        supabase.table("cache").insert({
+            "prompt": prompt,
+            "provider": provider,
+            "response": json.dumps(result),  # Use the correct column name
+            "created_at": datetime.now().isoformat()
+        }).execute()
     except Exception as e:
         logger.error(f"Failed to cache result: {e}")
 
@@ -1250,6 +1253,27 @@ def create_chart(data, chart_type, options):
         return f"<p>Error creating chart: {str(e)}</p>"
 
 #// ---------- Helper Functions ----------
+# Fix: Add get_judge0_client function
+def get_judge0_client():
+    """Get Judge0 client for code execution"""
+    if not JUDGE0_KEY:
+        logger.warning("Judge0 client not available - missing API key")
+        return None
+    
+    try:
+        from judge0 import Judge0Client
+        client = Judge0Client(
+            base_url=JUDGE0_URL,
+            api_key=JUDGE0_KEY
+        )
+        return client
+    except ImportError:
+        logger.error("Judge0 library not installed - code execution disabled")
+        return None
+    except Exception as e:
+        logger.error(f"Failed to initialize Judge0 client: {e}")
+        return None
+
 async def run_code_judge0(code: str, language_id: int, stdin: str = ""):
     """Execute code using Judge0 API with proper error handling"""
     client = get_judge0_client()
@@ -1525,12 +1549,13 @@ def get_groq_headers():
         "Content-Type": "application/json"
     }
 
+# Fix: Complete the run_code_safely function
 async def run_code_safely(prompt: str):
     """Helper for streaming /ask/universal."""
- #   // Default to python if not specified for this helper
+    # Default to python if not specified for this helper
     language = "python" 
     
-  #  // 1. Generate code
+    # 1. Generate code
     code_prompt = f"Write a complete {language} program to: {prompt}"
     payload = {
         "model": CHAT_MODEL,
@@ -1546,9 +1571,14 @@ async def run_code_safely(prompt: str):
         r.raise_for_status()
         code = r.json()["choices"][0]["message"]["content"]
 
-  #  // 2. Run code
+    # 2. Run code
     lang_id = JUDGE0_LANGUAGES.get(language, 71)
     execution = await run_code_judge0(code, lang_id)
+    
+    return {
+        "code": code,
+        "execution": execution
+    }
     
 async def duckduckgo_search(q: str):
     """
@@ -2056,7 +2086,7 @@ async def universal_chat_stream(user_id: str, prompt: str):
 
                 data = line[6:].strip()
                 if data == "[DONE]":
-                    break
+                    continue
 
                 try:
                     chunk = json.loads(data)
@@ -4321,13 +4351,16 @@ async def get_user_info_handler(prompt: str, user_id: str, stream: bool = False)
         user_data = user_response.data[0] if user_response.data else None
         
       #  // Get user's images count
-        images_count = supabase.table("images").select("id", count="exact").eq("user_id", user_id).execute()
+        images_response = supabase.table("images").select("id", count="exact").eq("user_id", user_id).execute()
+        images_count = images_response.count if hasattr(images_response, 'count') else 0
         
       #  // Get user's videos count
-        videos_count = supabase.table("videos").select("id", count="exact").eq("user_id", user_id).execute()
+        videos_response = supabase.table("videos").select("id", count="exact").eq("user_id", user_id).execute()
+        videos_count = videos_response.count if hasattr(videos_response, 'count') else 0
         
        # // Get user's conversations count
-        conversations_count = supabase.table("conversations").select("id", count="exact").eq("user_id", user_id).execute()
+        conversations_response = supabase.table("conversations").select("id", count="exact").eq("user_id", user_id).execute()
+        conversations_count = conversations_response.count if hasattr(conversations_response, 'count') else 0
         
         result = {
             "id": user_id,
@@ -4335,9 +4368,9 @@ async def get_user_info_handler(prompt: str, user_id: str, stream: bool = False)
             "created_at": user_data.get("created_at") if user_data else None,
             "last_seen": user_data.get("last_seen") if user_data else None,
             "stats": {
-                "images": images_count.count if hasattr(images_count, 'count') else 0,
-                "videos": videos_count.count if hasattr(videos_count, 'count') else 0,
-                "conversations": conversations_count.count if hasattr(conversations_count, 'count') else 0
+                "images": images_count,
+                "videos": videos_count,
+                "conversations": conversations_count
             }
         }
         
@@ -4977,12 +5010,14 @@ def load_conversation_history(user_id: str, limit: int = 20):
         conv_response = supabase.table("conversations").select("id").eq("user_id", user_id).order("updated_at", desc=True).limit(1).execute()
         
         if not conv_response.data:
-            conversation_id = conv_response.data[0]["id"]
+            return []
             
-            # Get recent messages from this conversation
-            msg_response = supabase.table("messages").select("role, content").eq("conversation_id", conversation_id).order("created_at", "asc").limit(limit).execute()
+        conversation_id = conv_response.data[0]["id"]
             
-            return [{"role": row["role"], "content": row["content"]} for row in msg_response.data]
+        # Get recent messages from this conversation
+        msg_response = supabase.table("messages").select("role, content").eq("conversation_id", conversation_id).order("created_at", "asc").limit(limit).execute()
+            
+        return [{"role": row["role"], "content": row["content"]} for row in msg_response.data]
     except Exception as e:
         logger.error(f"Failed to load conversation history: {e}")
     return []
@@ -5421,7 +5456,7 @@ async def edit_message(
 async def stream_endpoint(request: Request):
     async def event_generator():
         for i in range(1, 6):
-            # Check if client disconnected
+           # // Check if client disconnected
             if await request.is_disconnected():
                 break
             yield sse({"message": f"This is chunk {i}"})
@@ -6118,6 +6153,9 @@ async def vision_analyze(
     hex_colors = []
 
     try:
+        # Fix: Define pixels variable before using it
+        pixels = np_img.reshape(-1, 3)
+        
         from sklearn.cluster import KMeans
         kmeans = KMeans(n_clusters=5, random_state=0).fit(pixels)
         hex_colors = [
@@ -6647,13 +6685,16 @@ async def get_user_info(req: Request, res: Response):
         user_data = user_response.data[0] if user_response.data else None
         
   #      // Get user's images count
-        images_count = supabase.table("images").select("id", count="exact").eq("user_id", user_id).execute()
+        images_response = supabase.table("images").select("id", count="exact").eq("user_id", user_id).execute()
+        images_count = images_response.count if hasattr(images_response, 'count') else 0
         
    #     // Get user's videos count
-        videos_count = supabase.table("videos").select("id", count="exact").eq("user_id", user_id).execute()
+        videos_response = supabase.table("videos").select("id", count="exact").eq("user_id", user_id).execute()
+        videos_count = videos_response.count if hasattr(videos_response, 'count') else 0
         
   #      // Get user's conversations count
-        conversations_count = supabase.table("conversations").select("id", count="exact").eq("user_id", user_id).execute()
+        conversations_response = supabase.table("conversations").select("id", count="exact").eq("user_id", user_id).execute()
+        conversations_count = conversations_response.count if hasattr(conversations_response, 'count') else 0
         
         return {
             "id": user.id,
@@ -6662,9 +6703,9 @@ async def get_user_info(req: Request, res: Response):
             "created_at": user_data.get("created_at") if user_data else None,
             "last_seen": user_data.get("last_seen") if user_data else None,
             "stats": {
-                "images": images_count.count if hasattr(images_count, 'count') else 0,
-                "videos": videos_count.count if hasattr(videos_count, 'count') else 0,
-                "conversations": conversations_count.count if hasattr(conversations_count, 'count') else 0
+                "images": images_count,
+                "videos": videos_count,
+                "conversations": conversations_count
             }
         }
     except Exception as e:
@@ -6702,50 +6743,51 @@ async def merge_user_data(req: Request, res: Response):
         logged_in_id = user_response.user.id
         
     #    // Get the anonymous user ID from session token
-        visitor_response = supabase.table("visitor_users").select("id").eq("session_token", session_token).execute()
-        if not visitor_response.data:
-            raise HTTPException(404, "Anonymous user not found")
-        
-        anonymous_id = visitor_response.data[0]["id"]
-        
-     #   // Merge data in the backend
         try:
-          #  // Update all records from anonymous user to logged-in user
-            tables_to_merge = ["images", "videos", "conversations", "messages", "memory", "vision_history", "code_generations"]
+            visitor_response = supabase.table("users").select("id").eq("session_token", session_token).execute()
+            if not visitor_response.data:
+                raise HTTPException(404, "Anonymous user not found")
             
-            for table in tables_to_merge:
-                supabase.table(table).update({"user_id": logged_in_id}).eq("user_id", anonymous_id).execute()
+            anonymous_id = visitor_response.data[0]["id"]
             
-          #  // Create or update the logged-in user in the backend
-            existing_user = supabase.table("users").select("*").eq("id", logged_in_id).execute()
-            if not existing_user.data:
-                supabase.table("users").insert({
-                    "id": logged_in_id,
-                    "email": user_response.user.email,
-                    "created_at": datetime.now().isoformat(),
-                    "last_seen": datetime.now().isoformat()
-                }).execute()
-            else:
-                supabase.table("users").update({
-                    "last_seen": datetime.now().isoformat()
-                }).eq("id", logged_in_id).execute()
-            
-         #   // Delete the anonymous user
-            supabase.table("visitor_users").delete().eq("id", anonymous_id).execute()
-            
-         #   // Update the cookie to the logged-in user ID
-            res.set_cookie(
-                key="session_token",
-                value=logged_in_id,
-                httponly=True,
-                samesite="lax",
-                max_age=60 * 60 * 24 * 30  #// 30 days
-            )
-            
-            return {"status": "success", "message": "User data merged successfully"}
+         #   // Merge data in the backend
+            try:
+              #  // Update all records from anonymous user to logged-in user
+                tables_to_merge = ["images", "videos", "conversations", "messages", "memory", "vision_history", "code_generations"]
+                
+                for table in tables_to_merge:
+                    supabase.table(table).update({"user_id": logged_in_id}).eq("user_id", anonymous_id).execute()
+                
+             #   // Create or update the logged-in user in the backend
+                existing_user = supabase.table("users").select("*").eq("id", logged_in_id).execute()
+                if not existing_user.data:
+                    supabase.table("users").insert({
+                        "id": logged_in_id,
+                        "email": user_response.user.email,
+                        "created_at": datetime.now().isoformat(),
+                        "last_seen": datetime.now().isoformat()
+                    }).execute()
+                else:
+                    supabase.table("users").update({
+                        "last_seen": datetime.now().isoformat()
+                    }).eq("id", logged_in_id).execute()
+                
+             #   // Update the cookie to the logged-in user ID
+                res.set_cookie(
+                    key="session_token",
+                    value=logged_in_id,
+                    httponly=True,
+                    samesite="lax",
+                    max_age=60 * 60 * 24 * 30  #// 30 days
+                )
+                
+                return {"status": "success", "message": "User data merged successfully"}
+            except Exception as e:
+                logger.error(f"Failed to merge user data: {e}")
+                raise HTTPException(500, f"Failed to merge user data: {str(e)}")
         except Exception as e:
-            logger.error(f"Failed to merge user data: {e}")
-            raise HTTPException(500, f"Failed to merge user data: {str(e)}")
+            logger.error(f"Error finding anonymous user: {e}")
+            raise HTTPException(404, f"Anonymous user not found: {str(e)}")
     except Exception as e:
         logger.error(f"Error verifying JWT token: {e}")
         raise HTTPException(401, f"Invalid token: {str(e)}")
