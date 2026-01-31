@@ -1377,36 +1377,49 @@ async def duckduckgo_search(q: str):
     Use DuckDuckGo Instant Answer API (no API key required).
     Returns a simple structured result with abstract, answer and a list of related topics.
     """
+    # Truncate the query if it's too long (URLs have length limits)
+    max_query_length = 500  # Safe limit for URL parameters
+    if len(q) > max_query_length:
+        q = q[:max_query_length-3] + "..."  # Truncate and add indicator
+    
     url = "https://api.duckduckgo.com/"
     params = {"q": q, "format": "json", "no_html": 1, "skip_disambig": 1}
     
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        r = await client.get(url, params=params)
-        r.raise_for_status()
-        data = r.json()
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.get(url, params=params)
+            r.raise_for_status()
+            data = r.json()
 
-        results = []
-        # RelatedTopics can contain nested topics or single items; handle both.
-        for item in data.get("RelatedTopics", []):
-            if isinstance(item, dict):
-                # Some items are like {"Text": "...", "FirstURL": "..."}
-                if item.get("Text"):
-                    results.append({"title": item.get("Text"), "url": item.get("FirstURL")})
-                # Some are category blocks with "Topics" list
-                elif item.get("Topics"):
-                    for t in item.get("Topics", []):
-                        if t.get("Text"):
-                            results.append({"title": t.get("Text"), "url": t.get("FirstURL")})
+            results = []
+            # RelatedTopics can contain nested topics or single items; handle both.
+            for item in data.get("RelatedTopics", []):
+                if isinstance(item, dict):
+                    # Some items are like {"Text": "...", "FirstURL": "..."}
+                    if item.get("Text"):
+                        results.append({"title": item.get("Text"), "url": item.get("FirstURL")})
+                    # Some are category blocks with "Topics" list
+                    elif item.get("Topics"):
+                        for t in item.get("Topics", []):
+                            if t.get("Text"):
+                                results.append({"title": t.get("Text"), "url": t.get("FirstURL")})
+            
+            # Limit results to a reasonable number
+            results = results[:10]
+
+            return {
+                "query": q,
+                "abstract": data.get("AbstractText"),
+                "answer": data.get("Answer"),
+                "results": results
+            }
+    except httpx.HTTPStatusError as e:
+        logger.error(f"DuckDuckGo returned HTTP error: {e.response.status_code}")
+        raise HTTPException(502, "duckduckgo_error")
+    except Exception as e:
+        logger.error(f"DuckDuckGo search failed: {str(e)}")
+        raise HTTPException(500, "search_failed")
         
-        # Limit results to a reasonable number - FIXED INDENTATION
-        results = results[:10]
-
-        return {
-            "query": q,
-            "abstract": data.get("AbstractText"),
-            "answer": data.get("Answer"),
-            "results": results
-        }
 
 def get_cached_result(prompt: str, provider: str) -> Optional[dict]:
     try:
