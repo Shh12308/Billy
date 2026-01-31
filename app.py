@@ -608,12 +608,19 @@ async def generate_video_internal(prompt: str, samples: int = 1, user_id: str = 
                 file_options={"content-type": "video/mp4"}
             )
             
-            supabase.table("videos").insert({
-                "id": str(uuid.uuid4()),
-                "user_id": user_id,
-                "storage_path": storage_path,
-                "created_at": datetime.now().isoformat()
-            }).execute()
+            # Try to save video record with user ID
+            try:
+                supabase.table("videos").insert({
+                    "id": str(uuid.uuid4()),
+                    "user_id": user_id,
+                    "storage_path": storage_path,  # Use storage_path instead of filename
+                    "prompt": prompt,
+                    "created_at": datetime.now().isoformat()
+                }).execute()
+            except Exception as e:
+                # If the insert fails, it might be due to schema issues
+                logger.error(f"Failed to save video record: {e}")
+                # Continue without saving to database, but still return the URL
             
             # Get public URL instead of signed URL
             public_url = get_public_url("ai-videos", storage_path)
