@@ -460,12 +460,23 @@ async def _generate_image_core(
     provider_used = "openai"
     urls = []
 
+    # Clean and validate the prompt
+    clean_prompt = prompt.strip()
+    if not clean_prompt:
+        raise HTTPException(400, "Empty prompt provided")
+    
+    # Limit prompt length to avoid API issues
+    if len(clean_prompt) > 1000:
+        clean_prompt = clean_prompt[:1000] + "..."
+        logger.warning(f"Prompt truncated to 1000 characters")
+
     payload = {
         "model": "dall-e-3",
-        "prompt": prompt,
+        "prompt": clean_prompt,
         "n": 1,  # DALL·E 3 supports only 1 image
         "size": "1024x1024",
-        "response_format": "b64_json"
+        "response_format": "b64_json",
+        "quality": "standard"  # Add quality parameter
     }
 
     headers = {
@@ -480,9 +491,22 @@ async def _generate_image_core(
                 json=payload,
                 headers=headers
             )
-            r.raise_for_status()
+            
+            # Log the response for debugging
+            if r.status_code != 200:
+                logger.error(f"OpenAI API error: {r.status_code} - {r.text}")
+                try:
+                    error_data = r.json()
+                    error_msg = error_data.get("error", {}).get("message", "Unknown error")
+                except:
+                    error_msg = r.text
+                raise HTTPException(400, f"Image generation failed: {error_msg}")
+            
             result = r.json()
-    except Exception:
+    except httpx.HTTPStatusError as e:
+        logger.error(f"HTTP error from OpenAI: {e.response.status_code} - {e.response.text}")
+        raise HTTPException(500, "Image generation provider error")
+    except Exception as e:
         logger.exception("OpenAI image API call failed")
         raise HTTPException(500, "Image generation provider error")
 
@@ -537,6 +561,31 @@ async def _generate_image_core(
         "user_id": user_id
     }
 
+def get_public_url(bucket: str, path: str) -> str:
+    """Get public URL from Supabase Storage"""
+    # Make sure to use the full URL including the protocol
+    if not SUPABASE_URL.startswith(('http://', 'https://')):
+        base_url = f"https://{SUPABASE_URL}"
+    else:
+        base_url = SUPABASE_URL
+    
+    return f"{base_url}/storage/v1/object/public/{bucket}/{path}"
+
+@app.get("/test/image/{image_path:path}")
+async def test_image_url(image_path: str):
+    """Test endpoint to verify image URLs are accessible"""
+    public_url = get_public_url("ai-images", f"anonymous/{image_path}")
+    
+    # Check if the image exists in Supabase
+    try:
+        response = requests.head(public_url)
+        if response.status_code == 200:
+            return {"url": public_url, "status": "accessible"}
+        else:
+            return {"url": public_url, "status": f"error: {response.status_code}"}
+    except Exception as e:
+        return {"url": public_url, "status": f"error: {str(e)}"}
+        
 # Update the generate_video_internal function
 async def generate_video_internal(prompt: str, samples: int = 1, user_id: str = "anonymous") -> dict:
     """
