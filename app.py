@@ -417,6 +417,12 @@ def get_user_profile(user_id: str) -> dict:
         
 #// --- FIX 2: Add content moderation check before calling OpenAI ---
 # Fixed _generate_image_core function to use the updated upload function
+# Add this function to get public URLs instead of signed URLs
+def get_public_url(bucket: str, path: str) -> str:
+    """Get public URL from Supabase Storage"""
+    return f"{SUPABASE_URL}/storage/v1/object/public/{bucket}/{path}"
+
+# Update the _generate_image_core function
 async def _generate_image_core(
     prompt: str,
     samples: int,
@@ -426,14 +432,13 @@ async def _generate_image_core(
     if not OPENAI_API_KEY:
         raise HTTPException(500, "Missing OPENAI_API_KEY")
 
-  #  // --- FIX 2: Screen prompt for policy violations ---
+    # Content moderation check
     is_flagged = await nsfw_check(prompt)
     if is_flagged:
         raise HTTPException(
             status_code=400, 
             detail="Image generation prompt violates content policy."
         )
-    #// --- END OF FIX 2 ---
 
     provider_used = "openai"
     urls = []
@@ -441,7 +446,7 @@ async def _generate_image_core(
     payload = {
         "model": "dall-e-3",
         "prompt": prompt,
-        "n": 1, # // DALL·E 3 supports only 1 image
+        "n": 1,  # DALL·E 3 supports only 1 image
         "size": "1024x1024",
         "response_format": "b64_json"
     }
@@ -451,7 +456,6 @@ async def _generate_image_core(
         "content-type": "application/json"
     }
 
-  #  // ---------- CALL OPENAI ----------
     try:
         async with httpx.AsyncClient(timeout=120.0) as client:
             r = await client.post(
@@ -461,17 +465,14 @@ async def _generate_image_core(
             )
             r.raise_for_status()
             result = r.json()
-
     except Exception:
         logger.exception("OpenAI image API call failed")
         raise HTTPException(500, "Image generation provider error")
 
- #   // ---------- VALIDATE ----------
     if not result or not result.get("data"):
         logger.error("OpenAI returned empty image response: %s", result)
         raise HTTPException(500, "Image generation failed")
 
- #   // ---------- PROCESS IMAGES ----------
     for img in result["data"]:
         try:
             b64 = img.get("b64_json")
@@ -480,15 +481,29 @@ async def _generate_image_core(
 
             image_bytes = base64.b64decode(b64)
             filename = f"{uuid.uuid4().hex}.png"
+            storage_path = f"anonymous/{filename}"
 
-            upload = upload_image_to_supabase(image_bytes, filename, user_id)
-
-            signed = supabase.storage.from_("ai-images").create_signed_url(
-                f"anonymous/{filename}", 60 * 60
+            # Upload to Supabase
+            upload = supabase.storage.from_("ai-images").upload(
+                path=storage_path,
+                file=image_bytes,
+                file_options={"content-type": "image/png"}
             )
 
-            if signed and signed.get("signedURL"):
-                urls.append(signed["signedURL"])
+            # Save image record with user ID
+            try:
+                supabase.table("images").insert({
+                    "id": str(uuid.uuid4()),
+                    "user_id": user_id,
+                    "image_path": storage_path,
+                    "created_at": datetime.now().isoformat()
+                }).execute()
+            except Exception as e:
+                logger.error(f"Failed to save image record: {e}")
+
+            # Get public URL instead of signed URL
+            public_url = get_public_url("ai-images", storage_path)
+            urls.append(public_url)
 
         except Exception:
             logger.exception("Failed processing or uploading image")
@@ -501,15 +516,15 @@ async def _generate_image_core(
 
     return {
         "provider": provider_used,
-        "images": urls,
-        "user_id": user_id  #// Include user_id in response
+        "images": [{"url": url, "type": "image/png"} for url in urls],  # Updated format
+        "user_id": user_id
     }
 
-# Fixed generate_video_internal function to store in anonymous folder
+# Update the generate_video_internal function
 async def generate_video_internal(prompt: str, samples: int = 1, user_id: str = "anonymous") -> dict:
     """
     Generate video (stub). Stores video files in Supabase storage like images.
-    Returns a list of signed URLs.
+    Returns a list of public URLs.
     """
     urls = []
 
@@ -517,8 +532,6 @@ async def generate_video_internal(prompt: str, samples: int = 1, user_id: str = 
         # For now, we create a placeholder video file
         placeholder_content = b"This is a placeholder video for prompt: " + prompt.encode('utf-8')
         filename = f"{uuid.uuid4().hex[:8]}.mp4"
-
-        # Use the anonymous folder in the bucket
         storage_path = f"anonymous/{filename}"
 
         # Upload to Supabase
@@ -530,19 +543,142 @@ async def generate_video_internal(prompt: str, samples: int = 1, user_id: str = 
             )
             
             supabase.table("videos").insert({
-    "id": str(uuid.uuid4()),
-    "user_id": user_id,
-    "storage_path": storage_path,  # Use the correct column name
-    "created_at": datetime.now().isoformat()
-}).execute()
+                "id": str(uuid.uuid4()),
+                "user_id": user_id,
+                "storage_path": storage_path,
+                "created_at": datetime.now().isoformat()
+            }).execute()
             
-            # Get signed URL
-            signed = supabase.storage.from_("ai-videos").create_signed_url(storage_path, 60*60)
-            urls.append(signed["signedURL"])
+            # Get public URL instead of signed URL
+            public_url = get_public_url("ai-videos", storage_path)
+            urls.append(public_url)
         except Exception as e:
             logger.error(f"Video upload failed: {e}")
 
-    return {"provider": "stub", "videos": urls}
+    return {
+        "provider": "stub", 
+        "videos": [{"url": url, "type": "video/mp4"} for url in urls]  # Updated format
+    }
+
+# Update the image generation handler
+async def image_generation_handler(prompt: str, user_id: str, stream: bool = False):
+    """Handle image generation requests"""
+    if stream:
+        async def event_generator():
+            yield sse({"type": "starting", "message": "Generating image..."})
+            try:
+                # Extract any sample count from the prompt
+                samples = 1
+                sample_match = re.search(r'(\d+)\s+(image|images)', prompt.lower())
+                if sample_match:
+                    samples = min(int(sample_match.group(1)), 4)  # Cap at 4 images
+                
+                # Generate the image
+                result = await _generate_image_core(prompt, samples, user_id, return_base64=False)
+                
+                yield sse({
+                    "type": "images",
+                    "provider": result["provider"],
+                    "images": result["images"]  # Already in the correct format
+                })
+                yield sse({"type": "done"})
+            except Exception as e:
+                logger.error(f"Image generation failed: {e}")
+                yield sse({"type": "error", "message": str(e)})
+        
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
+    else:
+        # Non-streaming version
+        samples = 1
+        sample_match = re.search(r'(\d+)\s+(image|images)', prompt.lower())
+        if sample_match:
+            samples = min(int(sample_match.group(1)), 4)  # Cap at 4 images
+        
+        return await _generate_image_core(prompt, samples, user_id, return_base64=False)
+
+# Update the video generation handler
+async def video_generation_handler(prompt: str, user_id: str, stream: bool = False):
+    """Handle video generation requests"""
+    # Extract sample count from prompt
+    samples = 1
+    sample_match = re.search(r'(\d+)\s+(video|videos)', prompt.lower())
+    if sample_match:
+        samples = min(int(sample_match.group(1)), 2)  # Cap at 2 videos
+    
+    if stream:
+        async def event_generator():
+            yield sse({"type": "starting", "message": "Generating video..."})
+            try:
+                result = await generate_video_internal(prompt, samples, user_id)
+                yield sse({
+                    "type": "videos",
+                    "provider": result["provider"],
+                    "videos": result["videos"]  # Already in the correct format
+                })
+                yield sse({"type": "done"})
+            except Exception as e:
+                logger.error(f"Video generation failed: {e}")
+                yield sse({"type": "error", "message": str(e)})
+        
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
+    else:
+        # Non-streaming version
+        return await generate_video_internal(prompt, samples, user_id)
+
+# Add a function to check bucket visibility
+def check_bucket_visibility():
+    try:
+        # Check images bucket
+        images_url = f"{SUPABASE_URL}/storage/v1/bucket/ai-images"
+        images_response = requests.get(images_url, headers={
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}"
+        })
+        
+        # Check videos bucket
+        videos_url = f"{SUPABASE_URL}/storage/v1/bucket/ai-videos"
+        videos_response = requests.get(videos_url, headers={
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}"
+        })
+        
+        logger.info(f"Images bucket public: {images_response.status_code == 200}")
+        logger.info(f"Videos bucket public: {videos_response.status_code == 200}")
+        
+        return images_response.status_code == 200 and videos_response.status_code == 200
+    except Exception as e:
+        logger.error(f"Error checking bucket visibility: {e}")
+        return False
+
+# Call this function at startup
+@app.on_event("startup")
+async def startup_event():
+    # Start the scheduler
+    scheduler.start()
+    
+    # Check available models
+    await check_available_models()
+    
+    # Check bucket visibility
+    if not check_bucket_visibility():
+        logger.warning("Storage buckets may not be public. Images and videos might not load on frontend.")
+        
 
 # Fixed cache_result function
 def cache_result(prompt: str, provider: str, result: dict):
@@ -6571,14 +6707,6 @@ async def merge_user_data(req: Request, res: Response):
     except Exception as e:
         logger.error(f"Error verifying JWT token: {e}")
         raise HTTPException(401, f"Invalid token: {str(e)}")
-
-@app.on_event("startup")
-async def startup_event():
-    # Start the scheduler
-    scheduler.start()
-    
-    # Check available models
-    await check_available_models()
 
 @app.on_event("shutdown")
 async def shutdown_event():
