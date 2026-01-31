@@ -589,39 +589,119 @@ async def test_image_url(image_path: str):
     except Exception as e:
         return {"url": public_url, "status": f"error: {str(e)}"}
         
-async def generate_video_internal(prompt: str, samples: int = 1, user_id: uuid.UUID = None) -> dict:
+async def generate_video_internal(prompt: str, samples: int = 1, user_id: str = None) -> dict:
+    """
+    Generate high-quality videos using RunwayML Gen-2 API
+    """
+    # Get RunwayML API key from environment
+    RUNWAYML_API_KEY = os.getenv("RUNWAYML_API_KEY")
+    if not RUNWAYML_API_KEY:
+        raise HTTPException(500, "RUNWAYML_API_KEY not configured")
+    
     urls = []
-
+    
+    # Prepare the API request
+    headers = {
+        "Authorization": f"Bearer {RUNWAYML_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    
     for i in range(samples):
-        placeholder_content = b"This is a placeholder video for prompt: " + prompt.encode('utf-8')
-        filename = f"{uuid.uuid4().hex[:8]}.mp4"
-        storage_path = f"anonymous/{filename}"
-
         try:
-            supabase.storage.from_("ai-videos").upload(
-                path=storage_path,
-                file=placeholder_content,
-                file_options={"content-type": "video/mp4"}
-            )
-
-            try:
-                supabase.table("videos").insert({
-                    "user_id": user_id,
-                    "video_path": storage_path,
-                    "prompt": prompt,
-                }).execute()
-
-            except Exception as e:
-                logger.error(f"Failed to save video record: {e}")
-
-            public_url = get_public_url("ai-videos", storage_path)
-            urls.append(public_url)
-
+            # Create a task for video generation
+            task_payload = {
+                "model": "gen-2",  # Using Gen-2 model
+                "text_prompt": prompt,
+                "watermark": False,
+                "duration": 4,  # 4 seconds duration
+                "ratio": "16:9",  # Widescreen format
+                "upscale": True  # Higher quality output
+            }
+            
+            # Submit the task
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                task_response = await client.post(
+                    "https://api.runwayml.com/v1/video_tasks",
+                    headers=headers,
+                    json=task_payload
+                )
+                task_response.raise_for_status()
+                task_data = task_response.json()
+                task_id = task_data.get("id")
+                
+                if not task_id:
+                    raise HTTPException(500, "Failed to create video generation task")
+                
+                # Poll for task completion
+                max_attempts = 60  # Maximum polling attempts (5 minutes)
+                video_url = None
+                
+                for attempt in range(max_attempts):
+                    # Check task status
+                    status_response = await client.get(
+                        f"https://api.runwayml.com/v1/video_tasks/{task_id}",
+                        headers=headers
+                    )
+                    status_response.raise_for_status()
+                    status_data = status_response.json()
+                    
+                    status = status_data.get("status")
+                    
+                    if status == "SUCCEEDED":
+                        video_url = status_data.get("output", {}).get("url")
+                        break
+                    elif status == "FAILED":
+                        error_message = status_data.get("failure_reason", "Unknown error")
+                        raise HTTPException(500, f"Video generation failed: {error_message}")
+                    
+                    # Wait before polling again
+                    await asyncio.sleep(5)
+                
+                if not video_url:
+                    raise HTTPException(500, "Video generation timed out")
+                
+                # Download the video
+                video_response = await client.get(video_url)
+                video_response.raise_for_status()
+                video_bytes = video_response.content
+                
+                # Upload to Supabase
+                filename = f"{uuid.uuid4().hex[:8]}.mp4"
+                storage_path = f"anonymous/{filename}"
+                
+                supabase.storage.from_("ai-videos").upload(
+                    path=storage_path,
+                    file=video_bytes,
+                    file_options={"content-type": "video/mp4"}
+                )
+                
+                # Save video record
+                try:
+                    supabase.table("videos").insert({
+                        "id": str(uuid.uuid4()),
+                        "user_id": user_id,
+                        "video_path": storage_path,
+                        "prompt": prompt,
+                        "provider": "runwayml-gen2",
+                        "created_at": datetime.now().isoformat()
+                    }).execute()
+                except Exception as e:
+                    logger.error(f"Failed to save video record: {e}")
+                
+                # Get public URL
+                public_url = get_public_url("ai-videos", storage_path)
+                urls.append(public_url)
+                
         except Exception as e:
-            logger.error(f"Video upload failed: {e}")
-
+            logger.error(f"Video generation failed: {e}")
+            # Continue with other samples if one fails
+            continue
+    
+    if not urls:
+        raise HTTPException(500, "No videos were generated successfully")
+    
     return {
-        "provider": "stub",
+        "provider": "runwayml-gen2",
         "videos": [{"url": url, "type": "video/mp4"} for url in urls]
     }
 
@@ -671,7 +751,7 @@ async def image_generation_handler(prompt: str, user_id: str, stream: bool = Fal
 
 # Update the video generation handler
 async def video_generation_handler(prompt: str, user_id: str, stream: bool = False):
-    """Handle video generation requests"""
+    """Handle video generation requests with RunwayML Gen-2"""
     # Extract sample count from prompt
     samples = 1
     sample_match = re.search(r'(\d+)\s+(video|videos)', prompt.lower())
@@ -680,13 +760,13 @@ async def video_generation_handler(prompt: str, user_id: str, stream: bool = Fal
     
     if stream:
         async def event_generator():
-            yield sse({"type": "starting", "message": "Generating video..."})
+            yield sse({"type": "starting", "message": "Generating video with RunwayML Gen-2..."})
             try:
                 result = await generate_video_internal(prompt, samples, user_id)
                 yield sse({
                     "type": "videos",
                     "provider": result["provider"],
-                    "videos": result["videos"]  # Already in the correct format
+                    "videos": result["videos"]
                 })
                 yield sse({"type": "done"})
             except Exception as e:
@@ -802,9 +882,11 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 HF_API_KEY = os.getenv("HF_API_KEY")
 IMAGE_MODEL_FREE_URL = os.getenv("IMAGE_MODEL_FREE_URL")
 USE_FREE_IMAGE_PROVIDER = os.getenv("USE_FREE_IMAGE_PROVIDER", "false").lower() in ("1", "true", "yes")
+RUNWAYML_API_KEY = os.getenv("RUNWAYML_API_KEY")
 
 # Quick log so you can confirm key presence without printing the key itself
 logger.info(f"GROQ key present: {bool(GROQ_API_KEY)}")
+logger.info(f"RunwayML key present: {bool(RUNWAYML_API_KEY)}")
 
 # -------------------
 # Models
@@ -2217,7 +2299,7 @@ async def auth(request: Request):
   #  // Simple auth function that extracts user_id from cookie
     user = await get_or_create_user(request, Response())
     if not user:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        raise HTTPException(401, "Not authenticated")
     return user
 
 PERSONALITY_MAP = {
@@ -3485,42 +3567,6 @@ async def tts_handler(prompt: str, user_id: str, stream: bool = False):
             "text": text,
             "audio": audio_b64
         }
-
-async def video_generation_handler(prompt: str, user_id: str, stream: bool = False):
-    """Handle video generation requests"""
-    #// Extract sample count from prompt
-    samples = 1
-    sample_match = re.search(r'(\d+)\s+(video|videos)', prompt.lower())
-    if sample_match:
-        samples = min(int(sample_match.group(1)), 2) #  // Cap at 2 videos
-    
-    if stream:
-        async def event_generator():
-            yield sse({"type": "starting", "message": "Generating video..."})
-            try:
-                result = await generate_video_internal(prompt, samples, user_id)
-                yield sse({
-                    "type": "videos",
-                    "provider": result["provider"],
-                    "videos": result["videos"]
-                })
-                yield sse({"type": "done"})
-            except Exception as e:
-                logger.error(f"Video generation failed: {e}")
-                yield sse({"type": "error", "message": str(e)})
-        
-        return StreamingResponse(
-            event_generator(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no"
-            }
-        )
-    else:
-        #// Non-streaming version
-        return await generate_video_internal(prompt, samples, user_id)
 
 async def code_generation_handler(prompt: str, user_id: str, stream: bool = False):
     """Handle code generation requests"""
@@ -5639,254 +5685,6 @@ async def regenerate(req: Request, res: Response, tts: bool = False, samples: in
         }
     )
 
-# Fixed the syntax error in the video endpoint
-@app.post("/video")
-async def generate_video(request: Request):
-    """
-    Generate a video from a prompt using Hugging Face and upload to Supabase.
-    Returns signed URL(s) to the video(s).
-    """
-    body = await request.json()
-    prompt = body.get("prompt", "").strip()
-    user = await get_or_create_user(request, Response())
-    user_id = user.id
-    samples = max(1, int(body.get("samples", 1)))  # Added missing closing parenthesis
-
-    if not prompt:
-        raise HTTPException(400, "prompt required")
-    if not HF_API_KEY:
-        raise HTTPException(500, "HF_API_KEY missing")
-
-    video_urls = []
-
-    try:
-        async with httpx.AsyncClient(timeout=600.0) as client:
-            headers = {"Authorization": f"Bearer {HF_API_KEY}"}
-            for _ in range(samples):
-                payload = {"inputs": prompt}
-
-                r = await client.post(
-                    "https://api-inference.huggingface.co/models/runwayml/stable-diffusion-videos",
-                    headers=headers,
-                    json=payload
-                )
-                r.raise_for_status()
-         #       // HF returns bytes, not base64
-                video_bytes = r.content
-
-         #       // Generate a unique filename
-                filename = f"{int(time.time())}-video-{uuid.uuid4().hex[:10]}.mp4"
-
-         #       // Upload to Supabase in the anonymous folder
-                storage_path = f"anonymous/{filename}"
-                supabase.storage.from_("ai-videos").upload(
-                    path=storage_path,
-                    file=video_bytes,
-                    file_options={"content-type": "video/mp4"}
-                )
-                
-          #      // Save video record with user ID
-                supabase.table("videos").insert({
-                    "id": str(uuid.uuid4()),
-                    "user_id": user_id,
-                    "storage_path": storage_path,  # Changed from 'filename' to 'storage_path'
-                    "prompt": prompt,
-                    "created_at": datetime.now().isoformat()
-                }).execute()
-
-            #    // Create signed URL (1 hour)
-                signed = supabase.storage.from_("ai-videos").create_signed_url(storage_path, 60*60)
-                video_urls.append(signed["signedURL"])
-
-    except Exception as e:
-        raise HTTPException(500, f"Video generation failed: {str(e)}")
-
-    if not video_urls:
-        raise HTTPException(500, "No video generated")
-
-    return {"provider": "huggingface", "videos": video_urls}
-    
-@app.post("/image")
-async def image_gen(request: Request):
-    body = await request.json()
-    prompt = body.get("prompt", "")
-    user = await get_or_create_user(request, Response())
-    user_id = user.id
-
-    try:
-        samples = max(1, int(body.get("samples", 1)))
-    except Exception:
-        samples = 1
-
-    return_base64 = bool(body.get("base64", False))
-
-    if not prompt:
-        raise HTTPException(400, "prompt required")
-
-    return await _generate_image_core(prompt, samples, user_id, return_base64)
-
-@app.get("/test-stream")
-async def test_stream(request: Request):
-    async def event_generator():
-        for i in range(1, 6):
-           # // Check if client disconnected
-            if await request.is_disconnected():
-                break
-            yield sse({"message": f"This is chunk {i}"})
-            await asyncio.sleep(1)
-        yield sse({"message": "Done"})
-        yield "data: [DONE]\n\n"
-    
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"
-        }
-    )
-    
-@app.post("/image/stream")
-async def image_stream(req: Request, res: Response):
-    """
-    Stream progress to the client while generating images.
-    Uses cookies for user identity and supports safe cancellation.
-    """
-    body = await req.json()
-    prompt = body.get("prompt", "")
-
-    try:
-        samples = max(1, int(body.get("samples", 1)))
-    except Exception:
-        samples = 1
-
-    return_base64 = bool(body.get("base64", False))
-
-    if not prompt:
-        raise HTTPException(400, "prompt required")
-    if not OPENAI_API_KEY:
-        raise HTTPException(400, "no OpenAI KEY")
-
-#    // ✅ COOKIE-BASED USER ID
-    user = await get_or_create_user(req, res)
-    user_id = user.id
-
-    async def event_generator():
-     #   // ✅ REGISTER STREAM TASK (MUST BE HERE)
-        task = asyncio.current_task()
-        active_streams[user_id] = task
-
-    #    // Also register in database
-        stream_id = str(uuid.uuid4())
-        try:
-            supabase.table("active_streams").insert({
-                "user_id": user_id,
-                "stream_id": stream_id,
-                "started_at": datetime.now().isoformat()
-            }).execute()
-        except Exception as e:
-            logger.error(f"Failed to register stream: {e}")
-
-        try:
-        #    // --- initial message ---
-            yield sse({"status": "starting", "message": "Preparing request"})
-            await asyncio.sleep(0)
-
-            payload = {
-                "model": "dall-e-3",
-                "prompt": prompt,
-                "n": 1, # // DALL·E 3 supports only 1
-                "size": "1024x1024",
-                "response_format": "b64_json"
-            }
-
-            yield sse({"status": "request", "message": "Sending to OpenAI"})
-
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                r = await client.post(
-                    "https://api.openai.com/v1/images/generations",
-                    headers={
-                        "Authorization": f"Bearer {OPENAI_API_KEY}",
-                        "Content-Type": "application/json",
-                    },
-                    json=payload
-                )
-
-            if r.status_code != 200:
-                text_snip = (await r.aread()).decode(errors="ignore")[:1000]
-                yield sse({
-                    "status": "error",
-                    "message": "OpenAI error",
-                    "detail": text_snip
-                })
-                return
-
-            jr = r.json()
-            urls = []
-
-            data_list = jr.get("data", [])
-            if not data_list:
-                yield sse({"status": "warning", "message": "No data returned from provider"})
-
-            for i, d in enumerate(data_list, start=1):
-                yield sse({
-                    "status": "progress",
-                    "message": f"Processing {i}/{samples}"
-                })
-                await asyncio.sleep(0)
-
-                b64 = d.get("b64_json")
-                if not b64:
-                    continue
-
-                try:
-                    image_bytes = base64.b64decode(b64)
-                    filename = f"{unique_filename('png')}"
-                 #   // Upload to anonymous folder
-                    upload_image_to_supabase(image_bytes, filename, user_id)
-
-                    signed = supabase.storage.from_("ai-images").create_signed_url(
-                        f"anonymous/{filename}", 60 * 60
-                    )
-                    urls.append(signed["signedURL"])
-
-                except Exception as e:
-                    logger.exception("Supabase upload failed in stream")
-                    yield sse({
-                        "status": "error",
-                        "message": f"Storage failed: {str(e)}"
-                    })
-
-            yield sse({"status": "done", "images": urls})
-
-        except asyncio.CancelledError:
-            logger.info(f"Image stream cancelled for user {user_id}")
-            yield sse({"status": "stopped"})
-            raise
-
-        except Exception as e:
-            logger.exception("image_stream exception")
-            yield sse({"status": "exception", "message": str(e)})
-
-        finally:
-          #  // ✅ CLEANUP
-            active_streams.pop(user_id, None)
-            try:
-                supabase.table("active_streams").delete().eq("user_id", user_id).execute()
-            except Exception as e:
-                logger.error(f"Failed to cleanup active stream: {e}")
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"
-        }
-    )
-    
 #// ---------- Img2Img (DALL·E edits) ----------
 @app.post("/img2img")
 async def img2img(request: Request, file: UploadFile = File(...), prompt: str = ""):
@@ -6802,3 +6600,391 @@ async def shutdown_event():
 async def check():
     conv_check = await asyncio.to_thread(run_check)
     return conv_check
+
+# Update the video endpoint with real RunwayML Gen-2 implementation
+@app.post("/video")
+async def generate_video(request: Request):
+    """
+    Generate high-quality videos from text prompts using RunwayML Gen-2.
+    Returns URLs to the generated videos.
+    """
+    body = await request.json()
+    prompt = body.get("prompt", "").strip()
+    user = await get_or_create_user(request, Response())
+    user_id = user.id
+    
+    try:
+        samples = max(1, int(body.get("samples", 1)))
+    except Exception:
+        samples = 1
+    
+    if not prompt:
+        raise HTTPException(400, "prompt required")
+    
+    # Content moderation check
+    is_flagged = await nsfw_check(prompt)
+    if is_flagged:
+        raise HTTPException(
+            status_code=400, 
+            detail="Video generation prompt violates content policy."
+        )
+    
+    # Check for cached result
+    cached = get_cached_result(prompt, "runwayml-gen2")
+    if cached:
+        return cached
+    
+    try:
+        result = await generate_video_internal(prompt, samples, user_id)
+        cache_result(prompt, "runwayml-gen2", result)
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Video generation failed")
+        raise HTTPException(500, "Video generation failed")
+
+# Add a new endpoint for video-to-video generation
+@app.post("/video/img2vid")
+async def img2vid(
+    request: Request,
+    file: UploadFile = File(...),
+    prompt: str = Form(...),
+    duration: int = Form(4)
+):
+    """
+    Generate a video from an image and text prompt using RunwayML Gen-2.
+    """
+    RUNWAYML_API_KEY = os.getenv("RUNWAYML_API_KEY")
+    if not RUNWAYML_API_KEY:
+        raise HTTPException(500, "RUNWAYML_API_KEY not configured")
+    
+    user = await get_or_create_user(request, Response())
+    user_id = user.id
+    
+    if not prompt:
+        raise HTTPException(400, "prompt required")
+    
+    # Read and validate the image
+    image_bytes = await file.read()
+    if not image_bytes:
+        raise HTTPException(400, "empty file")
+    
+    try:
+        # Upload the image to a temporary location
+        image_filename = f"temp_{uuid.uuid4().hex[:8]}.png"
+        image_path = f"temp/{image_filename}"
+        
+        supabase.storage.from_("ai-images").upload(
+            path=image_path,
+            file=image_bytes,
+            file_options={"content-type": "image/png"}
+        )
+        
+        # Get a public URL for the image
+        image_url = get_public_url("ai-images", image_path)
+        
+        # Create a task for image-to-video generation
+        headers = {
+            "Authorization": f"Bearer {RUNWAYML_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        task_payload = {
+            "model": "gen-2",
+            "image_prompt": image_url,
+            "text_prompt": prompt,
+            "watermark": False,
+            "duration": min(max(duration, 1), 14),  # Between 1-14 seconds
+            "ratio": "16:9",
+            "upscale": True
+        }
+        
+        # Submit the task
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            task_response = await client.post(
+                "https://api.runwayml.com/v1/video_tasks",
+                headers=headers,
+                json=task_payload
+            )
+            task_response.raise_for_status()
+            task_data = task_response.json()
+            task_id = task_data.get("id")
+            
+            if not task_id:
+                raise HTTPException(500, "Failed to create video generation task")
+            
+            # Poll for task completion
+            max_attempts = 60  # Maximum polling attempts (5 minutes)
+            video_url = None
+            
+            for attempt in range(max_attempts):
+                # Check task status
+                status_response = await client.get(
+                    f"https://api.runwayml.com/v1/video_tasks/{task_id}",
+                    headers=headers
+                )
+                status_response.raise_for_status()
+                status_data = status_response.json()
+                
+                status = status_data.get("status")
+                
+                if status == "SUCCEEDED":
+                    video_url = status_data.get("output", {}).get("url")
+                    break
+                elif status == "FAILED":
+                    error_message = status_data.get("failure_reason", "Unknown error")
+                    raise HTTPException(500, f"Video generation failed: {error_message}")
+                
+                # Wait before polling again
+                await asyncio.sleep(5)
+            
+            if not video_url:
+                raise HTTPException(500, "Video generation timed out")
+            
+            # Download the video
+            video_response = await client.get(video_url)
+            video_response.raise_for_status()
+            video_bytes = video_response.content
+            
+            # Upload to Supabase
+            filename = f"{uuid.uuid4().hex[:8]}.mp4"
+            storage_path = f"anonymous/{filename}"
+            
+            supabase.storage.from_("ai-videos").upload(
+                path=storage_path,
+                file=video_bytes,
+                file_options={"content-type": "video/mp4"}
+            )
+            
+            # Save video record
+            try:
+                supabase.table("videos").insert({
+                    "id": str(uuid.uuid4()),
+                    "user_id": user_id,
+                    "video_path": storage_path,
+                    "prompt": prompt,
+                    "provider": "runwayml-gen2-img2vid",
+                    "created_at": datetime.now().isoformat()
+                }).execute()
+            except Exception as e:
+                logger.error(f"Failed to save video record: {e}")
+            
+            # Get public URL
+            public_url = get_public_url("ai-videos", storage_path)
+            
+            # Clean up the temporary image
+            try:
+                supabase.storage.from_("ai-images").remove([image_path])
+            except:
+                pass
+            
+            return {
+                "provider": "runwayml-gen2-img2vid",
+                "video": {"url": public_url, "type": "video/mp4"}
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Image-to-video generation failed")
+        raise HTTPException(500, "Image-to-video generation failed")
+
+# Add a video streaming endpoint for real-time progress updates
+@app.post("/video/stream")
+async def generate_video_stream(req: Request, res: Response):
+    """
+    Stream video generation progress to the client.
+    """
+    body = await req.json()
+    prompt = body.get("prompt", "").strip()
+    
+    try:
+        samples = max(1, int(body.get("samples", 1)))
+    except Exception:
+        samples = 1
+    
+    if not prompt:
+        raise HTTPException(400, "prompt required")
+    
+    # Get user
+    user = await get_or_create_user(req, res)
+    user_id = user.id
+    
+    # Content moderation check
+    is_flagged = await nsfw_check(prompt)
+    if is_flagged:
+        raise HTTPException(
+            status_code=400, 
+            detail="Video generation prompt violates content policy."
+        )
+    
+    RUNWAYML_API_KEY = os.getenv("RUNWAYML_API_KEY")
+    if not RUNWAYML_API_KEY:
+        raise HTTPException(500, "RUNWAYML_API_KEY not configured")
+    
+    async def event_generator():
+        # Register stream task
+        task = asyncio.current_task()
+        active_streams[user_id] = task
+        
+        # Register in database
+        stream_id = str(uuid.uuid4())
+        try:
+            supabase.table("active_streams").insert({
+                "user_id": user_id,
+                "stream_id": stream_id,
+                "started_at": datetime.now().isoformat()
+            }).execute()
+        except Exception as e:
+            logger.error(f"Failed to register stream: {e}")
+        
+        try:
+            yield sse({"status": "starting", "message": "Initializing video generation..."})
+            
+            headers = {
+                "Authorization": f"Bearer {RUNWAYML_API_KEY}",
+                "Content-Type": "application/json"
+            }
+            
+            video_urls = []
+            
+            for i in range(samples):
+                yield sse({"status": "progress", "message": f"Generating video {i+1}/{samples}..."})
+                
+                # Create a task for video generation
+                task_payload = {
+                    "model": "gen-2",
+                    "text_prompt": prompt,
+                    "watermark": False,
+                    "duration": 4,
+                    "ratio": "16:9",
+                    "upscale": True
+                }
+                
+                # Submit the task
+                async with httpx.AsyncClient(timeout=60.0) as client:
+                    task_response = await client.post(
+                        "https://api.runwayml.com/v1/video_tasks",
+                        headers=headers,
+                        json=task_payload
+                    )
+                    task_response.raise_for_status()
+                    task_data = task_response.json()
+                    task_id = task_data.get("id")
+                    
+                    if not task_id:
+                        yield sse({"status": "error", "message": "Failed to create video generation task"})
+                        continue
+                    
+                    yield sse({"status": "progress", "message": "Processing video..."})
+                    
+                    # Poll for task completion
+                    max_attempts = 60
+                    video_url = None
+                    
+                    for attempt in range(max_attempts):
+                        # Check task status
+                        status_response = await client.get(
+                            f"https://api.runwayml.com/v1/video_tasks/{task_id}",
+                            headers=headers
+                        )
+                        status_response.raise_for_status()
+                        status_data = status_response.json()
+                        
+                        status = status_data.get("status")
+                        
+                        if status == "SUCCEEDED":
+                            video_url = status_data.get("output", {}).get("url")
+                            break
+                        elif status == "FAILED":
+                            error_message = status_data.get("failure_reason", "Unknown error")
+                            yield sse({"status": "error", "message": f"Video generation failed: {error_message}"})
+                            break
+                        
+                        # Update progress
+                        progress = min(int((attempt / max_attempts) * 100), 95)
+                        yield sse({"status": "progress", "message": f"Processing video... {progress}%"})
+                        
+                        # Wait before polling again
+                        await asyncio.sleep(5)
+                    
+                    if not video_url:
+                        yield sse({"status": "error", "message": "Video generation timed out"})
+                        continue
+                    
+                    yield sse({"status": "progress", "message": "Downloading video..."})
+                    
+                    # Download the video
+                    video_response = await client.get(video_url)
+                    video_response.raise_for_status()
+                    video_bytes = video_response.content
+                    
+                    # Upload to Supabase
+                    filename = f"{uuid.uuid4().hex[:8]}.mp4"
+                    storage_path = f"anonymous/{filename}"
+                    
+                    supabase.storage.from_("ai-videos").upload(
+                        path=storage_path,
+                        file=video_bytes,
+                        file_options={"content-type": "video/mp4"}
+                    )
+                    
+                    # Save video record
+                    try:
+                        supabase.table("videos").insert({
+                            "id": str(uuid.uuid4()),
+                            "user_id": user_id,
+                            "video_path": storage_path,
+                            "prompt": prompt,
+                            "provider": "runwayml-gen2",
+                            "created_at": datetime.now().isoformat()
+                        }).execute()
+                    except Exception as e:
+                        logger.error(f"Failed to save video record: {e}")
+                    
+                    # Get public URL
+                    public_url = get_public_url("ai-videos", storage_path)
+                    video_urls.append(public_url)
+            
+            if video_urls:
+                yield sse({
+                    "status": "completed",
+                    "message": "Video generation completed",
+                    "videos": [{"url": url, "type": "video/mp4"} for url in video_urls]
+                })
+                
+                # Cache result
+                cache_result(prompt, "runwayml-gen2", {
+                    "provider": "runwayml-gen2",
+                    "videos": [{"url": url, "type": "video/mp4"} for url in video_urls]
+                })
+            else:
+                yield sse({"status": "error", "message": "No videos were generated successfully"})
+        
+        except asyncio.CancelledError:
+            logger.info(f"Video stream cancelled for user {user_id}")
+            yield sse({"status": "cancelled", "message": "Video generation cancelled"})
+            raise
+        
+        except Exception as e:
+            logger.exception("Video stream exception")
+            yield sse({"status": "error", "message": str(e)})
+        
+        finally:
+            # Cleanup
+            active_streams.pop(user_id, None)
+            try:
+                supabase.table("active_streams").delete().eq("user_id", user_id).execute()
+            except Exception as e:
+                logger.error(f"Failed to cleanup active stream: {e}")
+    
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
