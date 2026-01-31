@@ -589,51 +589,40 @@ async def test_image_url(image_path: str):
     except Exception as e:
         return {"url": public_url, "status": f"error: {str(e)}"}
         
-# Update the generate_video_internal function
-async def generate_video_internal(prompt: str, samples: int = 1, user_id: str = "anonymous") -> dict:
-    """
-    Generate video (stub). Stores video files in Supabase storage like images.
-    Returns a list of public URLs.
-    """
+async def generate_video_internal(prompt: str, samples: int = 1, user_id: uuid.UUID = None) -> dict:
     urls = []
 
     for i in range(samples):
-        # For now, we create a placeholder video file
         placeholder_content = b"This is a placeholder video for prompt: " + prompt.encode('utf-8')
         filename = f"{uuid.uuid4().hex[:8]}.mp4"
         storage_path = f"anonymous/{filename}"
 
-        # Upload to Supabase
         try:
             supabase.storage.from_("ai-videos").upload(
                 path=storage_path,
                 file=placeholder_content,
                 file_options={"content-type": "video/mp4"}
             )
-            
-            # Try to save video record with user ID
+
             try:
                 supabase.table("videos").insert({
-                    "id": str(uuid.uuid4()),
-                    "user_id": str(user_id),   # must be text (your column is text NOT uuid)
-                    "video_path": file_path, # Use storage_path instead of filename
+                    "user_id": user_id,
+                    "video_path": storage_path,
                     "prompt": prompt,
-                    "created_at": datetime.now().isoformat()
                 }).execute()
+
             except Exception as e:
-                # If the insert fails, it might be due to schema issues
                 logger.error(f"Failed to save video record: {e}")
-                # Continue without saving to database, but still return the URL
-            
-            # Get public URL instead of signed URL
+
             public_url = get_public_url("ai-videos", storage_path)
             urls.append(public_url)
+
         except Exception as e:
             logger.error(f"Video upload failed: {e}")
 
     return {
-        "provider": "stub", 
-        "videos": [{"url": url, "type": "video/mp4"} for url in urls]  # Updated format
+        "provider": "stub",
+        "videos": [{"url": url, "type": "video/mp4"} for url in urls]
     }
 
 # Update the image generation handler
