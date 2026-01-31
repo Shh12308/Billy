@@ -46,6 +46,23 @@ import plotly.graph_objects as go
 import plotly.express as px
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
+# ---------- CONFIG & LOGGING ----------
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
+logger = logging.getLogger("zynara-server")
+
+app = FastAPI(
+    title="ZyNaraAI1.0 Multimodal Server",
+    redirect_slashes=False
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:9898"], # // frontend URL
+    allow_credentials=True, 
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # Fix: Import utils with proper error handling
 try:
     import utils
@@ -665,21 +682,7 @@ def check_bucket_visibility():
     except Exception as e:
         logger.error(f"Error checking bucket visibility: {e}")
         return False
-
-# Call this function at startup
-@app.on_event("startup")
-async def startup_event():
-    # Start the scheduler
-    scheduler.start()
-    
-    # Check available models
-    await check_available_models()
-    
-    # Check bucket visibility
-    if not check_bucket_visibility():
-        logger.warning("Storage buckets may not be public. Images and videos might not load on frontend.")
         
-
 # Fixed cache_result function
 def cache_result(prompt: str, provider: str, result: dict):
     # Store cache in Supabase
@@ -731,23 +734,6 @@ init_supabase_tables()
 groq_client = httpx.AsyncClient(
     timeout=None,
     limits=httpx.Limits(max_connections=100, max_keepalive_connections=20)
-)
-
-# ---------- CONFIG & LOGGING ----------
-logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
-logger = logging.getLogger("zynara-server")
-
-app = FastAPI(
-    title="ZyNaraAI1.0 Multimodal Server",
-    redirect_slashes=False
-)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:9898"], # // frontend URL
-    allow_credentials=True, 
-    allow_methods=["*"],
-    allow_headers=["*"],
 )
 
 # ---------------- SSE HELPER ----------------
@@ -6708,10 +6694,23 @@ async def merge_user_data(req: Request, res: Response):
         logger.error(f"Error verifying JWT token: {e}")
         raise HTTPException(401, f"Invalid token: {str(e)}")
 
+# These should be at the end of the file, after all endpoints are defined
+@app.on_event("startup")
+async def startup_event():
+    # Start the scheduler
+    scheduler.start()
+    
+    # Check available models
+    await check_available_models()
+    
+    # Check bucket visibility
+    if not check_bucket_visibility():
+        logger.warning("Storage buckets may not be public. Images and videos might not load on frontend.")
+
 @app.on_event("shutdown")
 async def shutdown_event():
     scheduler.shutdown()
-
+    
 @app.post("/check")
 async def check():
     conv_check = await asyncio.to_thread(run_check)
