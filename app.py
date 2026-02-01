@@ -146,6 +146,133 @@ def generate_device_fingerprint(request: Request) -> str:
     # simple + stable fingerprint
     return request.headers.get("user-agent", "unknown-device")
 
+# Move this section to right after the imports and before it's first used
+
+# -----------------------------
+# Background task system
+# -----------------------------
+background_executor = ThreadPoolExecutor(max_workers=10)
+
+class TaskManager:
+    def __init__(self):
+        self.active_tasks: Dict[str, Dict[str, Any]] = {}
+
+    def create_task(self, user_id: str, task_type: str, params: Dict[str, Any]) -> str:
+        task_id = str(uuid.uuid4())
+
+        task = {
+            "id": task_id,
+            "user_id": user_id,
+            "type": task_type,
+            "params": params,
+            "status": "queued",
+            "created_at": datetime.utcnow().isoformat(),
+            "result": None,
+            "error": None,
+        }
+
+        self.active_tasks[task_id] = task
+
+        try:
+            supabase.table("background_tasks").insert(
+                {
+                    "id": task_id,
+                    "user_id": user_id,
+                    "task_type": task_type,
+                    "params": json.dumps(params),
+                    "status": "queued",
+                    "created_at": task["created_at"],
+                }
+            ).execute()
+        except Exception as e:
+            logger.error(f"Failed to persist task: {e}")
+
+        return task_id
+
+    def update_task_status(self, task_id: str, status: str, result=None, error=None):
+        if task_id not in self.active_tasks:
+            return
+
+        task = self.active_tasks[task_id]
+        task["status"] = status
+        task["result"] = result
+        task["error"] = error
+
+        try:
+            update_data = {"status": status}
+            if result is not None:
+                update_data["result"] = json.dumps(result)
+            if error is not None:
+                update_data["error"] = str(error)
+
+            supabase.table("background_tasks").update(update_data).eq(
+                "id", task_id
+            ).execute()
+        except Exception as e:
+            logger.error(f"Failed to update task: {e}")
+
+    def get_task(self, task_id: str) -> Dict[str, Any] | None:
+        if task_id in self.active_tasks:
+            return self.active_tasks[task_id]
+
+        try:
+            resp = supabase.table("background_tasks").select("*").eq(
+                "id", task_id
+            ).execute()
+            if resp.data:
+                task = resp.data[0]
+                task["params"] = json.loads(task["params"])
+                if task.get("result"):
+                    task["result"] = json.loads(task["result"])
+                self.active_tasks[task_id] = task
+                return task
+        except Exception as e:
+            logger.error(f"Failed to fetch task: {e}")
+
+        return None
+
+    def get_user_tasks(self, user_id: str) -> List[Dict[str, Any]]:
+        try:
+            resp = (
+                supabase.table("background_tasks")
+                .select("*")
+                .eq("user_id", user_id)
+                .order("created_at", desc=True)
+                .execute()
+            )
+
+            tasks = resp.data or []
+            for t in tasks:
+                t["params"] = json.loads(t["params"])
+                if t.get("result"):
+                    t["result"] = json.loads(t["result"])
+            return tasks
+        except Exception as e:
+            logger.error(f"Failed to fetch user tasks: {e}")
+            return []
+
+# Create the global task_manager instance
+task_manager = TaskManager()
+
+# WebSocket connection manager
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: Dict[str, WebSocket] = {}  # user_id -> websocket
+    
+    async def connect(self, websocket: WebSocket, user_id: str):
+        await websocket.accept()
+        self.active_connections[user_id] = websocket
+    
+    def disconnect(self, user_id: str):
+        if user_id in self.active_connections:
+            del self.active_connections[user_id]
+    
+    async def send_personal_message(self, message: str, user_id: str):
+        if user_id in self.active_connections:
+            await self.active_connections[user_id].send_text(message)
+
+manager = ConnectionManager()
+
 # -----------------------------
 # Get or create anonymous user
 # -----------------------------
@@ -358,6 +485,40 @@ manager = ConnectionManager()
 # Initialize scheduler
 scheduler = AsyncIOScheduler()
 
+def process_tasks():
+    tasks = supabase.table("background_tasks") \
+        .select("*") \
+        .eq("status", "queued") \
+        .limit(5) \
+        .execute()
+
+    for task in tasks.data:
+        # mark as processing
+        supabase.table("background_tasks") \
+            .update({"status": "processing"}) \
+            .eq("id", task["id"]) \
+            .execute()
+
+        try:
+            result = run_ai_task(task)
+
+            supabase.table("background_tasks") \
+                .update({
+                    "status": "completed",
+                    "result": json.dumps(result)
+                }) \
+                .eq("id", task["id"]) \
+                .execute()
+
+        except Exception as e:
+            supabase.table("background_tasks") \
+                .update({
+                    "status": "failed",
+                    "error": str(e)
+                }) \
+                .eq("id", task["id"]) \
+                .execute()
+            
 # Fixed upload_image_to_supabase function to store in anonymous folder
 def upload_image_to_supabase(image_bytes: bytes, filename: str, user_id: str):
     # Extract just the filename without the user_id prefix for storage
