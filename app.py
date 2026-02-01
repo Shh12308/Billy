@@ -645,7 +645,7 @@ async def generate_video_stability(prompt: str, samples: int = 1, user_id: str =
             # Submit the request
             async with httpx.AsyncClient(timeout=120.0) as client:
                 response = await client.post(
-                    "https://api.stability.ai/v1/generation/stable-video-diffusion/text-to-video",
+                    "https://api.stability.ai/v2beta/video/generate",
                     headers=headers,
                     json=payload
                 )
@@ -2509,23 +2509,53 @@ def detect_artifact(text: str):
 
 async def load_history(user_id: str, limit: int = 20):
     try:
-        conv_response = supabase.table("conversations").select("id").eq("user_id", user_id).order("updated_at", desc=True).limit(1).execute()
+        conv_response = (
+            supabase.table("conversations")
+            .select("id")
+            .eq("user_id", user_id)
+            .order("updated_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+
         if conv_response.data:
             conversation_id = conv_response.data[0]["id"]
-            msg_response = supabase.table("messages").select("role, content").eq("conversation_id", conversation_id).order("created_at").limit(limit).execute()
-            rows = msg_response.data if msg_response.data else []
+
+            msg_response = (
+                supabase.table("messages")
+                .select("role, content")
+                .eq("conversation_id", conversation_id)
+                .order("created_at", desc=False)  # oldest → newest
+                .limit(limit)
+                .execute()
+            )
+
+            rows = msg_response.data or []
             return [{"role": row["role"], "content": row["content"]} for row in rows]
+
     except Exception as e:
         logger.error(f"Failed to load history: {e}")
+
     return []
+
 
 def load_memory(conversation_id: str, limit: int = 20):
     try:
-        response = supabase.table("messages").select("role, content").eq("conversation_id", conversation_id).order("created_at", "asc").limit(limit).execute()
-        rows = response.data if response.data else []
+        response = (
+            supabase.table("messages")
+            .select("role, content")
+            .eq("conversation_id", conversation_id)
+            .order("created_at", desc=False)  # FIXED
+            .limit(limit)
+            .execute()
+        )
+
+        rows = response.data or []
         return [{"role": row["role"], "content": row["content"]} for row in rows]
+
     except Exception as e:
         logger.error(f"Failed to load memory: {e}")
+
     return []
 
 def extract_memory_from_prompt(prompt: str):
@@ -5665,10 +5695,8 @@ async def ask_universal(request: Request, response: Response):
 
     # List of models to try in order (updated with current models)
     models_to_try = [
-        "llama-3.1-8b-instant",
+        "llama-3.1-405b-reasoning",
         "llama-3.3-70b-versatile",
-        "groq/compound",
-        "qwen/qwen3-32b"
     ]
 
     # -------------------------------
