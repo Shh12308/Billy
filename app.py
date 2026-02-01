@@ -57,7 +57,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:9898", "https://zynara.xyz"], # // frontend URL
+    allow_origins=["http://localhost:9898", "https://zynara.xyz", "https://www.zynara.xyz"], # // frontend URL
     allow_credentials=True, 
     allow_methods=["*"],
     allow_headers=["*"],
@@ -150,12 +150,33 @@ def generate_device_fingerprint(request: Request) -> str:
 # Get or create anonymous user
 # -----------------------------
 async def get_or_create_user(request: Request, response: Response) -> User:
-    # 1️⃣ Try to get existing session token from cookie
+    try:
+        # 1️⃣ Check for Supabase Auth user (logged-in users)
+        auth_header = request.headers.get("Authorization")
+
+        if auth_header:
+            token = auth_header.replace("Bearer ", "")
+
+            user_resp = await asyncio.to_thread(
+                lambda: supabase.auth.get_user(token)
+            )
+
+            if user_resp.user:
+                return User(
+                    id=user_resp.user.id,
+                    anonymous=False,
+                    session_token=None,
+                    device_fingerprint=None,
+                )
+
+    except Exception as e:
+        logger.warning(f"Supabase auth check failed: {e}")
+
+    # 2️⃣ Fallback to anonymous session
     session_token = request.cookies.get("session_token")
-    
+
     if session_token:
         try:
-            # Check if this session token exists in the database
             user_resp = await asyncio.to_thread(
                 lambda: supabase.table("users")
                 .select("*")
@@ -163,11 +184,10 @@ async def get_or_create_user(request: Request, response: Response) -> User:
                 .limit(1)
                 .execute()
             )
-            
+
             if user_resp.data:
                 user_data = user_resp.data[0]
 
-                # Update last_seen to current UTC time
                 await asyncio.to_thread(
                     lambda: supabase.table("users")
                     .update({"last_seen": datetime.utcnow().isoformat()})
@@ -177,126 +197,80 @@ async def get_or_create_user(request: Request, response: Response) -> User:
 
                 return User(
                     id=user_data["id"],
-                    anonymous=False,
+                    anonymous=True,
                     session_token=session_token,
                     device_fingerprint=user_data.get("device_fingerprint"),
                 )
-        except Exception as e:
-            logger.warning(f"User lookup failed: {e}")
 
-    # 2️⃣ No valid session? Create a new user
+        except Exception as e:
+            logger.warning(f"Anonymous lookup failed: {e}")
+
+    # 3️⃣ Create new anonymous user
     device_fingerprint = generate_device_fingerprint(request)
     new_session_token = str(uuid.uuid4())
     user_id = str(uuid.uuid4())
 
-    try:
-        # Insert new user record
-        await asyncio.to_thread(
-            lambda: supabase.table("users").insert({
-                "id": user_id,
-                "session_token": new_session_token,
-                "device_fingerprint": device_fingerprint,
-                "created_at": datetime.utcnow().isoformat(),
-                "last_seen": datetime.utcnow().isoformat()
-            }).execute()
-        )
+    await asyncio.to_thread(
+        lambda: supabase.table("users").insert({
+            "id": user_id,
+            "session_token": new_session_token,
+            "device_fingerprint": device_fingerprint,
+            "created_at": datetime.utcnow().isoformat(),
+            "last_seen": datetime.utcnow().isoformat()
+        }).execute()
+    )
 
-        # Set cookie expiration properly (HTTP-date string)
-        expires = (datetime.utcnow() + timedelta(days=30))
-        expires_str = expires.strftime("%a, %d %b %Y %H:%M:%S GMT")
+    response.set_cookie(
+        key="session_token",
+        value=new_session_token,
+        max_age=60 * 60 * 24 * 30,
+        path="/",
+        secure=True,  # ✅ Use True in production
+        httponly=True,
+        samesite="lax"
+    )
 
-        # Set session cookie
-        response.set_cookie(
-            key="session_token",
-            value=new_session_token,
-            max_age=60 * 60 * 24 * 30,  # 30 days in seconds
-            expires=expires_str,
-            path="/",
-            secure=False,  # Set True in production with HTTPS
-            httponly=True,
-            samesite="lax"
-        )
-
-        return User(
-            id=user_id,
-            anonymous=False,
-            session_token=new_session_token,
-            device_fingerprint=device_fingerprint,
-        )
-
-    except Exception as e:
-        logger.error(f"Failed to create user: {e}")
-        raise HTTPException(500, "Failed to create user session")
+    return User(
+        id=user_id,
+        anonymous=True,
+        session_token=new_session_token,
+        device_fingerprint=device_fingerprint,
+    )
         
 # -----------------------------
 # Merge visitor → real user
 # -----------------------------
 def merge_visitor_to_user(user_id: str, session_token: str):
     try:
-        visitor = (
+        visitor_resp = (
             supabase.table("visitor_users")
             .select("id")
             .eq("session_token", session_token)
+            .limit(1)
             .execute()
         )
 
-        if not visitor.data:
-            return
+        if not visitor_resp.data:
+            return  # Nothing to merge
 
-        visitor_id = visitor.data[0]["id"]
+        visitor_id = visitor_resp.data[0]["id"]
 
+        # 1️⃣ Move conversations
         supabase.table("conversations") \
             .update({"user_id": user_id}) \
             .eq("user_id", visitor_id) \
             .execute()
 
+        # 2️⃣ Delete visitor record
         supabase.table("visitor_users") \
             .delete() \
             .eq("id", visitor_id) \
             .execute()
+
+        logger.info(f"Merged visitor {visitor_id} → user {user_id}")
+
     except Exception as e:
         logger.error(f"Failed to merge visitor to user: {e}")
-
-# -----------------------------
-# Background task system
-# -----------------------------
-background_executor = ThreadPoolExecutor(max_workers=10)
-
-class TaskManager:
-    def __init__(self):
-        self.active_tasks: Dict[str, Dict[str, Any]] = {}
-
-    def create_task(self, user_id: str, task_type: str, params: Dict[str, Any]) -> str:
-        task_id = str(uuid.uuid4())
-
-        task = {
-            "id": task_id,
-            "user_id": user_id,
-            "type": task_type,
-            "params": params,
-            "status": "queued",
-            "created_at": datetime.utcnow().isoformat(),
-            "result": None,
-            "error": None,
-        }
-
-        self.active_tasks[task_id] = task
-
-        try:
-            supabase.table("background_tasks").insert(
-                {
-                    "id": task_id,
-                    "user_id": user_id,
-                    "task_type": task_type,
-                    "params": json.dumps(params),
-                    "status": "queued",
-                    "created_at": task["created_at"],
-                }
-            ).execute()
-        except Exception as e:
-            logger.error(f"Failed to persist task: {e}")
-
-        return task_id
 
     def update_task_status(self, task_id: str, status: str, result=None, error=None):
         if task_id not in self.active_tasks:
