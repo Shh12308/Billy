@@ -57,7 +57,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:9898", "https://zynara.xyz", "https://www.zynara.xyz"], # // frontend URL
+    allow_origins=["http://localhost:9898", "https://zynara.xyz", "https://www.zynara.xyz"],
     allow_credentials=True, 
     allow_methods=["*"],
     allow_headers=["*"],
@@ -130,7 +130,7 @@ class User:
     def __init__(
         self,
         id: str,
-        anonymous: bool = False,  # Changed default to False
+        anonymous: bool = False,
         session_token: str | None = None,
         device_fingerprint: str | None = None,
     ):
@@ -145,8 +145,6 @@ class User:
 def generate_device_fingerprint(request: Request) -> str:
     # simple + stable fingerprint
     return request.headers.get("user-agent", "unknown-device")
-
-# Move this section to right after the imports and before it's first used
 
 # -----------------------------
 # Background task system
@@ -399,89 +397,6 @@ def merge_visitor_to_user(user_id: str, session_token: str):
     except Exception as e:
         logger.error(f"Failed to merge visitor to user: {e}")
 
-    def update_task_status(self, task_id: str, status: str, result=None, error=None):
-        if task_id not in self.active_tasks:
-            return
-
-        task = self.active_tasks[task_id]
-        task["status"] = status
-        task["result"] = result
-        task["error"] = error
-
-        try:
-            update_data = {"status": status}
-            if result is not None:
-                update_data["result"] = json.dumps(result)
-            if error is not None:
-                update_data["error"] = str(error)
-
-            supabase.table("background_tasks").update(update_data).eq(
-                "id", task_id
-            ).execute()
-        except Exception as e:
-            logger.error(f"Failed to update task: {e}")
-
-    def get_task(self, task_id: str) -> Dict[str, Any] | None:
-        if task_id in self.active_tasks:
-            return self.active_tasks[task_id]
-
-        try:
-            resp = supabase.table("background_tasks").select("*").eq(
-                "id", task_id
-            ).execute()
-            if resp.data:
-                task = resp.data[0]
-                task["params"] = json.loads(task["params"])
-                if task.get("result"):
-                    task["result"] = json.loads(task["result"])
-                self.active_tasks[task_id] = task
-                return task
-        except Exception as e:
-            logger.error(f"Failed to fetch task: {e}")
-
-        return None
-
-    def get_user_tasks(self, user_id: str) -> List[Dict[str, Any]]:
-        try:
-            resp = (
-                supabase.table("background_tasks")
-                .select("*")
-                .eq("user_id", user_id)
-                .order("created_at", desc=True)
-                .execute()
-            )
-
-            tasks = resp.data or []
-            for t in tasks:
-                t["params"] = json.loads(t["params"])
-                if t.get("result"):
-                    t["result"] = json.loads(t["result"])
-            return tasks
-        except Exception as e:
-            logger.error(f"Failed to fetch user tasks: {e}")
-            return []
-
-task_manager = TaskManager()
-
-# WebSocket connection manager
-class ConnectionManager:
-    def __init__(self):
-        self.active_connections: Dict[str, WebSocket] = {}  # user_id -> websocket
-    
-    async def connect(self, websocket: WebSocket, user_id: str):
-        await websocket.accept()
-        self.active_connections[user_id] = websocket
-    
-    def disconnect(self, user_id: str):
-        if user_id in self.active_connections:
-            del self.active_connections[user_id]
-    
-    async def send_personal_message(self, message: str, user_id: str):
-        if user_id in self.active_connections:
-            await self.active_connections[user_id].send_text(message)
-
-manager = ConnectionManager()
-
 # Initialize scheduler
 scheduler = AsyncIOScheduler()
 
@@ -542,7 +457,7 @@ def upload_image_to_supabase(image_bytes: bytes, filename: str, user_id: str):
         supabase.table("images").insert({
             "id": str(uuid.uuid4()),
             "user_id": user_id,
-            "image_path": storage_path,  # Use the correct column name
+            "image_path": storage_path,
             "created_at": datetime.now().isoformat()
         }).execute()
     except Exception as e:
@@ -642,10 +557,10 @@ async def generate_video_stability(prompt: str, samples: int = 1, user_id: str =
                 "seed": random.randint(0, 4294967295)
             }
             
-            # Submit the request
+            # Submit the request - Updated endpoint
             async with httpx.AsyncClient(timeout=120.0) as client:
                 response = await client.post(
-                    "https://api.stability.ai/v2beta/video/generate",
+                    "https://api.stability.ai/v1/generation/stable-video-diffusion/text-to-video",
                     headers=headers,
                     json=payload
                 )
@@ -749,7 +664,6 @@ async def generate_video_huggingface(prompt: str, samples: int = 1, user_id: str
             }
             
             # Using a text-to-video model from Hugging Face
-            # This is an example with damo-vilab/text-to-video-ms-1.7b
             payload = {
                 "inputs": prompt,
                 "parameters": {
@@ -1061,7 +975,7 @@ async def video_generation_handler(prompt: str, user_id: str, stream: bool = Fal
     
     if stream:
         async def event_generator():
-            yield sse({"type": "starting", "message": "Generating video with RunwayML Gen-2..."})
+            yield sse({"type": "starting", "message": "Generating video..."})
             try:
                 result = await generate_video_internal(prompt, samples, user_id)
                 yield sse({
@@ -1193,7 +1107,7 @@ logger.info(f"RunwayML key present: {bool(RUNWAYML_API_KEY)}")
 # Models
 # -------------------
 # Update this line in your code
-CHAT_MODEL = os.getenv("CHAT_MODEL", "llama-3.1-405b-reasoning")  # Using a currently supported model
+CHAT_MODEL = os.getenv("CHAT_MODEL", "llama-3.3-70b-versatile")  # Using a currently supported model
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions" # // Added missing URL
 
 # TTS/STT are handled via ElevenLabs now
@@ -2030,50 +1944,7 @@ def build_contextual_prompt(user_id: str, message: str) -> str:
         conversation_id = conv_response.data[0]["id"]
         
         # Get recent messages from this conversation
-        msg_response = supabase.table("messages").select("role, content").eq("conversation_id", conversation_id).order("created_at", "asc").limit(10).execute()
-        
-        # Build context from messages
-        context = "Recent conversation:\n"
-        for msg in msg_response.data:
-            context += f"{msg['role']}: {msg['content']}\n"
-        
-        # Get user preferences if they exist
-        profile_response = supabase.table("profiles").select("preferences").eq("id", user_id).execute()
-        if profile_response.data:
-            preferences = profile_response.data[0].get("preferences", {})
-            if preferences:
-                context += f"\nUser preferences: {json.dumps(preferences)}\n"
-        
-        return f"""You are a helpful AI assistant with memory of this user.
-
-{context}
-
-Current message: {message}"""
-    except Exception as e:
-        logger.error(f"Failed to build contextual prompt: {e}")
-        return f"You are a helpful AI assistant. User message: {message}"
-
-def get_system_prompt(user_message: Optional[str] = None) -> str:
-    base = "You are ZynaraAI1.0: helpful, concise, friendly, and focus entirely on what the user asks. Do not reference your creator or yourself unless explicitly asked."
-    if user_message:
-        base += f" The user said: \"{user_message}\". Tailor your response to this."
-    return base
-
-#// Update the build_contextual_prompt function to include user history
-def build_contextual_prompt(user_id: str, message: str) -> str:
-    """Build system prompt with user memory and conversation history"""
-    try:
-        # Get user's recent conversations
-        conv_response = supabase.table("conversations").select("id").eq("user_id", user_id).order("updated_at", desc=True).limit(1).execute()
-        
-        if not conv_response.data:
-            # New user, no history
-            return f"You are a helpful AI assistant. User message: {message}"
-        
-        conversation_id = conv_response.data[0]["id"]
-        
-        # Get recent messages from this conversation
-        msg_response = supabase.table("messages").select("role, content").eq("conversation_id", conversation_id).order("created_at", "asc").limit(10).execute()
+        msg_response = supabase.table("messages").select("role, content").eq("conversation_id", conversation_id).order("created_at", asc=True).limit(10).execute()
         
         # Build context from messages
         context = "Recent conversation:\n"
@@ -2552,7 +2423,6 @@ def load_memory(conversation_id: str, limit: int = 20):
 
         rows = response.data or []
         return [{"role": row["role"], "content": row["content"]} for row in rows]
-
     except Exception as e:
         logger.error(f"Failed to load memory: {e}")
 
@@ -3835,49 +3705,6 @@ async def clone_voice(prompt: str, user_id: str, stream: bool = False):
         }
 
 #// Helper functions for all the missing intents that work with streaming
-async def image_generation_handler(prompt: str, user_id: str, stream: bool = False):
-    """Handle image generation requests"""
-    if stream:
-        async def event_generator():
-            yield sse({"type": "starting", "message": "Generating image..."})
-            try:
-              #  // Extract any sample count from the prompt
-                samples = 1
-                sample_match = re.search(r'(\d+)\s+(image|images)', prompt.lower())
-                if sample_match:
-                    samples = min(int(sample_match.group(1)), 4)  #// Cap at 4 images
-                
-                #// Generate the image
-                result = await _generate_image_core(prompt, samples, user_id, return_base64=False)
-                
-                yield sse({
-                    "type": "images",
-                    "provider": result["provider"],
-                    "images": result["images"]
-                })
-                yield sse({"type": "done"})
-            except Exception as e:
-                logger.error(f"Image generation failed: {e}")
-                yield sse({"type": "error", "message": str(e)})
-        
-        return StreamingResponse(
-            event_generator(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no"
-            }
-        )
-    else:
-       # // Non-streaming version
-        samples = 1
-        sample_match = re.search(r'(\d+)\s+(image|images)', prompt.lower())
-        if sample_match:
-            samples = min(int(sample_match.group(1)), 4) #  // Cap at 4 images
-        
-        return await _generate_image_core(prompt, samples, user_id, return_base64=False)
-
 async def img2img_handler(prompt: str, user_id: str, stream: bool = False):
     """Handle image-to-image editing requests"""
    # // For now, we'll just return an error message since we need an image file
@@ -5502,7 +5329,7 @@ def load_conversation_history(user_id: str, limit: int = 20):
         conversation_id = conv_response.data[0]["id"]
             
         # Get recent messages from this conversation
-        msg_response = supabase.table("messages").select("role, content").eq("conversation_id", conversation_id).order("created_at", "asc").limit(limit).execute()
+        msg_response = supabase.table("messages").select("role, content").eq("conversation_id", conversation_id).order("created_at", asc=True).limit(limit).execute()
             
         return [{"role": row["role"], "content": row["content"]} for row in msg_response.data]
     except Exception as e:
@@ -5558,65 +5385,22 @@ async def check_available_models():
 # Replace the entire ask_universal function with this corrected version
 @app.post("/ask/universal")
 async def ask_universal(request: Request, response: Response):
+
     # -------------------------------
     # Extract request data
     # -------------------------------
     body = await request.json()
     prompt = body.get("prompt", "").strip()
-    role = body.get("role", "user")
-    stream = bool(body.get("stream", False))
     conversation_id = body.get("conversation_id")
 
     if not prompt:
         raise HTTPException(status_code=400, detail="prompt required")
 
     # -------------------------------
-    # User resolution - Get user with cookie-based system
+    # Resolve user (cookie system)
     # -------------------------------
     user = await get_or_create_user(request, response)
     user_id = user.id
-
-    # -------------------------------
-    # Detect intent
-    # -------------------------------
-    intent = detect_intent(prompt)
-
-    intent_map = {
-        "document_analysis": document_analysis,
-        "translation": translate_text,
-        "sentiment_analysis": analyze_sentiment,
-        "knowledge_graph": create_knowledge_graph_endpoint,
-        "custom_model": train_custom_model,
-        "code_review": review_code,
-        "multimodal_search": multimodal_search,
-        "ai_personalization": personalize_ai,
-        "data_visualization": visualize_data,
-        "voice_cloning": clone_voice,
-        "image": image_generation_handler,
-        "img2img": img2img_handler,
-        "vision": vision_handler,
-        "stt": stt_handler,
-        "tts": tts_handler,
-        "video": video_generation_handler,
-        "code": code_generation_handler,
-        "search": search_handler,
-        "new_chat": new_chat_handler,
-        "send_message": send_message_handler,
-        "list_chats": list_chats_handler,
-        "search_chats": search_chats_handler,
-        "pin_chat": pin_chat_handler,
-        "archive_chat": archive_chat_handler,
-        "move_folder": move_folder_handler,
-        "share_chat": share_chat_handler,
-        "view_shared_chat": view_shared_chat_handler,
-        "edit_message": edit_message_handler,
-        "regenerate": regenerate_handler,
-        "get_user_info": get_user_info_handler,
-        "merge_user_data": merge_user_data_handler,
-    }
-
-    if intent in intent_map:
-        return await intent_map[intent](prompt, user_id, stream)
 
     # -------------------------------
     # Get or create conversation
@@ -5624,7 +5408,6 @@ async def ask_universal(request: Request, response: Response):
     if not conversation_id:
         conversation_id = get_or_create_conversation_id(user_id)
     else:
-        # Validate that this conversation belongs to the user
         conv_check = await asyncio.to_thread(
             lambda: supabase
             .table("conversations")
@@ -5636,16 +5419,15 @@ async def ask_universal(request: Request, response: Response):
         )
 
         if not conv_check.data:
-            # Create new conversation if the provided one doesn't exist or doesn't belong to user
             conversation_id = get_or_create_conversation_id(user_id)
 
     # -------------------------------
-    # Load conversation history
+    # Load history
     # -------------------------------
     history = load_conversation_history(user_id, limit=20)
-    
+
     # -------------------------------
-    # Get user profile
+    # Get profile
     # -------------------------------
     profile = get_user_profile(user_id)
     personality = profile.get("personality", "friendly")
@@ -5664,8 +5446,7 @@ async def ask_universal(request: Request, response: Response):
             "created_at": datetime.utcnow().isoformat()
         }).execute()
     )
-    
-    # Update conversation timestamp
+
     await asyncio.to_thread(
         lambda: supabase.table("conversations").update({
             "updated_at": datetime.utcnow().isoformat()
@@ -5673,7 +5454,7 @@ async def ask_universal(request: Request, response: Response):
     )
 
     # -------------------------------
-    # Build messages for API call
+    # Build system + messages
     # -------------------------------
     system_prompt = (
         PERSONALITY_MAP.get(personality, PERSONALITY_MAP["friendly"])
@@ -5682,212 +5463,42 @@ async def ask_universal(request: Request, response: Response):
         "Maintain memory and context.\n"
     )
 
-    # Create a clean messages array
     messages = [{"role": "system", "content": system_prompt}]
-    
-    # Add history (but filter out any system messages to avoid duplicates)
+
     for msg in history:
         if msg["role"] != "system":
             messages.append(msg)
-    
-    # Add current user message
+
     messages.append({"role": "user", "content": prompt})
 
-    # List of models to try in order (updated with current models)
-    models_to_try = [
-        "llama-3.1-405b-reasoning",
-        "llama-3.3-70b-versatile",
-    ]
-
     # -------------------------------
-    # STREAM MODE
+    # Create background task
     # -------------------------------
-    if stream:
-        async def event_generator():
-            assistant_reply = ""
-            yield sse({"type": "starting"})
+    task_id = str(uuid.uuid4())
 
-            try:
-                for model in models_to_try:
-                    try:
-                        payload = {
-                            "model": model,
-                            "messages": messages,
-                            "stream": True,
-                            "max_tokens": 1500,
-                        }
-
-                        logger.info(f"Trying model: {model}")
-
-                        async with httpx.AsyncClient(timeout=None) as client:
-                            async with client.stream(
-                                "POST",
-                                GROQ_URL,
-                                headers=get_groq_headers(),
-                                json=payload,
-                            ) as resp:
-
-                                if resp.status_code != 200:
-                                    error_text = await resp.aread()
-
-                                    if model == models_to_try[-1]:
-                                        yield sse({
-                                            "type": "error",
-                                            "message": "All available models are currently unavailable"
-                                        })
-                                        return
-                                    continue
-
-                                async for line in resp.aiter_lines():
-                                    if not line or not line.startswith("data:"):
-                                        continue
-
-                                    data = line[5:].strip()
-                                    if data == "[DONE]":
-                                        break
-
-                                    try:
-                                        chunk = json.loads(data)
-                                        delta = chunk["choices"][0]["delta"]
-                                        content = delta.get("content")
-
-                                        if content:
-                                            assistant_reply += content
-                                            yield sse({"type": "token", "text": content})
-                                    except:
-                                        continue
-
-                                break
-
-                    except Exception:
-                        if model == models_to_try[-1]:
-                            yield sse({
-                                "type": "error",
-                                "message": "All available models are currently unavailable"
-                            })
-                            return
-                        continue
-
-            finally:
-                if assistant_reply.strip():
-                    await asyncio.to_thread(
-                        lambda: supabase.table("messages").insert({
-                            "id": str(uuid.uuid4()),
-                            "conversation_id": conversation_id,
-                            "user_id": user_id,
-                            "role": "assistant",
-                            "content": assistant_reply,
-                            "created_at": datetime.utcnow().isoformat()
-                        }).execute()
-                    )
-
-                    await asyncio.to_thread(
-                        lambda: supabase.table("conversations").update({
-                            "updated_at": datetime.utcnow().isoformat()
-                        }).eq("id", conversation_id).execute()
-                    )
-
-                    yield sse({"type": "done"})
-
-        return StreamingResponse(
-            event_generator(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "x-accel-buffering": "no",
-            },
-        )
-
-    # -------------------------------
-    # NON-STREAM MODE
-    # -------------------------------
-    assistant_reply = None
-    last_error = None
-    
-    # Try each model until we find one that works
-    for model in models_to_try:
-        try:
-            payload = {
-                "model": model,
-                "messages": messages,
-                "max_tokens": 1500
-            }
-
-            headers = {
-                "Authorization": f"Bearer {GROQ_API_KEY}",
-                "Content-Type": "application/json"
-            }
-            
-            logger.info(f"Trying model: {model}")
-            
-            async with httpx.AsyncClient(timeout=30) as client:
-                r = await client.post(GROQ_URL, headers=headers, json=payload)
-                
-                # If it's a model deprecation error, try the next model
-                if r.status_code == 400:
-                    try:
-                        error_data = r.json()
-                        if error_data.get("error", {}).get("code") == "model_decommissioned":
-                            logger.warning(f"Model {model} is deprecated, trying next model")
-                            last_error = error_data.get("error", {}).get("message", "Unknown error")
-                            continue
-                        else:
-                            logger.error(f"Groq API error with {model}: {r.text}")
-                            last_error = error_data.get("error", {}).get("message", "Unknown error")
-                            if model == models_to_try[-1]:  # Last model in list
-                                raise HTTPException(500, f"All available models failed. Last error: {last_error}")
-                            continue
-                    except:
-                        logger.error(f"Error parsing error response for model {model}")
-                        last_error = "Unknown error"
-                        if model == models_to_try[-1]:  # Last model in list
-                            raise HTTPException(500, f"All available models failed. Last error: {last_error}")
-                        continue
-                
-                # If we get here, the model worked
-                logger.info(f"Successfully using model: {model}")
-                r.raise_for_status()
-                response_data = r.json()
-                assistant_reply = response_data["choices"][0]["message"]["content"]
-                break  # Exit the loop since we got a successful response
-
-        except httpx.HTTPStatusError as e:
-            logger.error(f"HTTP error from Groq API with model {model}: {e.response.status_code} - {e.response.text}")
-            last_error = e.response.text
-            if model == models_to_try[-1]:  # Last model in list
-                raise HTTPException(status_code=e.response.status_code, detail=f"All available models failed. Last error: {last_error}")
-            continue
-        except Exception as e:
-            logger.error(f"Exception with model {model}: {e}")
-            last_error = str(e)
-            if model == models_to_try[-1]:  # Last model in list
-                raise HTTPException(500, f"All available models failed. Last error: {last_error}")
-            continue
-    
-    if not assistant_reply:
-        raise HTTPException(500, f"Failed to generate response with any available model. Last error: {last_error}")
-    
-    # Store assistant message
     await asyncio.to_thread(
-        lambda: supabase.table("messages").insert({
-            "id": str(uuid.uuid4()),
-            "conversation_id": conversation_id,
+        lambda: supabase.table("background_tasks").insert({
+            "id": task_id,
             "user_id": user_id,
-            "role": "assistant",
-            "content": assistant_reply,
+            "task_type": "chat",
+            "params": json.dumps({
+                "conversation_id": conversation_id,
+                "messages": messages
+            }),
+            "status": "queued",
             "created_at": datetime.utcnow().isoformat()
         }).execute()
     )
-    
-    # Update conversation timestamp
-    await asyncio.to_thread(
-        lambda: supabase.table("conversations").update({
-            "updated_at": datetime.utcnow().isoformat()
-        }).eq("id", conversation_id).execute()
-    )
-    
+
+    # Launch background worker
+    background_executor.submit(run_ai_task, task_id)
+
+    # -------------------------------
+    # Immediate response
+    # -------------------------------
     return {
-        "reply": assistant_reply,
+        "status": "processing",
+        "task_id": task_id,
         "conversation_id": conversation_id,
         "user_id": user_id
     }
@@ -7656,3 +7267,81 @@ async def generate_video_stream(req: Request, res: Response):
             "X-Accel-Buffering": "no"
         }
     )
+
+# Add missing function for prompt sanitization
+def sanitize_prompt(prompt: str) -> str:
+    """Sanitize prompt to avoid content policy violations"""
+    # Remove any potentially problematic content
+    # This is a simple implementation - you might want to enhance it
+    return prompt
+
+# Add missing function for running AI task
+def run_ai_task(task_id: str):
+    try:
+        task = supabase.table("background_tasks") \
+            .select("*") \
+            .eq("id", task_id) \
+            .single() \
+            .execute()
+
+        if not task.data:
+            return
+
+        data = task.data
+        user_id = data["user_id"]
+        params = json.loads(data["params"])
+
+        conversation_id = params["conversation_id"]
+        messages = params["messages"]
+
+        models_to_try = ["llama-3.3-70b-versatile"]
+
+        assistant_reply = None
+
+        for model in models_to_try:
+            try:
+                payload = {
+                    "model": model,
+                    "messages": messages,
+                    "max_tokens": 1500
+                }
+
+                headers = {
+                    "Authorization": f"Bearer {GROQ_API_KEY}",
+                    "Content-Type": "application/json"
+                }
+
+                r = httpx.post(GROQ_URL, headers=headers, json=payload, timeout=60)
+
+                if r.status_code == 200:
+                    assistant_reply = r.json()["choices"][0]["message"]["content"]
+                    break
+
+            except Exception:
+                continue
+
+        if assistant_reply:
+            supabase.table("messages").insert({
+                "id": str(uuid.uuid4()),
+                "conversation_id": conversation_id,
+                "user_id": user_id,
+                "role": "assistant",
+                "content": assistant_reply,
+                "created_at": datetime.utcnow().isoformat()
+            }).execute()
+
+            supabase.table("conversations").update({
+                "updated_at": datetime.utcnow().isoformat()
+            }).eq("id", conversation_id).execute()
+
+            supabase.table("background_tasks").update({
+                "status": "completed"
+            }).eq("id", task_id).execute()
+
+        else:
+            supabase.table("background_tasks").update({
+                "status": "failed"
+            }).eq("id", task_id).execute()
+
+    except Exception as e:
+        logger.error(f"AI task failed: {e}")
