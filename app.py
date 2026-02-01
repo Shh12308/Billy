@@ -442,128 +442,6 @@ def get_public_url(bucket: str, path: str) -> str:
     """Get public URL from Supabase Storage"""
     return f"{SUPABASE_URL}/storage/v1/object/public/{bucket}/{path}"
 
-# Update the _generate_image_core function
-async def _generate_image_core(
-    prompt: str,
-    samples: int,
-    user_id: str,
-    return_base64: bool = False
-):
-    if not OPENAI_API_KEY:
-        raise HTTPException(500, "Missing OPENAI_API_KEY")
-
-    # Content moderation check
-    is_flagged = await nsfw_check(prompt)
-    if is_flagged:
-        raise HTTPException(
-            status_code=400, 
-            detail="Image generation prompt violates content policy."
-        )
-
-    provider_used = "openai"
-    urls = []
-
-    # Clean and validate the prompt
-    clean_prompt = prompt.strip()
-    if not clean_prompt:
-        raise HTTPException(400, "Empty prompt provided")
-    
-    # Limit prompt length to avoid API issues
-    if len(clean_prompt) > 1000:
-        clean_prompt = clean_prompt[:1000] + "..."
-        logger.warning(f"Prompt truncated to 1000 characters")
-
-    payload = {
-        "model": "dall-e-3",
-        "prompt": clean_prompt,
-        "n": 1,  # DALL·E 3 supports only 1 image
-        "size": "1024x1024",
-        "response_format": "b64_json",
-        "quality": "standard"  # Add quality parameter
-    }
-
-    headers = {
-        "Authorization": f"Bearer {OPENAI_API_KEY}",
-        "content-type": "application/json"
-    }
-
-    try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            r = await client.post(
-                "https://api.openai.com/v1/images/generations",
-                json=payload,
-                headers=headers
-            )
-            
-            # Log the response for debugging
-            if r.status_code != 200:
-                logger.error(f"OpenAI API error: {r.status_code} - {r.text}")
-                try:
-                    error_data = r.json()
-                    error_msg = error_data.get("error", {}).get("message", "Unknown error")
-                except:
-                    error_msg = r.text
-                raise HTTPException(400, f"Image generation failed: {error_msg}")
-            
-            result = r.json()
-    except httpx.HTTPStatusError as e:
-        logger.error(f"HTTP error from OpenAI: {e.response.status_code} - {e.response.text}")
-        raise HTTPException(500, "Image generation provider error")
-    except Exception as e:
-        logger.exception("OpenAI image API call failed")
-        raise HTTPException(500, "Image generation provider error")
-
-    if not result or not result.get("data"):
-        logger.error("OpenAI returned empty image response: %s", result)
-        raise HTTPException(500, "Image generation failed")
-
-    for img in result["data"]:
-        try:
-            b64 = img.get("b64_json")
-            if not b64:
-                continue
-
-            image_bytes = base64.b64decode(b64)
-            filename = f"{uuid.uuid4().hex}.png"
-            storage_path = f"anonymous/{filename}"
-
-            # Upload to Supabase
-            upload = supabase.storage.from_("ai-images").upload(
-                path=storage_path,
-                file=image_bytes,
-                file_options={"content-type": "image/png"}
-            )
-
-            # Save image record with user ID
-            try:
-                supabase.table("images").insert({
-                    "id": str(uuid.uuid4()),
-                    "user_id": user_id,
-                    "image_path": storage_path,
-                    "created_at": datetime.now().isoformat()
-                }).execute()
-            except Exception as e:
-                logger.error(f"Failed to save image record: {e}")
-
-            # Get public URL instead of signed URL
-            public_url = get_public_url("ai-images", storage_path)
-            urls.append(public_url)
-
-        except Exception:
-            logger.exception("Failed processing or uploading image")
-            continue
-
-    if not urls:
-        raise HTTPException(500, "No images generated")
-
-    cache_result(prompt, provider_used, {"images": urls})
-
-    return {
-        "provider": provider_used,
-        "images": [{"url": url, "type": "image/png"} for url in urls],  # Updated format
-        "user_id": user_id
-    }
-
 def get_public_url(bucket: str, path: str) -> str:
     """Get public URL from Supabase Storage"""
     # Make sure to use the full URL including the protocol
@@ -1941,16 +1819,137 @@ async def nsfw_check(prompt: str) -> bool:
             # Log the full moderation result for debugging
             logger.info(f"Moderation result: {result}")
             
-            # Only return True for serious violations
-            return result["flagged"] and result["categories"] and any(
-                category in ["sexual", "violence", "self_harm", "hate"]
-                for category in result["categories"]
-            )
+            # Check for any flagged category
+            return result["flagged"]
     except Exception as e:
         logger.error(f"NSFW check failed: {e}")
         return False
     
     return False
+    
+async def _generate_image_core(
+    prompt: str,
+    samples: int,
+    user_id: str,
+    return_base64: bool = False
+):
+    if not OPENAI_API_KEY:
+        raise HTTPException(500, "Missing OPENAI_API_KEY")
+
+    # Sanitize prompt to avoid content policy violations
+    prompt = sanitize_prompt(prompt)
+    
+    # Content moderation check
+    is_flagged = await nsfw_check(prompt)
+    if is_flagged:
+        raise HTTPException(
+            status_code=400, 
+            detail="Image generation prompt violates content policy."
+        )
+
+    provider_used = "openai"
+    urls = []
+
+    # Clean and validate the prompt
+    clean_prompt = prompt.strip()
+    if not clean_prompt:
+        raise HTTPException(400, "Empty prompt provided")
+    
+    # Limit prompt length to avoid API issues
+    if len(clean_prompt) > 1000:
+        clean_prompt = clean_prompt[:1000] + "..."
+        logger.warning(f"Prompt truncated to 1000 characters")
+
+    payload = {
+        "model": "dall-e-3",
+        "prompt": clean_prompt,
+        "n": 1,  # DALL·E 3 supports only 1 image
+        "size": "1024x1024",
+        "response_format": "b64_json",
+        "quality": "standard"  # Add quality parameter
+    }
+
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "content-type": "application/json"
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            r = await client.post(
+                "https://api.openai.com/v1/images/generations",
+                json=payload,
+                headers=headers
+            )
+            
+            # Log the response for debugging
+            if r.status_code != 200:
+                logger.error(f"OpenAI API error: {r.status_code} - {r.text}")
+                try:
+                    error_data = r.json()
+                    error_msg = error_data.get("error", {}).get("message", "Unknown error")
+                except:
+                    error_msg = r.text
+                raise HTTPException(400, f"Image generation failed: {error_msg}")
+            
+            result = r.json()
+    except httpx.HTTPStatusError as e:
+        logger.error(f"HTTP error from OpenAI: {e.response.status_code} - {e.response.text}")
+        raise HTTPException(500, "Image generation provider error")
+    except Exception as e:
+        logger.exception("OpenAI image API call failed")
+        raise HTTPException(500, "Image generation provider error")
+
+    if not result or not result.get("data"):
+        logger.error("OpenAI returned empty image response: %s", result)
+        raise HTTPException(500, "Image generation failed")
+
+    for img in result["data"]:
+        try:
+            b64 = img.get("b64_json")
+            if not b64:
+                continue
+
+            image_bytes = base64.b64decode(b64)
+            filename = f"{uuid.uuid4().hex}.png"
+            storage_path = f"anonymous/{filename}"
+
+            # Upload to Supabase
+            upload = supabase.storage.from_("ai-images").upload(
+                path=storage_path,
+                file=image_bytes,
+                file_options={"content-type": "image/png"}
+            )
+
+            # Save image record with user ID
+            try:
+                supabase.table("images").insert({
+                    "id": str(uuid.uuid4()),
+                    "user_id": user_id,
+                    "image_path": storage_path,
+                    "created_at": datetime.now().isoformat()
+                }).execute()
+            except Exception as e:
+                logger.error(f"Failed to save image record: {e}")
+
+            # Get public URL instead of signed URL
+            public_url = get_public_url("ai-images", storage_path)
+            urls.append(public_url)
+
+        except Exception:
+            logger.exception("Failed processing or uploading image")
+            continue
+
+    if not urls:
+        raise HTTPException(500, "No images generated")
+
+    cache_result(prompt, provider_used, {"images": urls})
+
+    return {
+        "provider": provider_used,
+        "images": [{"url": url, "type": "image/png"} for url in urls],  # Updated format
+        "user_id": user_id
+    }
     
 async def get_or_create_conversation(user_id: str, conversation_id: Union[str, None]):
     if conversation_id:
