@@ -1381,6 +1381,366 @@ def extract_keywords(text, num_keywords=10):
         logger.error(f"Error extracting keywords: {e}")
         return []
 
+# Add these endpoints to help debug the frontend connection
+
+@app.get("/debug/frontend-config")
+async def debug_frontend_config():
+    """Debug endpoint to check frontend configuration"""
+    return {
+        "backend_url": "http://0.0.0.0:8080",  # Or whatever your backend URL is
+        "cors_origins": ["http://localhost:9898", "https://zynara.xyz", "https://www.zynara.xyz"],
+        "supabase_url": SUPABASE_URL,
+        "frontend_supabase_url": FRONTEND_SUPABASE_URL,
+        "has_frontend_supabase": frontend_supabase is not None
+    }
+
+@app.get("/debug/health")
+async def debug_health():
+    """Enhanced health check endpoint"""
+    return {
+        "status": "ok",
+        "timestamp": datetime.now().isoformat(),
+        "environment": os.getenv("ENVIRONMENT", "development"),
+        "version": "1.0.0",
+        "services": {
+            "supabase": "connected" if SUPABASE_URL else "not configured",
+            "groq": "configured" if GROQ_API_KEY else "not configured",
+            "openai": "configured" if OPENAI_API_KEY else "not configured",
+            "stability": "configured" if STABILITY_API_KEY else "not configured",
+            "runwayml": "configured" if RUNWAYML_API_KEY else "not configured"
+        }
+    }
+
+@app.get("/debug/supabase")
+async def debug_supabase():
+    """Debug endpoint to test Supabase connection"""
+    try:
+        # Test a simple query
+        response = supabase.table("users").select("count").execute()
+        return {
+            "status": "success",
+            "message": "Supabase connection working",
+            "data": response.data
+        }
+    except Exception as e:
+        logger.error(f"Supabase debug error: {e}")
+        return {
+            "status": "error",
+            "message": str(e)
+        }
+
+@app.get("/debug/auth")
+async def debug_auth(request: Request, response: Response):
+    """Debug endpoint to test authentication"""
+    try:
+        user = await get_or_create_user(request, response)
+        return {
+            "status": "success",
+            "user_id": user.id,
+            "anonymous": user.anonymous,
+            "session_token": user.session_token
+        }
+    except Exception as e:
+        logger.error(f"Auth debug error: {e}")
+        return {
+            "status": "error",
+            "message": str(e)
+        }
+
+@app.get("/test")
+async def test_page():
+    """Simple test page to verify frontend connection"""
+    return HTMLResponse("""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>API Test</title>
+        <style>
+            body { 
+                font-family: Arial, sans-serif; 
+                margin: 20px; 
+                background-color: #f5f5f5;
+            }
+            .container {
+                max-width: 800px;
+                margin: 0 auto;
+                background-color: white;
+                padding: 20px;
+                border-radius: 8px;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            }
+            .status { 
+                padding: 15px; 
+                margin: 15px 0; 
+                border-radius: 5px; 
+                font-weight: bold;
+            }
+            .success { 
+                background-color: #d4edda; 
+                color: #155724; 
+                border: 1px solid #c3e6cb;
+            }
+            .error { 
+                background-color: #f8d7da; 
+                color: #721c24; 
+                border: 1px solid #f5c6cb;
+            }
+            .info { 
+                background-color: #d1ecf1; 
+                color: #0c5460; 
+                border: 1px solid #bee5eb;
+            }
+            pre { 
+                background-color: #f8f9fa; 
+                padding: 15px; 
+                border-radius: 5px; 
+                overflow-x: auto; 
+                border: 1px solid #e9ecef;
+            }
+            button {
+                background-color: #007bff;
+                color: white;
+                border: none;
+                padding: 10px 20px;
+                border-radius: 5px;
+                cursor: pointer;
+                margin: 5px;
+                font-size: 14px;
+            }
+            button:hover {
+                background-color: #0056b3;
+            }
+            button:disabled {
+                background-color: #6c757d;
+                cursor: not-allowed;
+            }
+            .test-section {
+                margin: 20px 0;
+                padding: 15px;
+                border: 1px solid #dee2e6;
+                border-radius: 5px;
+            }
+            .loading {
+                display: inline-block;
+                width: 20px;
+                height: 20px;
+                border: 3px solid #f3f3f3;
+                border-top: 3px solid #3498db;
+                border-radius: 50%;
+                animation: spin 1s linear infinite;
+            }
+            @keyframes spin {
+                0% { transform: rotate(0deg); }
+                100% { transform: rotate(360deg); }
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>🔧 API Connection Test</h1>
+            <div id="status" class="status info">
+                <span id="status-text">Testing connection...</span>
+                <span id="loading" class="loading" style="display: none;"></span>
+            </div>
+            
+            <div class="test-section">
+                <h2>📊 Response:</h2>
+                <pre id="response">Loading...</pre>
+            </div>
+            
+            <div class="test-section">
+                <h2>🧪 Test API Calls</h2>
+                <button onclick="testHealth()">Test Health Endpoint</button>
+                <button onclick="testUniversal()">Test Universal Endpoint</button>
+                <button onclick="testSupabase()">Test Supabase Connection</button>
+                <button onclick="testAuth()">Test Authentication</button>
+                <button onclick="testFrontendConfig()">Test Frontend Config</button>
+            </div>
+            
+            <div class="test-section">
+                <h2>🔍 Debug Information</h2>
+                <button onclick="showDebugInfo()">Show Debug Info</button>
+                <pre id="debug-info" style="display: none;"></pre>
+            </div>
+        </div>
+        
+        <script>
+            let currentRequest = null;
+            
+            function setLoading(isLoading, message = 'Loading...') {
+                const statusEl = document.getElementById('status');
+                const statusText = document.getElementById('status-text');
+                const loadingEl = document.getElementById('loading');
+                
+                statusText.textContent = message;
+                if (isLoading) {
+                    statusEl.className = 'status info';
+                    loadingEl.style.display = 'inline-block';
+                } else {
+                    loadingEl.style.display = 'none';
+                }
+            }
+            
+            function setStatus(message, type = 'info') {
+                const statusEl = document.getElementById('status');
+                const statusText = document.getElementById('status-text');
+                
+                statusText.textContent = message;
+                statusEl.className = `status ${type}`;
+            }
+            
+            function setResponse(data) {
+                document.getElementById('response').textContent = JSON.stringify(data, null, 2);
+            }
+            
+            async function makeRequest(url, options = {}) {
+                if (currentRequest) {
+                    currentRequest.abort();
+                }
+                
+                const controller = new AbortController();
+                currentRequest = controller;
+                
+                try {
+                    const response = await fetch(url, {
+                        ...options,
+                        signal: controller.signal
+                    });
+                    
+                    currentRequest = null;
+                    
+                    if (!response.ok) {
+                        const errorData = await response.json().catch(() => ({}));
+                        throw new Error(`HTTP ${response.status}: ${errorData.detail || response.statusText}`);
+                    }
+                    
+                    return await response.json();
+                } catch (error) {
+                    currentRequest = null;
+                    if (error.name === 'AbortError') {
+                        throw new Error('Request aborted');
+                    }
+                    throw error;
+                }
+            }
+            
+            async function testHealth() {
+                setLoading(true, 'Testing health endpoint...');
+                try {
+                    const data = await makeRequest('/debug/health');
+                    setStatus('Health check successful!', 'success');
+                    setResponse(data);
+                } catch (error) {
+                    setStatus('Error: ' + error.message, 'error');
+                    setResponse({ error: error.message, stack: error.stack });
+                }
+            }
+            
+            async function testUniversal() {
+                setLoading(true, 'Testing universal endpoint...');
+                try {
+                    const data = await makeRequest('/ask/universal', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            prompt: 'Hello, this is a test message'
+                        })
+                    });
+                    setStatus('Universal endpoint test successful!', 'success');
+                    setResponse(data);
+                } catch (error) {
+                    setStatus('Error: ' + error.message, 'error');
+                    setResponse({ error: error.message, stack: error.stack });
+                }
+            }
+            
+            async function testSupabase() {
+                setLoading(true, 'Testing Supabase connection...');
+                try {
+                    const data = await makeRequest('/debug/supabase');
+                    if (data.status === 'success') {
+                        setStatus('Supabase connection successful!', 'success');
+                    } else {
+                        setStatus('Supabase connection failed', 'error');
+                    }
+                    setResponse(data);
+                } catch (error) {
+                    setStatus('Error: ' + error.message, 'error');
+                    setResponse({ error: error.message, stack: error.stack });
+                }
+            }
+            
+            async function testAuth() {
+                setLoading(true, 'Testing authentication...');
+                try {
+                    const data = await makeRequest('/debug/auth');
+                    if (data.status === 'success') {
+                        setStatus('Authentication successful!', 'success');
+                    } else {
+                        setStatus('Authentication failed', 'error');
+                    }
+                    setResponse(data);
+                } catch (error) {
+                    setStatus('Error: ' + error.message, 'error');
+                    setResponse({ error: error.message, stack: error.stack });
+                }
+            }
+            
+            async function testFrontendConfig() {
+                setLoading(true, 'Testing frontend configuration...');
+                try {
+                    const data = await makeRequest('/debug/frontend-config');
+                    setStatus('Frontend config retrieved!', 'success');
+                    setResponse(data);
+                } catch (error) {
+                    setStatus('Error: ' + error.message, 'error');
+                    setResponse({ error: error.message, stack: error.stack });
+                }
+            }
+            
+            function showDebugInfo() {
+                const debugInfo = {
+                    userAgent: navigator.userAgent,
+                    url: window.location.href,
+                    timestamp: new Date().toISOString(),
+                    cookies: document.cookie,
+                    localStorage: Object.keys(localStorage),
+                    sessionStorage: Object.keys(sessionStorage)
+                };
+                
+                document.getElementById('debug-info').style.display = 'block';
+                document.getElementById('debug-info').textContent = JSON.stringify(debugInfo, null, 2);
+            }
+            
+            // Test health endpoint on page load
+            window.onload = () => {
+                testHealth();
+            };
+            
+            // Handle page visibility change
+            document.addEventListener('visibilitychange', () => {
+                if (!document.hidden && currentRequest) {
+                    currentRequest.abort();
+                    currentRequest = null;
+                    setLoading(false, 'Request cancelled due to page visibility change');
+                }
+            });
+        </script>
+    </body>
+    </html>
+    """)
+
+# Add global exception handler
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Global exception: {str(exc)}")
+    return JSONResponse(
+        status_code=500,
+        content={"detail": str(exc)}
+    )
+    
 def create_knowledge_graph(entities, relationship_type="related"):
     """Create a simple knowledge graph from entities"""
     G = nx.Graph()
