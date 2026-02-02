@@ -5762,8 +5762,8 @@ async def ask_universal(request: Request, response: Response):
             raise HTTPException(status_code=400, detail="prompt required")
 
         # Get user and conversation
-        user = await get_or_create_user(request, response)
-        user_id = user_id
+user = await get_or_create_user(request, response)
+user_id = user.id  # Fixed: Get the ID from the user object
 
         # Get or create conversation
         if not conversation_id:
