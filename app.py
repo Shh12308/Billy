@@ -5735,7 +5735,7 @@ async def ask_universal(request: Request, response: Response):
         # Get or create conversation
         # ----------------------------------
         if not conversation_id:
-            conversation_id = await get_or_create_conversation(user_id)
+            conversation_id = get_or_create_conversation(user_id)
         else:
             conv_check = await asyncio.to_thread(
                 lambda: supabase
@@ -5748,7 +5748,7 @@ async def ask_universal(request: Request, response: Response):
             )
 
             if not conv_check.data:
-                conversation_id = await get_or_create_conversation(user_id)
+                conversation_id = get_or_create_conversation(user_id)
 
         # ----------------------------------
         # Load history
