@@ -400,6 +400,9 @@ def merge_visitor_to_user(user_id: str, session_token: str):
 # Initialize scheduler
 scheduler = AsyncIOScheduler()
 
+async def check_available_models():
+    print("Checking models...")
+
 def process_tasks():
     tasks = supabase.table("background_tasks") \
         .select("*") \
