@@ -2637,24 +2637,6 @@ async def _generate_image_core(
         "images": [{"url": url, "type": "image/png"} for url in urls],  # Updated format
         "user_id": user_id
     }
-    
-async def get_or_create_conversation(user_id: str, conversation_id: Union[str, None]):
-    if conversation_id:
-        return conversation_id
-
-    conv_id = str(uuid.uuid4())
-    try:
-        supabase.table("conversations").insert({
-            "id": conv_id,
-            "user_id": user_id,
-            "title": "New Chat",
-            "created_at": datetime.now().isoformat(),
-            "updated_at": datetime.now().isoformat()
-        }).execute()
-    except Exception as e:
-        logger.error(f"Failed to create conversation: {e}")
-    
-    return conv_id
 
 async def load_artifact(conversation_id: str):
     try:
