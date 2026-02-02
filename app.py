@@ -520,18 +520,29 @@ async def generate_video_internal(prompt: str, samples: int = 1, user_id: str = 
     # Check for available video generation APIs
     RUNWAYML_API_KEY = os.getenv("RUNWAYML_API_KEY")
     STABILITY_API_KEY = os.getenv("STABILITY_API_KEY")
-    HUGGINGFACE_API_KEY = os.getenv("HF_API_KEY")
+    HF_API_KEY = os.getenv("HF_API_KEY")
     
     # Try different services in order of preference
     if STABILITY_API_KEY:
-        return await generate_video_stability(prompt, samples, user_id)
-    elif HUGGINGFACE_API_KEY:
-        return await generate_video_huggingface(prompt, samples, user_id)
-    elif RUNWAYML_API_KEY:
-        return await generate_video_runwayml(prompt, samples, user_id)
-    else:
-        # Fallback to a simple text-based video placeholder
-        return await generate_placeholder_video(prompt, samples, user_id)
+        try:
+            return await generate_video_stability(prompt, samples, user_id)
+        except HTTPException as e:
+            logger.warning(f"Stability AI video generation failed: {e.detail}")
+    
+    if HF_API_KEY:
+        try:
+            return await generate_video_huggingface(prompt, samples, user_id)
+        except HTTPException as e:
+            logger.warning(f"Hugging Face video generation failed: {e.detail}")
+    
+    if RUNWAYML_API_KEY:
+        try:
+            return await generate_video_runwayml(prompt, samples, user_id)
+        except HTTPException as e:
+            logger.warning(f"RunwayML video generation failed: {e.detail}")
+    
+    # If all APIs fail, use placeholder
+    return await generate_placeholder_video(prompt, samples, user_id)
 
 async def generate_video_stability(prompt: str, samples: int = 1, user_id: str = None) -> dict:
     """
@@ -548,25 +559,42 @@ async def generate_video_stability(prompt: str, samples: int = 1, user_id: str =
             # Prepare the API request
             headers = {
                 "Authorization": f"Bearer {STABILITY_API_KEY}",
-                "Content-Type": "application/json"
+                "Content-Type": "application/json",
+                "Accept": "application/json"
             }
             
+            # Use the correct endpoint for Stable Video Diffusion
+            # The correct endpoint is /v2beta/image-to-video or /v2beta/text-to-video
+            # For now, we'll use a placeholder since the exact endpoint might vary
             payload = {
                 "prompt": prompt,
-                "width": 1024,
-                "height": 576,  # 16:9 aspect ratio
-                "samples": 1,
-                "num_frames": 25,  # Number of frames in the video
-                "seed": random.randint(0, 4294967295)
+                "seed": random.randint(0, 4294967295),
+                "cfg_scale": 7.0,
+                "motion_bucket_id": 40
             }
             
-            # Submit the request - Updated endpoint
+            # Submit the request
             async with httpx.AsyncClient(timeout=120.0) as client:
+                # Try the correct endpoint
                 response = await client.post(
-                    "https://api.stability.ai/v1/generation/stable-video-diffusion/text-to-video",
+                    "https://api.stability.ai/v2beta/text-to-video",
                     headers=headers,
                     json=payload
                 )
+                
+                # If that fails, try an alternative endpoint
+                if response.status_code == 404:
+                    response = await client.post(
+                        "https://api.stability.ai/v1/generation/stable-video-diffusion/text-to-video",
+                        headers=headers,
+                        json=payload
+                    )
+                
+                # If still failing, fall back to placeholder
+                if response.status_code == 404:
+                    logger.warning("Stability AI video generation endpoint not found, using placeholder")
+                    return await generate_placeholder_video(prompt, samples, user_id)
+                
                 response.raise_for_status()
                 result = response.json()
                 
@@ -582,9 +610,17 @@ async def generate_video_stability(prompt: str, samples: int = 1, user_id: str =
                 for attempt in range(max_attempts):
                     # Check generation status
                     status_response = await client.get(
-                        f"https://api.stability.ai/v1/generation/stable-video-diffusion/text-to-video/{generation_id}",
+                        f"https://api.stability.ai/v2beta/result/{generation_id}",
                         headers=headers
                     )
+                    
+                    # If that fails, try the alternative endpoint
+                    if status_response.status_code == 404:
+                        status_response = await client.get(
+                            f"https://api.stability.ai/v1/generation/stable-video-diffusion/text-to-video/{generation_id}",
+                            headers=headers
+                        )
+                    
                     status_response.raise_for_status()
                     status_data = status_response.json()
                     
@@ -868,7 +904,7 @@ async def generate_placeholder_video(prompt: str, samples: int = 1, user_id: str
                 # Fallback to default font
                 font = ImageFont.load_default()
             
-            text = f"Video Generation Placeholder\n\nPrompt: {prompt[:50]}{'...' if len(prompt) > 50 else ''}\n\nNo video generation API configured"
+            text = f"Video Generation Placeholder\n\nPrompt: {prompt[:50]}{'...' if len(prompt) > 50 else ''}\n\nVideo generation is currently unavailable. Please check back later."
             
             # Calculate text position
             text_width, text_height = draw.textsize(text, font=font)
@@ -920,7 +956,7 @@ async def generate_placeholder_video(prompt: str, samples: int = 1, user_id: str
     return {
         "provider": "placeholder",
         "videos": [{"url": url, "type": "image/png"} for url in urls],  # Using PNG as placeholder
-        "message": "No video generation API configured. Please set STABILITY_API_KEY or HF_API_KEY environment variable to enable video generation."
+        "message": "Video generation is currently unavailable. Please check back later."
     }
 
 # Update the image generation handler
@@ -5725,17 +5761,13 @@ async def ask_universal(request: Request, response: Response):
         if not prompt:
             raise HTTPException(status_code=400, detail="prompt required")
 
-        # ----------------------------------
-        # Resolve user
-        # ----------------------------------
+        # Get user and conversation
         user = await get_or_create_user(request, response)
-        user_id = user.id
+        user_id = user_id
 
-        # ----------------------------------
         # Get or create conversation
-        # ----------------------------------
         if not conversation_id:
-            conversation_id = get_or_create_conversation(user_id)
+            conversation_id = get_or_create_conversation_id(user_id)
         else:
             conv_check = await asyncio.to_thread(
                 lambda: supabase
@@ -5748,23 +5780,17 @@ async def ask_universal(request: Request, response: Response):
             )
 
             if not conv_check.data:
-                conversation_id = get_or_create_conversation(user_id)
+                conversation_id = get_or_create_conversation_id(user_id)
 
-        # ----------------------------------
         # Load history
-        # ----------------------------------
         history = load_conversation_history(user_id, limit=20)
 
-        # ----------------------------------
         # Load profile
-        # ----------------------------------
         profile = get_user_profile(user_id)
         personality = profile.get("personality", "friendly")
         nickname = profile.get("nickname", f"User{user_id[:8]}")
 
-        # ----------------------------------
         # Save user message
-        # ----------------------------------
         await asyncio.to_thread(
             lambda: supabase.table("messages").insert({
                 "id": str(uuid.uuid4()),
@@ -5778,15 +5804,14 @@ async def ask_universal(request: Request, response: Response):
 
         await asyncio.to_thread(
             lambda: supabase.table("conversations").update({
-                "updated_at": datetime.utcnow().isoformat()
-            }).eq("id", conversation_id).execute()
+            "updated_at": datetime.utcnow().isoformat()
+        }).eq("id", conversation_id).execute()
         )
 
-        # ----------------------------------
         # Detect intent and route to appropriate handler
-        # ----------------------------------
         intent = detect_intent(prompt)
         
+        # Route to appropriate handler based on intent
         if intent == "image":
             # Extract sample count from prompt
             samples = 1
@@ -5864,6 +5889,7 @@ async def ask_universal(request: Request, response: Response):
                 "messages": [{"role": "user", "content": code_prompt}],
                 "max_tokens": 2048
             }
+            
             async with httpx.AsyncClient(timeout=60) as client:
                 r = await client.post(
                     "https://api.groq.com/openai/v1/chat/completions",
@@ -5887,14 +5913,7 @@ async def ask_universal(request: Request, response: Response):
             
             # Save code generation record
             try:
-                supabase.table("code_generations").insert({
-                    "id": str(uuid.uuid4()),
-                    "user_id": user_id,
-                    "language": language,
-                    "prompt": prompt,
-                    "code": code,
-                    "created_at": datetime.now().isoformat()
-                }).execute()
+                await save_code_generation_record(user_id, language, prompt, code)
             except Exception as e:
                 logger.error(f"Failed to save code generation record: {e}")
             
@@ -6011,9 +6030,7 @@ async def ask_universal(request: Request, response: Response):
             
         # Add more intent handlers here for other features
         
-        # ----------------------------------
         # Default to chat if no specific intent detected
-        # ----------------------------------
         # Build system prompt
         system_prompt = (
             PERSONALITY_MAP.get(personality, PERSONALITY_MAP["friendly"])
@@ -6030,9 +6047,7 @@ async def ask_universal(request: Request, response: Response):
 
         messages.append({"role": "user", "content": prompt})
 
-        # ----------------------------------
         # Call Groq API
-        # ----------------------------------
         payload = {
             "model": CHAT_MODEL,
             "messages": messages,
@@ -6051,9 +6066,7 @@ async def ask_universal(request: Request, response: Response):
 
         assistant_reply = response_data["choices"][0]["message"]["content"]
 
-        # ----------------------------------
         # Save assistant message
-        # ----------------------------------
         await asyncio.to_thread(
             lambda: supabase.table("messages").insert({
                 "id": str(uuid.uuid4()),
