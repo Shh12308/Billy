@@ -1866,6 +1866,36 @@ def analyze_code_quality(code, language, focus_areas):
     
     return results
 
+async def get_or_create_conversation(user_id: str):
+    result = await asyncio.to_thread(
+        lambda: supabase
+        .table("conversations")
+        .select("id")
+        .eq("user_id", user_id)
+        .order("updated_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+
+    if result.data:
+        return result.data[0]["id"]
+
+    new_id = str(uuid.uuid4())
+
+    await asyncio.to_thread(
+        lambda: supabase
+        .table("conversations")
+        .insert({
+            "id": new_id,
+            "user_id": user_id,
+            "created_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat()
+        })
+        .execute()
+    )
+
+    return new_id
+    
 def run_check():
     return {"status": "ok", "message": "System check passed"}
 
@@ -5705,168 +5735,134 @@ def load_conversation_history(user_id: str, limit: int = 20):
 # Now, let's fix the ask_universal function to handle the missing background_tasks table
 @app.post("/ask/universal")
 async def ask_universal(request: Request, response: Response):
-    # -------------------------------
-    # Extract request data
-    # -------------------------------
-    body = await request.json()
-    prompt = body.get("prompt", "").strip()
-    conversation_id = body.get("conversation_id")
-
-    if not prompt:
-        raise HTTPException(status_code=400, detail="prompt required")
-
-    # -------------------------------
-    # Resolve user (cookie system)
-    # -------------------------------
-    user = await get_or_create_user(request, response)
-    user_id = user.id
-
-    # -------------------------------
-    # Get or create conversation
-    # -------------------------------
-    if not conversation_id:
-        conversation_id = get_or_create_conversation_id(user_id)
-    else:
-        conv_check = await asyncio.to_thread(
-            lambda: supabase
-            .table("conversations")
-            .select("id")
-            .eq("id", conversation_id)
-            .eq("user_id", user_id)
-            .limit(1)
-            .execute()
-        )
-
-        if not conv_check.data:
-            conversation_id = get_or_create_conversation_id(user_id)
-
-    # -------------------------------
-    # Load history
-    # -------------------------------
-    history = load_conversation_history(user_id, limit=20)
-
-    # -------------------------------
-    # Get profile
-    # -------------------------------
-    profile = get_user_profile(user_id)
-    personality = profile.get("personality", "friendly")
-    nickname = profile.get("nickname", f"User{user_id[:8]}")
-
-    # -------------------------------
-    # Save user message
-    # -------------------------------
-    await asyncio.to_thread(
-        lambda: supabase.table("messages").insert({
-            "id": str(uuid.uuid4()),
-            "conversation_id": conversation_id,
-            "user_id": user_id,
-            "role": "user",
-            "content": prompt,
-            "created_at": datetime.utcnow().isoformat()
-        }).execute()
-    )
-
-    await asyncio.to_thread(
-        lambda: supabase.table("conversations").update({
-            "updated_at": datetime.utcnow().isoformat()
-        }).eq("id", conversation_id).execute()
-    )
-
-    # -------------------------------
-    # Build system + messages
-    # -------------------------------
-    system_prompt = (
-        PERSONALITY_MAP.get(personality, PERSONALITY_MAP["friendly"])
-        + f"\nUser name: {nickname}\n"
-        "You are a helpful AI assistant.\n"
-        "Maintain memory and context.\n"
-    )
-
-    messages = [{"role": "system", "content": system_prompt}]
-
-    for msg in history:
-        if msg["role"] != "system":
-            messages.append(msg)
-
-    messages.append({"role": "user", "content": prompt})
-
-    # -------------------------------
-    # Create background task (with error handling)
-    # -------------------------------
-    task_id = str(uuid.uuid4())
-    
-    # Try to create a background task, but handle the case where the table doesn't exist
     try:
+        body = await request.json()
+        prompt = body.get("prompt", "").strip()
+        conversation_id = body.get("conversation_id")
+
+        if not prompt:
+            raise HTTPException(status_code=400, detail="prompt required")
+
+        # ----------------------------------
+        # Resolve user
+        # ----------------------------------
+        user = await get_or_create_user(request, response)
+        user_id = user.id
+
+        # ----------------------------------
+        # Get or create conversation
+        # ----------------------------------
+        if not conversation_id:
+            conversation_id = await get_or_create_conversation(user_id)
+        else:
+            conv_check = await asyncio.to_thread(
+                lambda: supabase
+                .table("conversations")
+                .select("id")
+                .eq("id", conversation_id)
+                .eq("user_id", user_id)
+                .limit(1)
+                .execute()
+            )
+
+            if not conv_check.data:
+                conversation_id = await get_or_create_conversation(user_id)
+
+        # ----------------------------------
+        # Load history
+        # ----------------------------------
+        history = load_conversation_history(user_id, limit=20)
+
+        # ----------------------------------
+        # Load profile
+        # ----------------------------------
+        profile = get_user_profile(user_id)
+        personality = profile.get("personality", "friendly")
+        nickname = profile.get("nickname", f"User{user_id[:8]}")
+
+        # ----------------------------------
+        # Save user message
+        # ----------------------------------
         await asyncio.to_thread(
-            lambda: supabase.table("background_tasks").insert({
-                "id": task_id,
+            lambda: supabase.table("messages").insert({
+                "id": str(uuid.uuid4()),
+                "conversation_id": conversation_id,
                 "user_id": user_id,
-                "task_type": "chat",
-                "params": json.dumps({
-                    "conversation_id": conversation_id,
-                    "messages": messages
-                }),
-                "status": "queued",
+                "role": "user",
+                "content": prompt,
                 "created_at": datetime.utcnow().isoformat()
             }).execute()
         )
-        
-        # Launch background worker only if task was created successfully
-        background_executor.submit(run_ai_task, task_id)
-        
-        # Return with task_id if background task was created
+
+        await asyncio.to_thread(
+            lambda: supabase.table("conversations").update({
+                "updated_at": datetime.utcnow().isoformat()
+            }).eq("id", conversation_id).execute()
+        )
+
+        # ----------------------------------
+        # Build system prompt
+        # ----------------------------------
+        system_prompt = (
+            PERSONALITY_MAP.get(personality, PERSONALITY_MAP["friendly"])
+            + f"\nUser name: {nickname}\n"
+            "You are a helpful AI assistant.\n"
+            "Maintain memory and context.\n"
+        )
+
+        messages = [{"role": "system", "content": system_prompt}]
+
+        for msg in history:
+            if msg["role"] != "system":
+                messages.append(msg)
+
+        messages.append({"role": "user", "content": prompt})
+
+        # ----------------------------------
+        # Call Groq API
+        # ----------------------------------
+        payload = {
+            "model": CHAT_MODEL,
+            "messages": messages,
+            "max_tokens": 1500
+        }
+
+        headers = {
+            "Authorization": f"Bearer {GROQ_API_KEY}",
+            "Content-Type": "application/json"
+        }
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.post(GROQ_URL, headers=headers, json=payload)
+            r.raise_for_status()
+            response_data = r.json()
+
+        assistant_reply = response_data["choices"][0]["message"]["content"]
+
+        # ----------------------------------
+        # Save assistant message
+        # ----------------------------------
+        await asyncio.to_thread(
+            lambda: supabase.table("messages").insert({
+                "id": str(uuid.uuid4()),
+                "conversation_id": conversation_id,
+                "user_id": user_id,
+                "role": "assistant",
+                "content": assistant_reply,
+                "created_at": datetime.utcnow().isoformat()
+            }).execute()
+        )
+
         return {
-            "status": "processing",
-            "task_id": task_id,
+            "status": "completed",
+            "reply": assistant_reply,
             "conversation_id": conversation_id,
             "user_id": user_id
         }
+
     except Exception as e:
-        logger.error(f"Failed to create background task: {e}")
-        
-        # If background task creation fails, process the request synchronously
-        try:
-            # Call language model directly
-            payload = {
-                "model": CHAT_MODEL,
-                "messages": messages,
-                "max_tokens": 1500
-            }
-            
-            headers = {
-                "Authorization": f"Bearer {GROQ_API_KEY}",
-                "Content-Type": "application/json"
-            }
-            
-            async with httpx.AsyncClient(timeout=30) as client:
-                r = await client.post(GROQ_URL, headers=headers, json=payload)
-                r.raise_for_status()
-                response_data = r.json()
-            
-            assistant_reply = response_data["choices"][0]["message"]["content"]
-            
-            # Store assistant message
-            await asyncio.to_thread(
-                lambda: supabase.table("messages").insert({
-                    "id": str(uuid.uuid4()),
-                    "conversation_id": conversation_id,
-                    "user_id": user_id,
-                    "role": "assistant",
-                    "content": assistant_reply,
-                    "created_at": datetime.utcnow().isoformat()
-                }).execute()
-            )
-            
-            return {
-                "status": "completed",
-                "reply": assistant_reply,
-                "conversation_id": conversation_id,
-                "user_id": user_id
-            }
-        except Exception as e:
-            logger.error(f"Failed to process chat synchronously: {e}")
-            raise HTTPException(500, "Failed to process chat")
-            
+        logger.error(f"/ask/universal failed: {e}")
+        raise HTTPException(status_code=500, detail="Chat processing failed")
         
 @app.post("/message/{message_id}/edit")
 async def edit_message(
