@@ -5783,8 +5783,238 @@ async def ask_universal(request: Request, response: Response):
         )
 
         # ----------------------------------
-        # Build system prompt
+        # Detect intent and route to appropriate handler
         # ----------------------------------
+        intent = detect_intent(prompt)
+        
+        if intent == "image":
+            # Extract sample count from prompt
+            samples = 1
+            sample_match = re.search(r'(\d+)\s+(image|images)', prompt.lower())
+            if sample_match:
+                samples = min(int(sample_match.group(1)), 4)  # Cap at 4 images
+            
+            # Generate image
+            result = await _generate_image_core(prompt, samples, user_id, return_base64=False)
+            
+            # Save assistant message with image
+            await asyncio.to_thread(
+                lambda: supabase.table("messages").insert({
+                    "id": str(uuid.uuid4()),
+                    "conversation_id": conversation_id,
+                    "user_id": user_id,
+                    "role": "assistant",
+                    "content": json.dumps(result),
+                    "created_at": datetime.utcnow().isoformat()
+                }).execute()
+            )
+            
+            return {
+                "status": "completed",
+                "reply": result,
+                "conversation_id": conversation_id,
+                "user_id": user_id,
+                "type": "image"
+            }
+            
+        elif intent == "video":
+            # Extract sample count from prompt
+            samples = 1
+            sample_match = re.search(r'(\d+)\s+(video|videos)', prompt.lower())
+            if sample_match:
+                samples = min(int(sample_match.group(1)), 2)  # Cap at 2 videos
+            
+            # Generate video
+            result = await generate_video_internal(prompt, samples, user_id)
+            
+            # Save assistant message with video
+            await asyncio.to_thread(
+                lambda: supabase.table("messages").insert({
+                    "id": str(uuid.uuid4()),
+                    "conversation_id": conversation_id,
+                    "user_id": user_id,
+                    "role": "assistant",
+                    "content": json.dumps(result),
+                    "created_at": datetime.utcnow().isoformat()
+                }).execute()
+            )
+            
+            return {
+                "status": "completed",
+                "reply": result,
+                "conversation_id": conversation_id,
+                "user_id": user_id,
+                "type": "video"
+            }
+            
+        elif intent == "code":
+            # Extract language from prompt
+            language = "python"
+            lang_match = re.search(r'(python|javascript|java|c\+\+|c#|php|ruby|go|rust|swift|kotlin)\s+code', prompt.lower())
+            if lang_match:
+                language = lang_match.group(1)
+            
+            # Extract run flag
+            run_flag = "run" in prompt.lower() or "execute" in prompt.lower()
+            
+            # Generate code
+            code_prompt = f"Write a complete {language} program to: {prompt}"
+            payload = {
+                "model": CHAT_MODEL,
+                "messages": [{"role": "user", "content": code_prompt}],
+                "max_tokens": 2048
+            }
+            async with httpx.AsyncClient(timeout=60) as client:
+                r = await client.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers=get_groq_headers(),
+                    json=payload
+                )
+                r.raise_for_status()
+                code = r.json()["choices"][0]["message"]["content"]
+            
+            result = {
+                "language": language,
+                "generated_code": code,
+                "user_id": user_id
+            }
+            
+            # Run code if requested
+            if run_flag:
+                lang_id = JUDGE0_LANGUAGES.get(language, 71)
+                execution = await run_code_judge0(code, lang_id)
+                result["execution"] = execution
+            
+            # Save code generation record
+            try:
+                supabase.table("code_generations").insert({
+                    "id": str(uuid.uuid4()),
+                    "user_id": user_id,
+                    "language": language,
+                    "prompt": prompt,
+                    "code": code,
+                    "created_at": datetime.now().isoformat()
+                }).execute()
+            except Exception as e:
+                logger.error(f"Failed to save code generation record: {e}")
+            
+            # Save assistant message with code
+            await asyncio.to_thread(
+                lambda: supabase.table("messages").insert({
+                    "id": str(uuid.uuid4()),
+                    "conversation_id": conversation_id,
+                    "user_id": user_id,
+                    "role": "assistant",
+                    "content": json.dumps(result),
+                    "created_at": datetime.utcnow().isoformat()
+                }).execute()
+            )
+            
+            return {
+                "status": "completed",
+                "reply": result,
+                "conversation_id": conversation_id,
+                "user_id": user_id,
+                "type": "code"
+            }
+            
+        elif intent == "search":
+            # Extract query from prompt
+            query = prompt
+            if "search for" in prompt.lower():
+                query = prompt.lower().split("search for", 1)[1].strip()
+            elif "look up" in prompt.lower():
+                query = prompt.lower().split("look up", 1)[1].strip()
+            elif "find" in prompt.lower():
+                query = prompt.lower().split("find", 1)[1].strip()
+            
+            # Perform search
+            result = await duckduckgo_search(query)
+            
+            # Save assistant message with search results
+            await asyncio.to_thread(
+                lambda: supabase.table("messages").insert({
+                    "id": str(uuid.uuid4()),
+                    "conversation_id": conversation_id,
+                    "user_id": user_id,
+                    "role": "assistant",
+                    "content": json.dumps(result),
+                    "created_at": datetime.utcnow().isoformat()
+                }).execute()
+            )
+            
+            return {
+                "status": "completed",
+                "reply": result,
+                "conversation_id": conversation_id,
+                "user_id": user_id,
+                "type": "search"
+            }
+            
+        elif intent == "tts":
+            # Extract text to speak
+            text = prompt
+            if "say" in prompt.lower():
+                text = prompt.lower().split("say", 1)[1].strip()
+            elif "speak" in prompt.lower():
+                text = prompt.lower().split("speak", 1)[1].strip()
+            elif "read" in prompt.lower():
+                text = prompt.lower().split("read", 1)[1].strip()
+            
+            # Generate speech
+            headers = {
+                "Authorization": f"Bearer {OPENAI_API_KEY}",
+                "Content-Type": "application/json"
+            }
+            
+            payload = {
+                "model": "tts-1",
+                "voice": "alloy",
+                "input": text
+            }
+            
+            async with httpx.AsyncClient(timeout=60) as client:
+                r = await client.post(
+                    "https://api.openai.com/v1/audio/speech",
+                    headers=headers,
+                    json=payload
+                )
+                r.raise_for_status()
+            
+            # Convert to base64
+            audio_b64 = base64.b64encode(r.content).decode()
+            
+            result = {
+                "text": text,
+                "audio": audio_b64
+            }
+            
+            # Save assistant message with audio
+            await asyncio.to_thread(
+                lambda: supabase.table("messages").insert({
+                    "id": str(uuid.uuid4()),
+                    "conversation_id": conversation_id,
+                    "user_id": user_id,
+                    "role": "assistant",
+                    "content": json.dumps(result),
+                    "created_at": datetime.utcnow().isoformat()
+                }).execute()
+            )
+            
+            return {
+                "status": "completed",
+                "reply": result,
+                "conversation_id": conversation_id,
+                "user_id": user_id,
+                "type": "tts"
+            }
+            
+        # Add more intent handlers here for other features
+        
+        # ----------------------------------
+        # Default to chat if no specific intent detected
+        # ----------------------------------
+        # Build system prompt
         system_prompt = (
             PERSONALITY_MAP.get(personality, PERSONALITY_MAP["friendly"])
             + f"\nUser name: {nickname}\n"
@@ -5839,7 +6069,8 @@ async def ask_universal(request: Request, response: Response):
             "status": "completed",
             "reply": assistant_reply,
             "conversation_id": conversation_id,
-            "user_id": user_id
+            "user_id": user_id,
+            "type": "chat"
         }
 
     except Exception as e:
