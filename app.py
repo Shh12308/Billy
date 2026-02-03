@@ -49,6 +49,11 @@ from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.schedulers.base import STATE_RUNNING
 
+app = FastAPI(
+    title="ZyNaraAI1.0 Multimodal Server",
+    redirect_slashes=False
+)
+
 # 1️⃣ Create scheduler (do NOT start here)
 scheduler = AsyncIOScheduler()
 
@@ -80,11 +85,6 @@ logger = logging.getLogger("zynara-server")
 # Configure logging to prevent duplicate logs
 logging.getLogger("apscheduler").setLevel(logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.WARNING)
-
-app = FastAPI(
-    title="ZyNaraAI1.0 Multimodal Server",
-    redirect_slashes=False
-)
 
 app.add_middleware(
     CORSMiddleware,
