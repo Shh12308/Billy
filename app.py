@@ -5867,31 +5867,6 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
     except WebSocketDisconnect:
         manager.disconnect(user_id)
 
-#// =========================================================
-#// 🚀 UNIVERSAL MULTIMODAL ENDPOINT — /ask/universal
-#// =========================================================
-
-# First, let's fix the load_conversation_history function to use the correct order syntax
-def load_conversation_history(user_id: str, limit: int = 20):
-    """Load conversation history for a user"""
-    try:
-        # Get most recent conversation
-        conv_response = supabase.table("conversations").select("id").eq("user_id", user_id).order("updated_at", desc=True).limit(1).execute()
-        
-        if not conv_response.data:
-            return []
-            
-        conversation_id = conv_response.data[0]["id"]
-            
-        # Get recent messages from this conversation
-        # Fix: Changed order("created_at", asc=True) to order("created_at")
-        msg_response = supabase.table("messages").select("role, content").eq("conversation_id", conversation_id).order("created_at").limit(limit).execute()
-            
-        return [{"role": row["role"], "content": row["content"]} for row in msg_response.data]
-    except Exception as e:
-        logger.error(f"Failed to load conversation history: {e}")
-    return []
-
 # Now, let's fix the ask_universal function to handle the missing background_tasks table
 #// =========================================================
 #// 🚀 UNIVERSAL MULTIMODAL ENDPOINT — /ask/universal
