@@ -1184,7 +1184,7 @@ logger.info(f"RunwayML key present: {bool(RUNWAYML_API_KEY)}")
 # Models
 # -------------------
 # Update this line in your code
-CHAT_MODEL = os.getenv("CHAT_MODEL", "llama-3.1-70b-versatile")  # Using a currently supported model
+CHAT_MODEL = os.getenv("CHAT_MODEL", "llama3-8b-8192")  # Using a currently supported model
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions" # // Added missing URL
 
 # TTS/STT are handled via ElevenLabs now
@@ -5893,6 +5893,32 @@ def load_conversation_history(user_id: str, limit: int = 20):
     return []
 
 # Now, let's fix the ask_universal function to handle the missing background_tasks table
+#// =========================================================
+#// 🚀 UNIVERSAL MULTIMODAL ENDPOINT — /ask/universal
+#// =========================================================
+
+# First, let's fix the load_conversation_history function to use the correct order syntax
+def load_conversation_history(user_id: str, limit: int = 20):
+    """Load conversation history for a user"""
+    try:
+        # Get most recent conversation
+        conv_response = supabase.table("conversations").select("id").eq("user_id", user_id).order("updated_at", desc=True).limit(1).execute()
+        
+        if not conv_response.data:
+            return []
+            
+        conversation_id = conv_response.data[0]["id"]
+            
+        # Get recent messages from this conversation
+        # Fix: Changed order("created_at", asc=True) to order("created_at")
+        msg_response = supabase.table("messages").select("role, content").eq("conversation_id", conversation_id).order("created_at").limit(limit).execute()
+            
+        return [{"role": row["role"], "content": row["content"]} for row in msg_response.data]
+    except Exception as e:
+        logger.error(f"Failed to load conversation history: {e}")
+    return []
+
+# Now, let's fix the ask_universal function to handle the missing background_tasks table
 @app.post("/ask/universal")
 async def ask_universal(request: Request, response: Response):
     try:
@@ -6204,7 +6230,26 @@ async def ask_universal(request: Request, response: Response):
 
         async with httpx.AsyncClient(timeout=30) as client:
             r = await client.post(GROQ_URL, headers=headers, json=payload)
-            r.raise_for_status()
+            
+            # --- START: IMPROVED ERROR HANDLING ---
+            # Check for bad responses and log the details from Groq
+            if r.status_code != 200:
+                logger.error(f"Groq API Error: {r.status_code}")
+                try:
+                    # Try to parse the error as JSON for a detailed message
+                    error_details = r.json()
+                    logger.error(f"Groq Error Details: {error_details}")
+                    # Raise an HTTPException with the specific error from Groq
+                    raise HTTPException(
+                        status_code=500, 
+                        detail=f"Groq API error: {error_details.get('error', {}).get('message', 'Unknown error from Groq')}"
+                    )
+                except json.JSONDecodeError:
+                    # If the response isn't JSON, log the raw text
+                    logger.error(f"Groq Error Response Text: {r.text}")
+                    raise HTTPException(status_code=500, detail=f"Groq API returned an error: {r.status_code} - {r.text}")
+            # --- END: IMPROVED ERROR HANDLING ---
+
             response_data = r.json()
 
         assistant_reply = response_data["choices"][0]["message"]["content"]
@@ -6228,6 +6273,9 @@ async def ask_universal(request: Request, response: Response):
             "type": "chat"
         }
 
+    except HTTPException as e:
+        # Re-raise HTTPExceptions (like the one we just created)
+        raise e
     except Exception as e:
         logger.error(f"/ask/universal failed: {e}")
         raise HTTPException(status_code=500, detail="Chat processing failed")
