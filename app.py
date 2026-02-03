@@ -6177,12 +6177,12 @@ async def ask_universal(request: Request, response: Response):
         
         # Default to chat if no specific intent detected
         # Build system prompt
-        system_prompt = (
-            PERSONALITY_MAP.get(personality, PERSONALITY_MAP["friendly"])
-            + f"\nUser name: {nickname}\n"
-            "You are a helpful AI assistant.\n"
-            "Maintain memory and context.\n"
-        )
+system_prompt = (
+    PERSONALITY_MAP.get(personality, PERSONALITY_MAP["friendly"])
+    + f"\nUser name: {nickname}\n"
+    "You are a helpful AI assistant.\n"
+    "Maintain memory and context.\n"
+)
 
 try:
     messages = [{"role": "system", "content": system_prompt}]
@@ -6197,18 +6197,18 @@ try:
 except Exception as e:
     logger.error(f"Failed to build or truncate messages: {e}")
     raise HTTPException(status_code=500, detail="Failed to prepare messages")
-    
-        # Call Groq API
-        payload = {
-            "model": CHAT_MODEL,
-            "messages": messages,
-            "max_tokens": 1500
-        }
 
-        headers = {
-            "Authorization": f"Bearer {GROQ_API_KEY}",
-            "Content-Type": "application/json"
-        }
+# Call Groq API — this is now **outside the try/except**
+payload = {
+    "model": CHAT_MODEL,
+    "messages": messages,
+    "max_tokens": 1500
+}
+
+headers = {
+    "Authorization": f"Bearer {GROQ_API_KEY}",
+    "Content-Type": "application/json"
+}
 
         async with httpx.AsyncClient(timeout=30) as client:
             r = await client.post(GROQ_URL, headers=headers, json=payload)
