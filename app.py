@@ -6227,6 +6227,10 @@ async def ask_universal(request: Request, response: Response):
             "user_id": user_id,
             "type": "chat"
         }
+
+    except Exception as e:
+        logger.error(f"/ask/universal failed: {e}")
+        raise HTTPException(status_code=500, detail="Chat processing failed")
         
 @app.post("/message/{message_id}/edit")
 async def edit_message(
