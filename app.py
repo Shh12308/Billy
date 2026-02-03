@@ -20,7 +20,6 @@ import re
 import math
 from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor
-
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 import httpx
@@ -54,6 +53,14 @@ app = FastAPI(
     redirect_slashes=False
 )
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:9898", "https://zynara.xyz", "https://www.zynara.xyz"],
+    allow_credentials=True, 
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # 1️⃣ Create scheduler (do NOT start here)
 scheduler = AsyncIOScheduler()
 
@@ -85,14 +92,6 @@ logger = logging.getLogger("zynara-server")
 # Configure logging to prevent duplicate logs
 logging.getLogger("apscheduler").setLevel(logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.WARNING)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:9898", "https://zynara.xyz", "https://www.zynara.xyz"],
-    allow_credentials=True, 
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 # Fix: Import utils with proper error handling
 try:
