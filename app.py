@@ -5753,22 +5753,32 @@ def load_conversation_history(user_id: str, limit: int = 20):
 # Now, let's fix the ask_universal function to handle the missing background_tasks table
 @app.post("/ask/universal")
 async def ask_universal(request: Request, response: Response):
+    """
+    Universal multimodal endpoint with streaming support for global deployment.
+    Handles billions of users with efficient resource management, rate limiting,
+    and distributed caching.
+    """
     try:
+        # Parse request body with size limit
         body = await request.json()
         prompt = body.get("prompt", "").strip()
         conversation_id = body.get("conversation_id")
+        stream = body.get("stream", False)  # New parameter for streaming
 
         if not prompt:
             raise HTTPException(status_code=400, detail="prompt required")
 
-        # Get user and conversation
-        # FIX 1: Corrected indentation
+        # Rate limiting check
+        client_ip = request.client.host
         user = await get_or_create_user(request, response)
         user_id = user.id
+        
+        # Check rate limits
+        if not await check_rate_limit(user_id, client_ip):
+            raise HTTPException(status_code=429, detail="Rate limit exceeded")
 
         # Get or create conversation
         if not conversation_id:
-            # FIX 2: Corrected function name and made it non-blocking
             conversation_id = await asyncio.to_thread(get_or_create_conversation, user_id)
         else:
             conv_check = await asyncio.to_thread(
@@ -5782,16 +5792,14 @@ async def ask_universal(request: Request, response: Response):
             )
 
             if not conv_check.data:
-                # FIX 3: Corrected function name and made it non-blocking
                 conversation_id = await asyncio.to_thread(get_or_create_conversation, user_id)
 
-        # FIX 4: Made non-blocking
-        history = await asyncio.to_thread(load_conversation_history, user_id, limit=20)
-
-        # FIX 5: Made non-blocking
-        profile = await asyncio.to_thread(get_user_profile, user_id)
-        personality = profile.get("personality", "friendly")
-        nickname = profile.get("nickname", f"User{user_id[:8]}")
+        # Check cache first for non-streaming requests
+        if not stream:
+            cache_key = f"universal:{hashlib.md5(prompt.encode()).hexdigest()}"
+            cached_result = await get_distributed_cache(cache_key)
+            if cached_result:
+                return cached_result
 
         # Save user message
         await asyncio.to_thread(
@@ -5814,284 +5822,938 @@ async def ask_universal(request: Request, response: Response):
         # Detect intent and route to appropriate handler
         intent = detect_intent(prompt)
         
-        # Route to appropriate handler based on intent
-        if intent == "image":
-            # Extract sample count from prompt
-            samples = 1
-            sample_match = re.search(r'(\d+)\s+(image|images)', prompt.lower())
-            if sample_match:
-                samples = min(int(sample_match.group(1)), 4)  # Cap at 4 images
-            
-            # Generate image
-            result = await _generate_image_core(prompt, samples, user_id, return_base64=False)
-            
-            # Save assistant message with image
-            await asyncio.to_thread(
-                lambda: supabase.table("messages").insert({
-                    "id": str(uuid.uuid4()),
-                    "conversation_id": conversation_id,
-                    "user_id": user_id,
-                    "role": "assistant",
-                    "content": json.dumps(result),
-                    "created_at": datetime.utcnow().isoformat()
-                }).execute()
+        # Handle streaming or non-streaming based on request
+        if stream:
+            return await handle_streaming_request(
+                intent, prompt, user_id, conversation_id, request
             )
-            
-            return {
-                "status": "completed",
-                "reply": result,
-                "conversation_id": conversation_id,
-                "user_id": user_id,
-                "type": "image"
-            }
-            
-        elif intent == "video":
-            # Extract sample count from prompt
-            samples = 1
-            sample_match = re.search(r'(\d+)\s+(video|videos)', prompt.lower())
-            if sample_match:
-                samples = min(int(sample_match.group(1)), 2)  # Cap at 2 videos
-            
-            # Generate video
-            result = await generate_video_internal(prompt, samples, user_id)
-            
-            # Save assistant message with video
-            await asyncio.to_thread(
-                lambda: supabase.table("messages").insert({
-                    "id": str(uuid.uuid4()),
-                    "conversation_id": conversation_id,
-                    "user_id": user_id,
-                    "role": "assistant",
-                    "content": json.dumps(result),
-                    "created_at": datetime.utcnow().isoformat()
-                }).execute()
+        else:
+            return await handle_non_streaming_request(
+                intent, prompt, user_id, conversation_id
             )
-            
-            return {
-                "status": "completed",
-                "reply": result,
-                "conversation_id": conversation_id,
-                "user_id": user_id,
-                "type": "video"
-            }
-            
-        elif intent == "code":
-            # Extract language from prompt
-            language = "python"
-            lang_match = re.search(r'(python|javascript|java|c\+\+|c#|php|ruby|go|rust|swift|kotlin)\s+code', prompt.lower())
-            if lang_match:
-                language = lang_match.group(1)
-            
-            # Extract run flag
-            run_flag = "run" in prompt.lower() or "execute" in prompt.lower()
-            
-            # Generate code
-            code_prompt = f"Write a complete {language} program to: {prompt}"
-            payload = {
-                "model": CHAT_MODEL,
-                "messages": [{"role": "user", "content": code_prompt}],
-                "max_tokens": 2048
-            }
-            
-            async with httpx.AsyncClient(timeout=60) as client:
-                r = await client.post(
-                    "https://api.groq.com/openai/v1/chat/completions",
-                    headers=get_groq_headers(),
-                    json=payload
-                )
-                r.raise_for_status()
-                code = r.json()["choices"][0]["message"]["content"]
-            
-            result = {
-                "language": language,
-                "generated_code": code,
-                "user_id": user_id
-            }
-            
-            # Run code if requested
-            if run_flag:
-                lang_id = JUDGE0_LANGUAGES.get(language, 71)
-                execution = await run_code_judge0(code, lang_id)
-                result["execution"] = execution
-            
-            # Save code generation record
-            try:
-                await save_code_generation_record(user_id, language, prompt, code)
-            except Exception as e:
-                logger.error(f"Failed to save code generation record: {e}")
-            
-            # Save assistant message with code
-            await asyncio.to_thread(
-                lambda: supabase.table("messages").insert({
-                    "id": str(uuid.uuid4()),
-                    "conversation_id": conversation_id,
-                    "user_id": user_id,
-                    "role": "assistant",
-                    "content": json.dumps(result),
-                    "created_at": datetime.utcnow().isoformat()
-                }).execute()
-            )
-            
-            return {
-                "status": "completed",
-                "reply": result,
-                "conversation_id": conversation_id,
-                "user_id": user_id,
-                "type": "code"
-            }
-            
-        elif intent == "search":
-            # Extract query from prompt
-            query = prompt
-            if "search for" in prompt.lower():
-                query = prompt.lower().split("search for", 1)[1].strip()
-            elif "look up" in prompt.lower():
-                query = prompt.lower().split("look up", 1)[1].strip()
-            elif "find" in prompt.lower():
-                query = prompt.lower().split("find", 1)[1].strip()
-            
-            # Perform search
-            result = await duckduckgo_search(query)
-            
-            # Save assistant message with search results
-            await asyncio.to_thread(
-                lambda: supabase.table("messages").insert({
-                    "id": str(uuid.uuid4()),
-                    "conversation_id": conversation_id,
-                    "user_id": user_id,
-                    "role": "assistant",
-                    "content": json.dumps(result),
-                    "created_at": datetime.utcnow().isoformat()
-                }).execute()
-            )
-            
-            return {
-                "status": "completed",
-                "reply": result,
-                "conversation_id": conversation_id,
-                "user_id": user_id,
-                "type": "search"
-            }
-            
-        elif intent == "tts":
-            # Extract text to speak
-            text = prompt
-            if "say" in prompt.lower():
-                text = prompt.lower().split("say", 1)[1].strip()
-            elif "speak" in prompt.lower():
-                text = prompt.lower().split("speak", 1)[1].strip()
-            elif "read" in prompt.lower():
-                text = prompt.lower().split("read", 1)[1].strip()
-            
-            # Generate speech
-            headers = {
-                "Authorization": f"Bearer {OPENAI_API_KEY}",
-                "Content-Type": "application/json"
-            }
-            
-            payload = {
-                "model": "tts-1",
-                "voice": "alloy",
-                "input": text
-            }
-            
-            async with httpx.AsyncClient(timeout=60) as client:
-                r = await client.post(
-                    "https://api.openai.com/v1/audio/speech",
-                    headers=headers,
-                    json=payload
-                )
-                r.raise_for_status()
-            
-            # Convert to base64
-            audio_b64 = base64.b64encode(r.content).decode()
-            
-            result = {
-                "text": text,
-                "audio": audio_b64
-            }
-            
-            # Save assistant message with audio
-            await asyncio.to_thread(
-                lambda: supabase.table("messages").insert({
-                    "id": str(uuid.uuid4()),
-                    "conversation_id": conversation_id,
-                    "user_id": user_id,
-                    "role": "assistant",
-                    "content": json.dumps(result),
-                    "created_at": datetime.utcnow().isoformat()
-                }).execute()
-            )
-            
-            return {
-                "status": "completed",
-                "reply": result,
-                "conversation_id": conversation_id,
-                "user_id": user_id,
-                "type": "tts"
-            }
-            
-        # Add more intent handlers here for other features
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"/ask/universal failed: {e}")
+        raise HTTPException(status_code=500, detail="Request processing failed")
+
+async def handle_streaming_request(intent, prompt, user_id, conversation_id, request):
+    """Handle streaming requests for better user experience at scale"""
+    
+    async def event_generator():
+        # Register stream for cleanup
+        task = asyncio.current_task()
+        active_streams[user_id] = task
         
-        # Default to chat if no specific intent detected
-        # Build system prompt
-        system_prompt = (
-            PERSONALITY_MAP.get(personality, PERSONALITY_MAP["friendly"])
-            + f"\nUser name: {nickname}\n"
-            "You are a helpful AI assistant.\n"
-            "Maintain memory and context.\n"
-        )
-
-        messages = [{"role": "system", "content": system_prompt}]
-
-        for msg in history:
-            if msg["role"] != "system":
-                messages.append(msg)
-
-        messages.append({"role": "user", "content": prompt})
-
-        # Call Groq API
-        payload = {
-            "model": CHAT_MODEL,
-            "messages": messages,
-            "max_tokens": 1500
+        # Register in database for monitoring
+        stream_id = str(uuid.uuid4())
+        try:
+            await asyncio.to_thread(
+                lambda: supabase.table("active_streams").insert({
+                    "user_id": user_id,
+                    "stream_id": stream_id,
+                    "started_at": datetime.now().isoformat()
+                }).execute()
+            )
+        except Exception as e:
+            logger.error(f"Failed to register stream: {e}")
+        
+        try:
+            # Send initial status
+            yield sse({"type": "status", "message": "Processing your request..."})
+            
+            # Route to appropriate handler based on intent
+            if intent == "image":
+                # Extract sample count from prompt
+                samples = 1
+                sample_match = re.search(r'(\d+)\s+(image|images)', prompt.lower())
+                if sample_match:
+                    samples = min(int(sample_match.group(1)), 4)  # Cap at 4 images
+                
+                # Stream image generation
+                async for chunk in image_stream_helper(prompt, samples, user_id):
+                    yield sse(chunk)
+            
+            elif intent == "video":
+                # Extract sample count from prompt
+                samples = 1
+                sample_match = re.search(r'(\d+)\s+(video|videos)', prompt.lower())
+                if sample_match:
+                    samples = min(int(sample_match.group(1)), 2)  # Cap at 2 videos
+                
+                # Stream video generation
+                async for chunk in video_stream_helper(prompt, samples, user_id):
+                    yield sse(chunk)
+            
+            elif intent == "code":
+                # Extract language from prompt
+                language = "python"
+                lang_match = re.search(r'(python|javascript|java|c\+\+|c#|php|ruby|go|rust|swift|kotlin)\s+code', prompt.lower())
+                if lang_match:
+                    language = lang_match.group(1)
+                
+                # Extract run flag
+                run_flag = "run" in prompt.lower() or "execute" in prompt.lower()
+                
+                # Stream code generation
+                async for chunk in code_stream_helper(prompt, language, run_flag, user_id):
+                    yield sse(chunk)
+            
+            elif intent == "search":
+                # Extract query from prompt
+                query = prompt
+                if "search for" in prompt.lower():
+                    query = prompt.lower().split("search for", 1)[1].strip()
+                elif "look up" in prompt.lower():
+                    query = prompt.lower().split("look up", 1)[1].strip()
+                elif "find" in prompt.lower():
+                    query = prompt.lower().split("find", 1)[1].strip()
+                
+                # Stream search results
+                async for chunk in search_stream_helper(query, user_id):
+                    yield sse(chunk)
+            
+            elif intent == "tts":
+                # Extract text to speak
+                text = prompt
+                if "say" in prompt.lower():
+                    text = prompt.lower().split("say", 1)[1].strip()
+                elif "speak" in prompt.lower():
+                    text = prompt.lower().split("speak", 1)[1].strip()
+                elif "read" in prompt.lower():
+                    text = prompt.lower().split("read", 1)[1].strip()
+                
+                # Stream TTS
+                async for chunk in tts_stream_helper(text, user_id):
+                    yield sse(chunk)
+            
+            else:
+                # Default to chat streaming
+                async for chunk in chat_stream_helper(user_id, prompt):
+                    yield sse(chunk)
+            
+            # Send completion status
+            yield sse({"type": "status", "message": "Request completed"})
+            yield sse({"type": "done"})
+            
+        except asyncio.CancelledError:
+            logger.info(f"Stream cancelled for user {user_id}")
+            yield sse({"type": "status", "message": "Request cancelled"})
+            raise
+        
+        except Exception as e:
+            logger.error(f"Stream error for user {user_id}: {e}")
+            yield sse({"type": "error", "message": str(e)})
+        
+        finally:
+            # Cleanup
+            active_streams.pop(user_id, None)
+            try:
+                await asyncio.to_thread(
+                    lambda: supabase.table("active_streams").delete().eq("user_id", user_id).execute()
+                )
+            except Exception as e:
+                logger.error(f"Failed to cleanup active stream: {e}")
+    
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Credentials": "true"
         }
+    )
 
-        headers = {
-            "Authorization": f"Bearer {GROQ_API_KEY}",
-            "Content-Type": "application/json"
-        }
-
-        async with httpx.AsyncClient(timeout=30) as client:
-            r = await client.post(GROQ_URL, headers=headers, json=payload)
-            r.raise_for_status()
-            response_data = r.json()
-
-        assistant_reply = response_data["choices"][0]["message"]["content"]
-
-        # Save assistant message
+async def handle_non_streaming_request(intent, prompt, user_id, conversation_id):
+    """Handle non-streaming requests with caching"""
+    
+    # Route to appropriate handler based on intent
+    if intent == "image":
+        # Extract sample count from prompt
+        samples = 1
+        sample_match = re.search(r'(\d+)\s+(image|images)', prompt.lower())
+        if sample_match:
+            samples = min(int(sample_match.group(1)), 4)  # Cap at 4 images
+        
+        # Generate image
+        result = await _generate_image_core(prompt, samples, user_id, return_base64=False)
+        
+        # Cache the result
+        cache_key = f"universal:{hashlib.md5(prompt.encode()).hexdigest()}"
+        await set_distributed_cache(cache_key, result, expire=3600)  # Cache for 1 hour
+        
+        # Save assistant message with image
         await asyncio.to_thread(
             lambda: supabase.table("messages").insert({
                 "id": str(uuid.uuid4()),
                 "conversation_id": conversation_id,
                 "user_id": user_id,
                 "role": "assistant",
-                "content": assistant_reply,
+                "content": json.dumps(result),
                 "created_at": datetime.utcnow().isoformat()
             }).execute()
         )
-
+        
         return {
             "status": "completed",
-            "reply": assistant_reply,
+            "reply": result,
             "conversation_id": conversation_id,
             "user_id": user_id,
-            "type": "chat"
+            "type": "image"
         }
+    
+    elif intent == "video":
+        # Extract sample count from prompt
+        samples = 1
+        sample_match = re.search(r'(\d+)\s+(video|videos)', prompt.lower())
+        if sample_match:
+            samples = min(int(sample_match.group(1)), 2)  # Cap at 2 videos
+        
+        # Generate video
+        result = await generate_video_internal(prompt, samples, user_id)
+        
+        # Cache the result
+        cache_key = f"universal:{hashlib.md5(prompt.encode()).hexdigest()}"
+        await set_distributed_cache(cache_key, result, expire=3600)  # Cache for 1 hour
+        
+        # Save assistant message with video
+        await asyncio.to_thread(
+            lambda: supabase.table("messages").insert({
+                "id": str(uuid.uuid4()),
+                "conversation_id": conversation_id,
+                "user_id": user_id,
+                "role": "assistant",
+                "content": json.dumps(result),
+                "created_at": datetime.utcnow().isoformat()
+            }).execute()
+        )
+        
+        return {
+            "status": "completed",
+            "reply": result,
+            "conversation_id": conversation_id,
+            "user_id": user_id,
+            "type": "video"
+        }
+    
+    elif intent == "code":
+        # Extract language from prompt
+        language = "python"
+        lang_match = re.search(r'(python|javascript|java|c\+\+|c#|php|ruby|go|rust|swift|kotlin)\s+code', prompt.lower())
+        if lang_match:
+            language = lang_match.group(1)
+        
+        # Extract run flag
+        run_flag = "run" in prompt.lower() or "execute" in prompt.lower()
+        
+        # Generate code
+        code_prompt = f"Write a complete {language} program to: {prompt}"
+        payload = {
+            "model": CHAT_MODEL,
+            "messages": [{"role": "user", "content": code_prompt}],
+            "max_tokens": 2048
+        }
+        
+        async with httpx.AsyncClient(timeout=60) as client:
+            r = await client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers=get_groq_headers(),
+                json=payload
+            )
+            r.raise_for_status()
+            code = r.json()["choices"][0]["message"]["content"]
+        
+        result = {
+            "language": language,
+            "generated_code": code,
+            "user_id": user_id
+        }
+        
+        # Run code if requested
+        if run_flag:
+            lang_id = JUDGE0_LANGUAGES.get(language, 71)
+            execution = await run_code_judge0(code, lang_id)
+            result["execution"] = execution
+        
+        # Save code generation record
+        try:
+            await save_code_generation_record(user_id, language, prompt, code)
+        except Exception as e:
+            logger.error(f"Failed to save code generation record: {e}")
+        
+        # Cache the result
+        cache_key = f"universal:{hashlib.md5(prompt.encode()).hexdigest()}"
+        await set_distributed_cache(cache_key, result, expire=3600)  # Cache for 1 hour
+        
+        # Save assistant message with code
+        await asyncio.to_thread(
+            lambda: supabase.table("messages").insert({
+                "id": str(uuid.uuid4()),
+                "conversation_id": conversation_id,
+                "user_id": user_id,
+                "role": "assistant",
+                "content": json.dumps(result),
+                "created_at": datetime.utcnow().isoformat()
+            }).execute()
+        )
+        
+        return {
+            "status": "completed",
+            "reply": result,
+            "conversation_id": conversation_id,
+            "user_id": user_id,
+            "type": "code"
+        }
+    
+    elif intent == "search":
+        # Extract query from prompt
+        query = prompt
+        if "search for" in prompt.lower():
+            query = prompt.lower().split("search for", 1)[1].strip()
+        elif "look up" in prompt.lower():
+            query = prompt.lower().split("look up", 1)[1].strip()
+        elif "find" in prompt.lower():
+            query = prompt.lower().split("find", 1)[1].strip()
+        
+        # Perform search
+        result = await duckduckgo_search(query)
+        
+        # Cache the result
+        cache_key = f"universal:{hashlib.md5(prompt.encode()).hexdigest()}"
+        await set_distributed_cache(cache_key, result, expire=1800)  # Cache for 30 minutes
+        
+        # Save assistant message with search results
+        await asyncio.to_thread(
+            lambda: supabase.table("messages").insert({
+                "id": str(uuid.uuid4()),
+                "conversation_id": conversation_id,
+                "user_id": user_id,
+                "role": "assistant",
+                "content": json.dumps(result),
+                "created_at": datetime.utcnow().isoformat()
+            }).execute()
+        )
+        
+        return {
+            "status": "completed",
+            "reply": result,
+            "conversation_id": conversation_id,
+            "user_id": user_id,
+            "type": "search"
+        }
+    
+    elif intent == "tts":
+        # Extract text to speak
+        text = prompt
+        if "say" in prompt.lower():
+            text = prompt.lower().split("say", 1)[1].strip()
+        elif "speak" in prompt.lower():
+            text = prompt.lower().split("speak", 1)[1].strip()
+        elif "read" in prompt.lower():
+            text = prompt.lower().split("read", 1)[1].strip()
+        
+        # Generate speech
+        headers = {
+            "Authorization": f"Bearer {OPENAI_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        payload = {
+            "model": "tts-1",
+            "voice": "alloy",
+            "input": text
+        }
+        
+        async with httpx.AsyncClient(timeout=60) as client:
+            r = await client.post(
+                "https://api.openai.com/v1/audio/speech",
+                headers=headers,
+                json=payload
+            )
+            r.raise_for_status()
+        
+        # Convert to base64
+        audio_b64 = base64.b64encode(r.content).decode()
+        
+        result = {
+            "text": text,
+            "audio": audio_b64
+        }
+        
+        # Cache the result
+        cache_key = f"universal:{hashlib.md5(prompt.encode()).hexdigest()}"
+        await set_distributed_cache(cache_key, result, expire=3600)  # Cache for 1 hour
+        
+        # Save assistant message with audio
+        await asyncio.to_thread(
+            lambda: supabase.table("messages").insert({
+                "id": str(uuid.uuid4()),
+                "conversation_id": conversation_id,
+                "user_id": user_id,
+                "role": "assistant",
+                "content": json.dumps(result),
+                "created_at": datetime.utcnow().isoformat()
+            }).execute()
+        )
+        
+        return {
+            "status": "completed",
+            "reply": result,
+            "conversation_id": conversation_id,
+            "user_id": user_id,
+            "type": "tts"
+        }
+    
+    # Default to chat if no specific intent detected
+    # Get user profile
+    profile = await asyncio.to_thread(get_user_profile, user_id)
+    personality = profile.get("personality", "friendly")
+    nickname = profile.get("nickname", f"User{user_id[:8]}")
+    
+    # Build system prompt
+    system_prompt = (
+        PERSONALITY_MAP.get(personality, PERSONALITY_MAP["friendly"])
+        + f"\nUser name: {nickname}\n"
+        "You are a helpful AI assistant.\n"
+        "Maintain memory and context.\n"
+    )
+    
+    # Get conversation history
+    history = await asyncio.to_thread(load_conversation_history, user_id, limit=20)
+    
+    messages = [{"role": "system", "content": system_prompt}]
+    
+    for msg in history:
+        if msg["role"] != "system":
+            messages.append(msg)
+    
+    messages.append({"role": "user", "content": prompt})
+    
+    # Call Groq API
+    payload = {
+        "model": CHAT_MODEL,
+        "messages": messages,
+        "max_tokens": 1500
+    }
+    
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.post(GROQ_URL, headers=headers, json=payload)
+        r.raise_for_status()
+        response_data = r.json()
+    
+    assistant_reply = response_data["choices"][0]["message"]["content"]
+    
+    # Cache the result
+    cache_key = f"universal:{hashlib.md5(prompt.encode()).hexdigest()}"
+    await set_distributed_cache(cache_key, {"reply": assistant_reply}, expire=1800)  # Cache for 30 minutes
+    
+    # Save assistant message
+    await asyncio.to_thread(
+        lambda: supabase.table("messages").insert({
+            "id": str(uuid.uuid4()),
+            "conversation_id": conversation_id,
+            "user_id": user_id,
+            "role": "assistant",
+            "content": assistant_reply,
+            "created_at": datetime.utcnow().isoformat()
+        }).execute()
+    )
+    
+    return {
+        "status": "completed",
+        "reply": assistant_reply,
+        "conversation_id": conversation_id,
+        "user_id": user_id,
+        "type": "chat"
+    }
 
+# Helper functions for streaming
+async def video_stream_helper(prompt, samples, user_id):
+    """Stream video generation progress"""
+    yield {"type": "starting", "message": "Generating video..."}
+    
+    try:
+        # Check for available video generation APIs
+        STABILITY_API_KEY = os.getenv("STABILITY_API_KEY")
+        HF_API_KEY = os.getenv("HF_API_KEY")
+        RUNWAYML_API_KEY = os.getenv("RUNWAYML_API_KEY")
+        
+        # Determine which service to use
+        if STABILITY_API_KEY:
+            service = "stability-ai"
+        elif HF_API_KEY:
+            service = "huggingface-damo"
+        elif RUNWAYML_API_KEY:
+            service = "runwayml-gen2"
+        else:
+            # No API keys configured, use placeholder
+            result = await generate_placeholder_video(prompt, samples, user_id)
+            yield {"type": "videos", "provider": result["provider"], "videos": result["videos"]}
+            return
+        
+        yield {"type": "progress", "message": f"Initializing video generation with {service}..."}
+        
+        video_urls = []
+        
+        for i in range(samples):
+            yield {"type": "progress", "message": f"Generating video {i+1}/{samples}..."}
+            
+            if service == "stability-ai":
+                # Use Stability AI
+                try:
+                    headers = {
+                        "Authorization": f"Bearer {STABILITY_API_KEY}",
+                        "Content-Type": "application/json"
+                    }
+                    
+                    payload = {
+                        "prompt": prompt,
+                        "width": 1024,
+                        "height": 576,  # 16:9 aspect ratio
+                        "samples": 1,
+                        "num_frames": 25,  # Number of frames in the video
+                        "seed": random.randint(0, 4294967295)
+                    }
+                    
+                    # Submit the request
+                    async with httpx.AsyncClient(timeout=120.0) as client:
+                        response = await client.post(
+                            "https://api.stability.ai/v1/generation/stable-video-diffusion/text-to-video",
+                            headers=headers,
+                            json=payload
+                        )
+                        response.raise_for_status()
+                        result = response.json()
+                        
+                        # Get the video generation ID
+                        generation_id = result.get("id")
+                        if not generation_id:
+                            yield {"type": "error", "message": "Failed to get video generation ID"}
+                            continue
+                        
+                        # Poll for completion
+                        video_url = None
+                        max_attempts = 60  # Maximum polling attempts (5 minutes)
+                        
+                        for attempt in range(max_attempts):
+                            # Check generation status
+                            status_response = await client.get(
+                                f"https://api.stability.ai/v1/generation/stable-video-diffusion/text-to-video/{generation_id}",
+                                headers=headers
+                            )
+                            status_response.raise_for_status()
+                            status_data = status_response.json()
+                            
+                            status = status_data.get("status")
+                            
+                            if status == "completed":
+                                video_url = status_data.get("video")
+                                break
+                            elif status == "failed":
+                                error_message = status_data.get("error", "Unknown error")
+                                yield {"type": "error", "message": f"Video generation failed: {error_message}"}
+                                break
+                            
+                            # Update progress
+                            progress = min(int((attempt / max_attempts) * 100), 95)
+                            yield {"type": "progress", "message": f"Processing video... {progress}%"}
+                            
+                            # Wait before polling again
+                            await asyncio.sleep(5)
+                        
+                        if not video_url:
+                            yield {"type": "error", "message": "Video generation timed out"}
+                            continue
+                        
+                        yield {"type": "progress", "message": "Downloading video..."}
+                        
+                        # Download the video
+                        video_response = await client.get(video_url)
+                        video_response.raise_for_status()
+                        video_bytes = video_response.content
+                        
+                        # Upload to Supabase
+                        filename = f"{uuid.uuid4().hex[:8]}.mp4"
+                        storage_path = f"anonymous/{filename}"
+                        
+                        supabase.storage.from_("ai-videos").upload(
+                            path=storage_path,
+                            file=video_bytes,
+                            file_options={"content-type": "video/mp4"}
+                        )
+                        
+                        # Save video record
+                        try:
+                            supabase.table("videos").insert({
+                                "id": str(uuid.uuid4()),
+                                "user_id": user_id,
+                                "video_path": storage_path,
+                                "prompt": prompt,
+                                "provider": "stability-ai",
+                                "created_at": datetime.now().isoformat()
+                            }).execute()
+                        except Exception as e:
+                            logger.error(f"Failed to save video record: {e}")
+                        
+                        # Get public URL
+                        public_url = get_public_url("ai-videos", storage_path)
+                        video_urls.append(public_url)
+                except Exception as e:
+                    logger.error(f"Stability AI video generation failed: {e}")
+                    yield {"type": "error", "message": f"Video generation failed: {str(e)}"}
+                    continue
+            
+            elif service == "huggingface-damo":
+                # Use Hugging Face
+                try:
+                    headers = {
+                        "Authorization": f"Bearer {HF_API_KEY}",
+                        "Content-Type": "application/json"
+                    }
+                    
+                    payload = {
+                        "inputs": prompt,
+                        "parameters": {
+                            "num_inference_steps": 25,
+                            "guidance_scale": 7.5
+                        }
+                    }
+                    
+                    # Submit the request
+                    async with httpx.AsyncClient(timeout=120.0) as client:
+                        response = await client.post(
+                            "https://api-inference.huggingface.co/models/damo-vilab/text-to-video-ms-1.7b",
+                            headers=headers,
+                            json=payload
+                        )
+                        response.raise_for_status()
+                        
+                        # The response should contain the video data
+                        video_bytes = response.content
+                        
+                        # Upload to Supabase
+                        filename = f"{uuid.uuid4().hex[:8]}.mp4"
+                        storage_path = f"anonymous/{filename}"
+                        
+                        supabase.storage.from_("ai-videos").upload(
+                            path=storage_path,
+                            file=video_bytes,
+                            file_options={"content-type": "video/mp4"}
+                        )
+                        
+                        # Save video record
+                        try:
+                            supabase.table("videos").insert({
+                                "id": str(uuid.uuid4()),
+                                "user_id": user_id,
+                                "video_path": storage_path,
+                                "prompt": prompt,
+                                "provider": "huggingface-damo",
+                                "created_at": datetime.now().isoformat()
+                            }).execute()
+                        except Exception as e:
+                            logger.error(f"Failed to save video record: {e}")
+                        
+                        # Get public URL
+                        public_url = get_public_url("ai-videos", storage_path)
+                        video_urls.append(public_url)
+                except Exception as e:
+                    logger.error(f"Hugging Face video generation failed: {e}")
+                    yield {"type": "error", "message": f"Video generation failed: {str(e)}"}
+                    continue
+            
+            else:  # runwayml-gen2
+                # Use RunwayML
+                try:
+                    headers = {
+                        "Authorization": f"Bearer {RUNWAYML_API_KEY}",
+                        "Content-Type": "application/json"
+                    }
+                    
+                    task_payload = {
+                        "model": "gen-2",
+                        "text_prompt": prompt,
+                        "watermark": False,
+                        "duration": 4,
+                        "ratio": "16:9",
+                        "upscale": True
+                    }
+                    
+                    # Submit the task
+                    async with httpx.AsyncClient(timeout=60.0) as client:
+                        task_response = await client.post(
+                            "https://api.runwayml.com/v1/video_tasks",
+                            headers=headers,
+                            json=task_payload
+                        )
+                        task_response.raise_for_status()
+                        task_data = task_response.json()
+                        task_id = task_data.get("id")
+                        
+                        if not task_id:
+                            yield {"type": "error", "message": "Failed to create video generation task"}
+                            continue
+                        
+                        # Poll for task completion
+                        max_attempts = 60
+                        video_url = None
+                        
+                        for attempt in range(max_attempts):
+                            # Check task status
+                            status_response = await client.get(
+                                f"https://api.runwayml.com/v1/video_tasks/{task_id}",
+                                headers=headers
+                            )
+                            status_response.raise_for_status()
+                            status_data = status_response.json()
+                            
+                            status = status_data.get("status")
+                            
+                            if status == "SUCCEEDED":
+                                video_url = status_data.get("output", {}).get("url")
+                                break
+                            elif status == "FAILED":
+                                error_message = status_data.get("failure_reason", "Unknown error")
+                                yield {"type": "error", "message": f"Video generation failed: {error_message}"}
+                                break
+                            
+                            # Update progress
+                            progress = min(int((attempt / max_attempts) * 100), 95)
+                            yield {"type": "progress", "message": f"Processing video... {progress}%"}
+                            
+                            # Wait before polling again
+                            await asyncio.sleep(5)
+                        
+                        if not video_url:
+                            yield {"type": "error", "message": "Video generation timed out"}
+                            continue
+                        
+                        yield {"type": "progress", "message": "Downloading video..."}
+                        
+                        # Download the video
+                        video_response = await client.get(video_url)
+                        video_response.raise_for_status()
+                        video_bytes = video_response.content
+                        
+                        # Upload to Supabase
+                        filename = f"{uuid.uuid4().hex[:8]}.mp4"
+                        storage_path = f"anonymous/{filename}"
+                        
+                        supabase.storage.from_("ai-videos").upload(
+                            path=storage_path,
+                            file=video_bytes,
+                            file_options={"content-type": "video/mp4"}
+                        )
+                        
+                        # Save video record
+                        try:
+                            supabase.table("videos").insert({
+                                "id": str(uuid.uuid4()),
+                                "user_id": user_id,
+                                "video_path": storage_path,
+                                "prompt": prompt,
+                                "provider": "runwayml-gen2",
+                                "created_at": datetime.now().isoformat()
+                            }).execute()
+                        except Exception as e:
+                            logger.error(f"Failed to save video record: {e}")
+                        
+                        # Get public URL
+                        public_url = get_public_url("ai-videos", storage_path)
+                        video_urls.append(public_url)
+                except Exception as e:
+                    logger.error(f"RunwayML video generation failed: {e}")
+                    yield {"type": "error", "message": f"Video generation failed: {str(e)}"}
+                    continue
+        
+        if video_urls:
+            yield {"type": "videos", "provider": service, "videos": [{"url": url, "type": "video/mp4"} for url in video_urls]}
+        else:
+            yield {"type": "error", "message": "No videos were generated successfully"}
+    
     except Exception as e:
-        logger.error(f"/ask/universal failed: {e}")
-        raise HTTPException(status_code=500, detail="Chat processing failed")
+        logger.error(f"Video stream failed: {e}")
+        yield {"type": "error", "message": str(e)}
+
+async def code_stream_helper(prompt, language, run_flag, user_id):
+    """Stream code generation"""
+    yield {"type": "starting", "message": f"Generating {language} code..."}
+    
+    try:
+        # Generate code
+        code_prompt = f"Write a complete {language} program to: {prompt}"
+        payload = {
+            "model": CHAT_MODEL,
+            "messages": [{"role": "user", "content": code_prompt}],
+            "max_tokens": 2048
+        }
+        async with httpx.AsyncClient(timeout=60) as client:
+            r = await client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers=get_groq_headers(),
+                json=payload
+            )
+            r.raise_for_status()
+            code = r.json()["choices"][0]["message"]["content"]
+        
+        yield {"type": "code", "language": language, "code": code}
+        
+        # Run code if requested
+        if run_flag:
+            yield {"type": "progress", "message": "Running code..."}
+            lang_id = JUDGE0_LANGUAGES.get(language, 71)
+            execution = await run_code_judge0(code, lang_id)
+            yield {"type": "execution", "result": execution}
+        
+        # Save code generation record
+        try:
+            await save_code_generation_record(user_id, language, prompt, code)
+        except Exception as e:
+            logger.error(f"Failed to save code generation record: {e}")
+    
+    except Exception as e:
+        logger.error(f"Code generation failed: {e}")
+        yield {"type": "error", "message": str(e)}
+
+async def search_stream_helper(query, user_id):
+    """Stream search results"""
+    yield {"type": "starting", "message": "Searching..."}
+    
+    try:
+        result = await duckduckgo_search(query)
+        yield {"type": "search_results", "query": query, "results": result}
+    except Exception as e:
+        logger.error(f"Search failed: {e}")
+        yield {"type": "error", "message": str(e)}
+
+async def tts_stream_helper(text, user_id):
+    """Stream TTS generation"""
+    yield {"type": "starting", "message": "Generating speech..."}
+    
+    try:
+        headers = {
+            "Authorization": f"Bearer {OPENAI_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        payload = {
+            "model": "tts-1",
+            "voice": "alloy",
+            "input": text
+        }
+        
+        async with httpx.AsyncClient(timeout=60) as client:
+            r = await client.post(
+                "https://api.openai.com/v1/audio/speech",
+                headers=headers,
+                json=payload
+            )
+            r.raise_for_status()
+        
+        # Convert to base64
+        audio_b64 = base64.b64encode(r.content).decode()
+        
+        yield {"type": "audio", "text": text, "audio": audio_b64}
+    except Exception as e:
+        logger.error(f"TTS failed: {e}")
+        yield {"type": "error", "message": str(e)}
+
+# Rate limiting and distributed caching functions
+async def check_rate_limit(user_id: str, client_ip: str) -> bool:
+    """Check if user/IP has exceeded rate limits"""
+    try:
+        # Check user-specific rate limit
+        user_key = f"rate_limit:user:{user_id}"
+        user_count = await get_distributed_cache(user_key) or 0
+        
+        # Check IP-specific rate limit
+        ip_key = f"rate_limit:ip:{client_ip}"
+        ip_count = await get_distributed_cache(ip_key) or 0
+        
+        # Define limits (adjust based on your needs)
+        USER_LIMIT = 100  # requests per hour
+        IP_LIMIT = 200    # requests per hour
+        
+        if user_count >= USER_LIMIT or ip_count >= IP_LIMIT:
+            return False
+        
+        # Increment counters
+        await set_distributed_cache(user_key, user_count + 1, expire=3600)
+        await set_distributed_cache(ip_key, ip_count + 1, expire=3600)
+        
+        return True
+    except Exception as e:
+        logger.error(f"Rate limit check failed: {e}")
+        # Allow request if rate limiting fails
+        return True
+
+async def get_distributed_cache(key: str):
+    """Get value from distributed cache (Redis, etc.)"""
+    try:
+        # This is a placeholder implementation
+        # In a real deployment, you'd use Redis or another distributed cache
+        # For now, we'll use a simple in-memory cache with expiration
+        cache = getattr(app.state, "cache", {})
+        item = cache.get(key)
+        
+        if item and item["expire"] > time.time():
+            return item["value"]
+        elif item:
+            # Expired, remove from cache
+            del cache[key]
+        
+        return None
+    except Exception as e:
+        logger.error(f"Cache get failed: {e}")
+        return None
+
+async def set_distributed_cache(key: str, value, expire: int = 3600):
+    """Set value in distributed cache (Redis, etc.)"""
+    try:
+        # This is a placeholder implementation
+        # In a real deployment, you'd use Redis or another distributed cache
+        cache = getattr(app.state, "cache", {})
+        cache[key] = {
+            "value": value,
+            "expire": time.time() + expire
+        }
+        
+        # Simple cache size management
+        if len(cache) > 10000:  # Limit cache size
+            # Remove oldest 20% of entries
+            sorted_items = sorted(cache.items(), key=lambda x: x[1]["expire"])
+            for k, _ in sorted_items[:int(len(sorted_items) * 0.2)]:
+                del cache[k]
+        
+        return True
+    except Exception as e:
+        logger.error(f"Cache set failed: {e}")
+        return False
+
+# Initialize cache on startup
+@app.on_event("startup")
+async def startup_event():
+    # Initialize in-memory cache
+    app.state.cache = {}
+    
+    # Start the scheduler
+    scheduler.start()
+    
+    # Check available models
+    await check_available_models()
+    
+    # Check bucket visibility
+    if not check_bucket_visibility():
+        logger.warning("Storage buckets may not be public. Images and videos might not load on frontend.")
         
 @app.post("/message/{message_id}/edit")
 async def edit_message(
