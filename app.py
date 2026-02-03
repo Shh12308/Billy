@@ -46,8 +46,32 @@ import plotly.graph_objects as go
 import plotly.express as px
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
-from apscheduler.executors.asyncio import AsyncIOExecutor
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.schedulers.base import STATE_RUNNING
+
+# 1️⃣ Create scheduler (do NOT start here)
+scheduler = AsyncIOScheduler()
+
+# Example job (optional)
+async def example_job():
+    logger.info("Scheduled job running...")
+
+# Add jobs here if needed
+# scheduler.add_job(example_job, "interval", seconds=60)
+
+# 2️⃣ Startup event
+@app.on_event("startup")
+async def start_scheduler():
+    if scheduler.state != STATE_RUNNING:
+        scheduler.start()
+        logger.info("Scheduler started.")
+
+# 3️⃣ Shutdown event
+@app.on_event("shutdown")
+async def stop_scheduler():
+    if scheduler.state == STATE_RUNNING:
+        scheduler.shutdown()
+        logger.info("Scheduler shut down.")
 
 # ---------- CONFIG & LOGGING ----------
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
@@ -6160,13 +6184,14 @@ async def ask_universal(request: Request, response: Response):
             "Maintain memory and context.\n"
         )
 
-        messages = [{"role": "system", "content": system_prompt}]
+messages = [{"role": "system", "content": system_prompt}]
+for msg in history:
+    if msg.get("role") in ["user", "assistant"] and msg.get("content"):
+        messages.append({"role": msg["role"], "content": msg["content"]})
+messages.append({"role": "user", "content": prompt})
 
-        for msg in history:
-            if msg["role"] != "system":
-                messages.append(msg)
-
-        messages.append({"role": "user", "content": prompt})
+# Truncate to fit model limits
+messages = truncate_messages(messages, max_tokens=4096, completion_tokens=500)
 
         # Call Groq API
         payload = {
@@ -7348,34 +7373,6 @@ async def merge_user_data(req: Request, res: Response):
         logger.error(f"Error verifying JWT token: {e}")
         raise HTTPException(401, f"Invalid token: {str(e)}")
 
-# These should be at the end of the file, after all endpoints are defined
-scheduler = BackgroundScheduler()
-
-# Example job (optional)
-def my_job():
-    print("Scheduled job running...")
-
-# Add jobs here if needed
-scheduler.add_job(my_job, 'interval', seconds=60)  # runs every 60s
-
-# -------------------------------
-# 2️⃣ Startup event
-# -------------------------------
-@app.on_event("startup")
-async def startup_event():
-    if scheduler.state != STATE_RUNNING:
-        scheduler.start()
-        print("Scheduler started.")
-
-# -------------------------------
-# 3️⃣ Shutdown event
-# -------------------------------
-@app.on_event("shutdown")
-async def shutdown_event():
-    if scheduler.state == STATE_RUNNING:
-        scheduler.shutdown()
-        print("Scheduler shut down.")
-    
 @app.post("/check")
 async def check():
     conv_check = await asyncio.to_thread(run_check)
