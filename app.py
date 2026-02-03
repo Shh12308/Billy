@@ -6173,62 +6173,60 @@ async def ask_universal(request: Request, response: Response):
                 "type": "tts"
             }
             
-        # Add more intent handlers here for other features
-        
         # Default to chat if no specific intent detected
         # Build system prompt
-system_prompt = (
-    PERSONALITY_MAP.get(personality, PERSONALITY_MAP["friendly"])
-    + f"\nUser name: {nickname}\n"
-    "You are a helpful AI assistant.\n"
-    "Maintain memory and context.\n"
-)
+        system_prompt = (
+            PERSONALITY_MAP.get(personality, PERSONALITY_MAP["friendly"])
+            + f"\nUser name: {nickname}\n"
+            "You are a helpful AI assistant.\n"
+            "Maintain memory and context.\n"
+        )
 
-messages = [{"role": "system", "content": system_prompt}]
-for msg in history:
-    if msg.get("role") in ["user", "assistant"] and msg.get("content"):
-        messages.append({"role": msg["role"], "content": msg["content"]})
+        messages = [{"role": "system", "content": system_prompt}]
+        for msg in history:
+            if msg.get("role") in ["user", "assistant"] and msg.get("content"):
+                messages.append({"role": msg["role"], "content": msg["content"]})
 
-messages.append({"role": "user", "content": prompt})
+        messages.append({"role": "user", "content": prompt})
 
-messages = truncate_messages(messages, max_tokens=4096, completion_tokens=500)
+        messages = truncate_messages(messages, max_tokens=4096, completion_tokens=500)
 
-payload = {
-    "model": CHAT_MODEL,
-    "messages": messages,
-    "max_tokens": 1500
-}
+        payload = {
+            "model": CHAT_MODEL,
+            "messages": messages,
+            "max_tokens": 1500
+        }
 
-headers = {
-    "Authorization": f"Bearer {GROQ_API_KEY}",
-    "Content-Type": "application/json"
-}
+        headers = {
+            "Authorization": f"Bearer {GROQ_API_KEY}",
+            "Content-Type": "application/json"
+        }
 
-async with httpx.AsyncClient(timeout=30) as client:
-    r = await client.post(GROQ_URL, headers=headers, json=payload)
-    r.raise_for_status()
-    response_data = r.json()
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.post(GROQ_URL, headers=headers, json=payload)
+            r.raise_for_status()
+            response_data = r.json()
 
-assistant_reply = response_data["choices"][0]["message"]["content"]
+        assistant_reply = response_data["choices"][0]["message"]["content"]
 
-await asyncio.to_thread(
-    lambda: supabase.table("messages").insert({
-        "id": str(uuid.uuid4()),
-        "conversation_id": conversation_id,
-        "user_id": user_id,
-        "role": "assistant",
-        "content": assistant_reply,
-        "created_at": datetime.utcnow().isoformat()
-    }).execute()
-)
+        await asyncio.to_thread(
+            lambda: supabase.table("messages").insert({
+                "id": str(uuid.uuid4()),
+                "conversation_id": conversation_id,
+                "user_id": user_id,
+                "role": "assistant",
+                "content": assistant_reply,
+                "created_at": datetime.utcnow().isoformat()
+            }).execute()
+        )
 
-return {
-    "status": "completed",
-    "reply": assistant_reply,
-    "conversation_id": conversation_id,
-    "user_id": user_id,
-    "type": "chat"
-}
+        return {
+            "status": "completed",
+            "reply": assistant_reply,
+            "conversation_id": conversation_id,
+            "user_id": user_id,
+            "type": "chat"
+        }
         
 @app.post("/message/{message_id}/edit")
 async def edit_message(
