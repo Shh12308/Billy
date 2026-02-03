@@ -7352,21 +7352,32 @@ async def merge_user_data(req: Request, res: Response):
         raise HTTPException(401, f"Invalid token: {str(e)}")
 
 # These should be at the end of the file, after all endpoints are defined
+scheduler = BackgroundScheduler()
+
+# Example job (optional)
+def my_job():
+    print("Scheduled job running...")
+
+# Add jobs here if needed
+scheduler.add_job(my_job, 'interval', seconds=60)  # runs every 60s
+
+# -------------------------------
+# 2️⃣ Startup event
+# -------------------------------
 @app.on_event("startup")
 async def startup_event():
-    # Start the scheduler
-    scheduler.start()
-    
-    # Check available models
-    await check_available_models()
-    
-    # Check bucket visibility
-    if not check_bucket_visibility():
-        logger.warning("Storage buckets may not be public. Images and videos might not load on frontend.")
+    if scheduler.state != STATE_RUNNING:
+        scheduler.start()
+        print("Scheduler started.")
 
+# -------------------------------
+# 3️⃣ Shutdown event
+# -------------------------------
 @app.on_event("shutdown")
 async def shutdown_event():
-    scheduler.shutdown()
+    if scheduler.state == STATE_RUNNING:
+        scheduler.shutdown()
+        print("Scheduler shut down.")
     
 @app.post("/check")
 async def check():
