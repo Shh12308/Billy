@@ -6184,15 +6184,20 @@ async def ask_universal(request: Request, response: Response):
             "Maintain memory and context.\n"
         )
 
-messages = [{"role": "system", "content": system_prompt}]
-for msg in history:
-    if msg.get("role") in ["user", "assistant"] and msg.get("content"):
-        messages.append({"role": msg["role"], "content": msg["content"]})
-messages.append({"role": "user", "content": prompt})
+try:
+    messages = [{"role": "system", "content": system_prompt}]
+    for msg in history:
+        if msg.get("role") in ["user", "assistant"] and msg.get("content"):
+            messages.append({"role": msg["role"], "content": msg["content"]})
+    messages.append({"role": "user", "content": prompt})
 
-# Truncate to fit model limits
-messages = truncate_messages(messages, max_tokens=4096, completion_tokens=500)
+    # truncate messages safely
+    messages = truncate_messages(messages, max_tokens=4096, completion_tokens=500)
 
+except Exception as e:
+    logger.error(f"Failed to build or truncate messages: {e}")
+    raise HTTPException(status_code=500, detail="Failed to prepare messages")
+    
         # Call Groq API
         payload = {
             "model": CHAT_MODEL,
