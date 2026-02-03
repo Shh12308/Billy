@@ -5762,12 +5762,14 @@ async def ask_universal(request: Request, response: Response):
             raise HTTPException(status_code=400, detail="prompt required")
 
         # Get user and conversation
-user = await get_or_create_user(request, response)
-user_id = user.id  # Fixed: Get the ID from the user object
+        # FIX 1: Corrected indentation
+        user = await get_or_create_user(request, response)
+        user_id = user.id
 
         # Get or create conversation
         if not conversation_id:
-            conversation_id = get_or_create_conversation_id(user_id)
+            # FIX 2: Corrected function name and made it non-blocking
+            conversation_id = await asyncio.to_thread(get_or_create_conversation, user_id)
         else:
             conv_check = await asyncio.to_thread(
                 lambda: supabase
@@ -5780,13 +5782,14 @@ user_id = user.id  # Fixed: Get the ID from the user object
             )
 
             if not conv_check.data:
-                conversation_id = get_or_create_conversation_id(user_id)
+                # FIX 3: Corrected function name and made it non-blocking
+                conversation_id = await asyncio.to_thread(get_or_create_conversation, user_id)
 
-        # Load history
-        history = load_conversation_history(user_id, limit=20)
+        # FIX 4: Made non-blocking
+        history = await asyncio.to_thread(load_conversation_history, user_id, limit=20)
 
-        # Load profile
-        profile = get_user_profile(user_id)
+        # FIX 5: Made non-blocking
+        profile = await asyncio.to_thread(get_user_profile, user_id)
         personality = profile.get("personality", "friendly")
         nickname = profile.get("nickname", f"User{user_id[:8]}")
 
