@@ -47,7 +47,11 @@ import plotly.express as px
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.executors.asyncio import AsyncIOExecutor
+from apscheduler.schedulers.base import STATE_RUNNING
 
+if scheduler.state != STATE_RUNNING:
+    scheduler.start()
+    
 # ---------- CONFIG & LOGGING ----------
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger("zynara-server")
