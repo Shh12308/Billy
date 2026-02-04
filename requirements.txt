@@ -29,7 +29,7 @@ openai==1.33.0
 transformers==4.45.0
 torch==2.1.0
 torchvision==0.16.0
-judge0py==1.0.0
+judge0>=0.0.4
 
 # ---------------------- IMAGE & ML / VISION ----------------------
 numpy==1.26.4
