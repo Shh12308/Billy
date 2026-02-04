@@ -938,8 +938,14 @@ async def generate_placeholder_video(prompt: str, samples: int = 1, user_id: str
             
             text = f"Video Generation Placeholder\n\nPrompt: {prompt[:50]}{'...' if len(prompt) > 50 else ''}\n\nVideo generation is currently unavailable. Please check back later."
             
-            # Calculate text position
-            text_width, text_height = draw.textsize(text, font=font)
+            # --- FIX IS HERE ---
+            # Calculate text position using the new textbbox method
+            # textbbox returns a tuple (left, top, right, bottom)
+            bbox = draw.textbbox((0, 0), text, font=font)
+            text_width = bbox[2] - bbox[0]  # right - left
+            text_height = bbox[3] - bbox[1] # bottom - top
+            
+            # Calculate position to center the text
             x = (width - text_width) / 2
             y = (height - text_height) / 2
             
