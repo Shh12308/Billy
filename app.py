@@ -578,7 +578,7 @@ async def generate_video_internal(prompt: str, samples: int = 1, user_id: str = 
     
     # If all APIs fail, use placeholder
     return await generate_placeholder_video(prompt, samples, user_id)
-
+    
 async def generate_video_stability(prompt: str, samples: int = 1, user_id: str = None) -> dict:
     """
     Generate videos using Stability AI's video generation API
@@ -594,13 +594,11 @@ async def generate_video_stability(prompt: str, samples: int = 1, user_id: str =
             # Prepare the API request
             headers = {
                 "Authorization": f"Bearer {STABILITY_API_KEY}",
-                "Content-Type": "application/json",
-                "Accept": "application/json"
+                "content-type": "application/json",
+                "accept": "application/json"
             }
             
             # Use the correct endpoint for Stable Video Diffusion
-            # The correct endpoint is /v2beta/image-to-video or /v2beta/text-to-video
-            # For now, we'll use a placeholder since the exact endpoint might vary
             payload = {
                 "prompt": prompt,
                 "seed": random.randint(0, 4294967295),
@@ -612,7 +610,7 @@ async def generate_video_stability(prompt: str, samples: int = 1, user_id: str =
             async with httpx.AsyncClient(timeout=120.0) as client:
                 # Try the correct endpoint
                 response = await client.post(
-                    "https://api.stability.ai/v1/generation/stable-video-diffusion/text-to-video",
+                    "https://api.stability.ai/v2beta/image-to-video",  # Updated endpoint
                     headers=headers,
                     json=payload
                 )
@@ -620,7 +618,7 @@ async def generate_video_stability(prompt: str, samples: int = 1, user_id: str =
                 # If that fails, try an alternative endpoint
                 if response.status_code == 404:
                     response = await client.post(
-                        "https://api.stability.ai/v1/generation/stable-video-diffusion/text-to-video",
+                        "https://api.stability.ai/v2beta/text-to-video", # Alternative endpoint
                         headers=headers,
                         json=payload
                     )
@@ -652,7 +650,7 @@ async def generate_video_stability(prompt: str, samples: int = 1, user_id: str =
                     # If that fails, try the alternative endpoint
                     if status_response.status_code == 404:
                         status_response = await client.get(
-                            f"https://api.stability.ai/v1/generation/stable-video-diffusion/text-to-video/{generation_id}",
+                            f"https://api.stability.ai/v2beta/result/{generation_id}",
                             headers=headers
                         )
                     
@@ -718,7 +716,7 @@ async def generate_video_stability(prompt: str, samples: int = 1, user_id: str =
         "provider": "stability-ai",
         "videos": [{"url": url, "type": "video/mp4"} for url in urls]
     }
-
+    
 async def generate_video_huggingface(prompt: str, samples: int = 1, user_id: str = None) -> dict:
     """
     Generate videos using Hugging Face's video generation models
@@ -2194,7 +2192,7 @@ async def duckduckgo_search(q: str):
     if len(q) > max_query_length:
         q = q[:max_query_length-3] + "..."  # Truncate and add indicator
     
-    url = "https://api.duckduckgo.com/"
+    url = "https://duckduckgo.com/"
     params = {"q": q, "format": "json", "no_html": 1, "skip_disambig": 1}
     
     try:
@@ -2534,13 +2532,37 @@ async def nsfw_check(prompt: str) -> bool:
             # Log the full moderation result for debugging
             logger.info(f"Moderation result: {result}")
             
-            # Check for any flagged category
-            return result["flagged"]
+            # More nuanced check - only block for severe categories
+            severe_categories = ["sexual/minors", "self-harm/intent", "hate/threatening", "harassment/threatening"]
+            
+            # Check if any severe categories are flagged
+            for category in severe_categories:
+                if result.get("categories", {}).get(category, False):
+                    logger.warning(f"Content blocked for severe category: {category}")
+                    return True
+            
+            # For less severe categories, check the score threshold
+            threshold_categories = {
+                "sexual": 0.5,
+                "violence": 0.5
+                "violence/graphic": 0.5,
+                "self-harm": 0.5,
+                "illicit": 0.5
+            }
+            
+            for category, threshold in threshold_categories.items():
+                if result.get("categories", {}).get(category, False):
+                    score = result.get("category_scores", {}).get(category, 0)
+                    if score > threshold:
+                        logger.warning(f"Content blocked for {category} with score {score}")
+                        return True
+            
+            # If we get here, the content passed moderation
+            return False
     except Exception as e:
         logger.error(f"NSFW check failed: {e}")
+        # Default to allowing content if moderation fails
         return False
-    
-    return False
     
 async def _generate_image_core(
     prompt: str,
@@ -2841,6 +2863,44 @@ def load_user_memory(user_id: str):
         logger.error(f"Failed to load user memory: {e}")
     return []
 
+def validate_environment():
+    """Validate that required environment variables are set"""
+    required_vars = {
+        "GROQ_API_KEY": "Groq API key is required for chat functionality",
+        "OPENAI_API_KEY": "OpenAI API key is required for moderation and TTS",
+        "SUPABASE_URL": "Supabase URL is required for database operations"
+    }
+    
+    optional_vars = {
+        "STABILITY_API_KEY": "Stability AI API key for video generation",
+        "HF_API_KEY": "Hugging Face API key for video generation",
+        "RUNWAYML_API_KEY": "RunwayML API key for video generation"
+    }
+    
+    missing_required = []
+    missing_optional = []
+    
+    for var, message in required_vars.items():
+        if not os.getenv(var):
+            missing_required.append(f"{var}: {message}")
+    
+    for var, message in optional_vars.items():
+        if not os.getenv(var):
+            missing_optional.append(f"{var}: {message}")
+    
+    if missing_required:
+        logger.error("Missing required environment variables:")
+        for msg in missing_required:
+            logger.error(f"  - {msg}")
+        raise RuntimeError("Missing required environment variables")
+    
+    if missing_optional:
+        logger.warning("Missing optional environment variables:")
+        for msg in missing_optional:
+            logger.warning(f"  - {msg}")
+    
+    logger.info("Environment validation complete")
+    
 async def universal_chat_stream(user_id: str, prompt: str):
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = get_groq_headers()
