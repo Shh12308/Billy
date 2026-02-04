@@ -2615,14 +2615,6 @@ try:
 except Exception as e:
     logger.error(f"Image generation failed: {str(e)}")
     raise HTTPException(status_code=400, detail=f"Image generation failed: {str(e)}")
-            
-            result = r.json()
-    except httpx.HTTPStatusError as e:
-        logger.error(f"HTTP error from OpenAI: {e.response.status_code} - {e.response.text}")
-        raise HTTPException(500, "Image generation provider error")
-    except Exception as e:
-        logger.exception("OpenAI image API call failed")
-        raise HTTPException(500, "Image generation provider error")
 
     if not result or not result.get("data"):
         logger.error("OpenAI returned empty image response: %s", result)
