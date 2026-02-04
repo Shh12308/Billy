@@ -964,7 +964,7 @@ async def generate_placeholder_video(prompt: str, samples: int = 1, user_id: str
             supabase.storage.from_("ai-videos").upload(
                 path=storage_path,
                 file=img_bytes,
-                file_options={"content-type": "image/png"}  # Using PNG as placeholder
+                file_options={"content-type": "image/png"}  # This is the issue - we're saving a PNG with an mp4 extension
             )
             
             # Save video record
