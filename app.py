@@ -612,7 +612,7 @@ async def generate_video_stability(prompt: str, samples: int = 1, user_id: str =
             async with httpx.AsyncClient(timeout=120.0) as client:
                 # Try the correct endpoint
                 response = await client.post(
-                    "https://api.stability.ai/v2beta/text-to-video",
+                    "https://api.stability.ai/v1/generation/stable-video-diffusion/text-to-video",
                     headers=headers,
                     json=payload
                 )
@@ -963,13 +963,6 @@ async def generate_placeholder_video(prompt: str, samples: int = 1, user_id: str
             # Upload to Supabase
             filename = f"{uuid.uuid4().hex[:8]}.mp4"
             storage_path = f"anonymous/{filename}"
-            
-            # The key fix is here:
-            # We're saving a PNG image but telling the browser it's a video. This is the core of the problem.
-            # We need to either:
-            # 1. Save it as an image with a png extension and return it as such, or
-            # 2. Create an actual video file (this is complex and requires additional libraries like imageio or opencv-python)
-            # 3. Save it as a PNG but tell the frontend it's an image, not a video.
 
             # We'll go with option #3 as it's the simplest fix.
             supabase.storage.from_("ai-videos").upload(
@@ -1216,190 +1209,6 @@ CREATOR_INFO = {
     "socials": { "discord":"@nexisphere123_89431", "twitter":"@NexiSphere"},
     "bio": "Created by GoldBoy (17, England). Projects: MZ, LS, SX, CB. Socials: Discord @nexisphere123_89431 Twitter @NexiSphere."
 }
-    # --- C / C++ ---
-JUDGE0_LANGUAGES = {
-    # --- C / C++ ---
-    "c": 50,
-    "c_clang": 49,
-    "cpp": 54,
-    "cpp_clang": 53,
-    "cpp17": 54,
-    "c++": 54,
-
-    # --- Java ---
-    "java": 62,
-
-    # --- Python ---
-    "python": 71,
-    "python3": 71,
-    "python2": 70,
-    "py": 71,
-    "py3": 71,
-
-    #--- JavaScript / TypeScript ---
-    "javascript": 63,
-    "js": 63,
-    "nodejs": 63,
-    "node": 63,
-    "typescript": 74,
-    "ts": 74,
-
-    #--- Go ---
-    "go": 60,
-    "golang": 60,
-
-    #--- Rust ---
-    "rust": 73,
-    "rs": 73,
-
-    #--- .NET ---
-    "csharp": 51,
-    "c#": 51,
-    "fsharp": 87,
-    "f#": 87,
-    "dotnet": 51,
-    "vb.net": 94,
-
-    #--- PHP ---
-    "php": 68,
-
-    # --- Ruby ---
-    "ruby": 72,
-    "rb": 72,
-
-    # --- Swift ---
-    "swift": 83,
-
-    #--- Kotlin ---
-    "kotlin": 78,
-    "kt": 78,
-
-    #--- Scala ---
-    "scala": 81,
-
-    #--- Objective-C ---
-    "objective_c": 52,
-    "objc": 52,
-
-    #--- Bash / Shell ---
-    "bash": 46,
-    "sh": 46,
-    "shell": 46,
-    "zsh": 46,
-
-    #--- PowerShell ---
-    "powershell": 88,
-    "ps1": 88,
-
-    #--- Perl ---
-    "perl": 85,
-    "pl": 85,
-
-    #--- Lua ---
-    "lua": 64,
-
-    #--- R ---
-    "r": 80,
-
-    #--- Dart ---
-    "dart": 75,
-
-    # --- Julia ---
-    "julia": 84,
-
-    # --- Haskell ---
-    "haskell": 61,
-    "hs": 61,
-
-    #--- Elixir ---
-    "elixir": 57,
-    "ex": 57,
-
-    #--- Erlang ---
-    "erlang": 58,
-    "erl": 58,
-
-    #--- OCaml ---
-    "ocaml": 65,
-    "ml": 65,
-
-    #--- Crystal ---
-    "crystal": 76,
-    "cr": 76,
-
-    #--- Nim ---
-    "nim": 77,
-    "nim": 77,
-
-    #--- Zig ---
-    "zig": 86,
-
-    #--- Assembly ---
-    "assembly": 45,
-    "asm": 45,
-    "nasm": 45,
-
-    #--- COBOL ---
-    "cobol": 55,
-    "cbl": 55,
-
-    #--- Fortran ---
-    "fortran": 59,
-    "f90": 59,
-
-    #--- Prolog ---
-    "prolog": 69,
-    "pl": 69,
-
-    #--- Scheme ---
-    "scheme": 82,
-    "scm": 82,
-
-    #--- Common Lisp ---
-    "lisp": 66,
-    "cl": 66,
-
-    #--- Brainf*ck ---
-    "brainfuck": 47,
-    "bf": 47,
-
-    #--- V ---
-    "vlang": 91,
-    "v": 91,
-
-    #--- Groovy ---
-    "groovy": 56,
-
-    # --- Hack ---
-    "hack": 67,
-
-    # --- Pascal ---
-    "pascal": 67,
-
-    # --- Scratch ---
-    "scratch": 92,
-
-    # --- Solidity ---
-    "solidity": 94,
-    "sol": 94,
-
-    # --- SQL ---
-    "sql": 82,
-
-    # --- Text / Plain ---
-    "plain_text": 43,
-    "text": 43,
-}
-
-JUDGE0_URL = "https://judge0-ce.p.rapidapi.com"
-JUDGE0_KEY = os.getenv("JUDGE0_API_KEY")
-
-if not JUDGE0_KEY:
-    logger.warning("⚠️ Judge0 key not set — code execution disabled")
-
-if not JUDGE0_KEY:
-    logger.warning("Code execution disabled (missing Judge0 API key)")
-
 # ---------- Pydantic Models ----------
 class DocumentAnalysisRequest(BaseModel):
     text: str
@@ -2025,77 +1834,98 @@ def create_chart(data, chart_type, options):
         logger.error(f"Error creating chart: {e}")
         return f"<p>Error creating chart: {str(e)}</p>"
 
-#// ---------- Helper Functions ----------
-# Fix: Add get_judge0_client function
-def get_judge0_client():
-    """Get Judge0 client for code execution"""
-    if not JUDGE0_KEY:
-        logger.warning("Judge0 client not available - missing API key")
-        return None
-    
+# Replace the run_code_judge0 function with this:
+async def run_code_online(code: str, language: str = "python", stdin: str = ""):
+    """
+    Execute code using a free online Python executor
+    This is much cheaper than Judge0 but has some limitations
+    """
     try:
-        from judge0 import Judge0Client
-        client = Judge0Client(
-            base_url=JUDGE0_URL,
-            api_key=JUDGE0_KEY
-        )
-        return client
-    except ImportError:
-        logger.error("Judge0 library not installed - code execution disabled")
-        return None
-    except Exception as e:
-        logger.error(f"Failed to initialize Judge0 client: {e}")
-        return None
-
-async def run_code_judge0(code: str, language_id: int, stdin: str = ""):
-    """Execute code using Judge0 API with proper error handling"""
-    client = get_judge0_client()
-    
-    if not client:
-        return {
-            "error": "Judge0 client not initialized. Check JUDGE0_KEY.",
-            "status": "error"
+        # Use a free online Python executor like emkc.org or similar
+        # This example uses emkc.org's API which is free
+        url = "https://emkc.org/api/v2/piston/execute"
+        
+        # Map languages to their identifiers
+        language_map = {
+            "python": "python",
+            "javascript": "javascript",
+            "java": "java",
+            "c": "c",
+            "cpp": "cpp",
+            "c#": "csharp",
+            "php": "php",
+            "ruby": "ruby",
+            "go": "go",
+            "rust": "rust",
+            "sql": "sql",
+            "bash": "bash"
         }
-    
-    try:
-        # Submit the code for execution
-        submission = client.submissions.create(
-            source_code=code,
-            language_id=language_id,
-            stdin=stdin,
-            wait=True,
-            base64_encoded=False
-        )
         
-        # Get the submission token
-        token = submission.get("token")
+        lang = language_map.get(language.lower(), "python")
         
-        if not token:
+        payload = {
+            "language": lang,
+            "version": "*",  # Use latest version
+            "files": [
+                {
+                    "name": f"main.{lang}",
+                    "content": code
+                }
+            ],
+            "stdin": stdin,
+            "compile_timeout": 10,
+            "run_timeout": 10,
+            "compile_memory_limit": -1,
+            "run_memory_limit": -1
+        }
+        
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.post(url, json=payload)
+            response.raise_for_status()
+            result = response.json()
+            
+            # Extract the output
+            if result.get("compile") and result["compile"].get("code") != 0:
+                return {
+                    "stdout": "",
+                    "stderr": result["compile"].get("stderr", "Compilation error"),
+                    "status": {
+                        "id": 1,
+                        "description": "Compilation Error"
+                    },
+                    "time": 0,
+                    "memory": 0,
+                    "exit_code": result["compile"]["code"]
+                }
+            
+            if result.get("run") and result["run"].get("code") != 0:
+                return {
+                    "stdout": result["run"].get("stdout", ""),
+                    "stderr": result["run"].get("stderr", "Runtime error"),
+                    "status": {
+                        "id": 1,
+                        "description": "Runtime Error"
+                    },
+                    "time": result["run"].get("cpu_time", 0),
+                    "memory": result["run"].get("memory", 0),
+                    "exit_code": result["run"]["code"]
+                }
+            
             return {
-                "error": "Failed to get submission token from Judge0",
-                "status": "error"
+                "stdout": result["run"].get("stdout", ""),
+                "stderr": result["run"].get("stderr", ""),
+                "status": {
+                    "id": 0,
+                    "description": "Success"
+                },
+                "time": result["run"].get("cpu_time", 0),
+                "memory": result["run"].get("memory", 0),
+                "exit_code": 0
             }
-        
-        # Get the submission result
-        result = client.submissions.get(token)
-        
-        # Format the result for our application
-        return {
-            "stdout": result.get("stdout", ""),
-            "stderr": result.get("stderr", ""),
-            "compile_output": result.get("compile_output", ""),
-            "status": {
-                "id": result.get("status", {}).get("id"),
-                "description": result.get("status", {}).get("description")
-            },
-            "time": result.get("time"),
-            "memory": result.get("memory"),
-            "exit_code": result.get("exit_code")
-        }
     except Exception as e:
-        logger.error(f"Judge0 execution failed: {str(e)}")
+        logger.error(f"Code execution failed: {e}")
         return {
-            "error": f"Judge0 execution failed: {str(e)}",
+            "error": f"Code execution failed: {str(e)}",
             "status": "error"
         }
 
@@ -2325,7 +2155,7 @@ def get_groq_headers():
 # Fix: Complete the run_code_safely function
 async def run_code_safely(prompt: str):
     """Helper for streaming /ask/universal."""
-    # Default to python if not specified for this helper
+    # Default to python if not specified
     language = "python" 
     
     # 1. Generate code
@@ -2345,8 +2175,7 @@ async def run_code_safely(prompt: str):
         code = r.json()["choices"][0]["message"]["content"]
 
     # 2. Run code
-    lang_id = JUDGE0_LANGUAGES.get(language, 71)
-    execution = await run_code_judge0(code, lang_id)
+    execution = await run_code_online(code, language)
     
     return {
         "code": code,
@@ -2739,10 +2568,9 @@ async def _generate_image_core(
     if not clean_prompt:
         raise HTTPException(400, "Empty prompt provided")
     
-    # Limit prompt length to avoid API issues
-    if len(clean_prompt) > 1000:
-        clean_prompt = clean_prompt[:1000] + "..."
-        logger.warning(f"Prompt truncated to 1000 characters")
+if len(clean_prompt) > 4000:  # Increased from 1000 to 4000
+    clean_prompt = clean_prompt[:4000] + "..."
+    logger.warning(f"Prompt truncated to 4000 characters")
 
     payload = {
         "model": "dall-e-3",
@@ -5987,11 +5815,6 @@ async def chat_with_tools(user_id: str, messages: list):
         # No tool call was needed, just return the AI's direct response
         return response_message["content"]
         
-# Now, let's fix the ask_universal function to handle the missing background_tasks table
-#// =========================================================
-#// 🚀 UNIVERSAL MULTIMODAL ENDPOINT — /ask/universal (UPDATED)
-#// =========================================================
-
 @app.post("/ask/universal")
 async def ask_universal(request: Request, response: Response):
     try:
@@ -6218,8 +6041,8 @@ async def ask_universal(request: Request, response: Response):
                 }
                 
                 if run_flag:
-                    lang_id = JUDGE0_LANGUAGES.get(language, 71)
-                    execution = await run_code_judge0(code, lang_id)
+                    # FIXED: Use the free online code executor instead of Judge0
+                    execution = await run_code_online(code, language)
                     result["execution"] = execution
                 
                 try:
@@ -6470,9 +6293,8 @@ async def ask_universal(request: Request, response: Response):
         raise e
     except Exception as e:
         logger.error(f"/ask/universal failed: {e}")
-        raise HTTPException(status_code=500, detail="Chat processing failed")
-        
-        
+        raise HTTPException(status_code=500, detail="Chat processing failed")@app.post("/ask/universal")
+
 @app.post("/message/{message_id}/edit")
 async def edit_message(
     message_id: str,
@@ -7057,14 +6879,14 @@ async def code_gen(req: Request, res: Response):
     language = body.get("language", "python").lower()
     run_flag = bool(body.get("run", False))
     
-    #// Get the user with our new ID system
+    # Get the user with our new ID system
     user = await get_or_create_user(req, res)
     user_id = user.id
 
     if not prompt:
         raise HTTPException(400, "prompt required")
 
-   # // Generate code using Groq
+    # Generate code using Groq
     contextual_prompt = build_contextual_prompt(
         user_id,
         f"Write a complete {language} program:\n{prompt}"
@@ -7093,13 +6915,12 @@ async def code_gen(req: Request, res: Response):
         "user_id": user_id  # Include user_id in response
     }
 
-   # // ✅ Run via Judge0
+    # Run code using the free online executor instead of Judge0
     if run_flag:
-        lang_id = JUDGE0_LANGUAGES.get(language, 71)
-        execution = await run_code_judge0(code, lang_id)
+        execution = await run_code_online(code, language)
         response["execution"] = execution
 
-  #  // Save code generation record (with error handling for missing table)
+    # Save code generation record (with error handling for missing table)
     try:
         supabase.table("code_generations").insert({
             "id": str(uuid.uuid4()),
@@ -7111,7 +6932,7 @@ async def code_gen(req: Request, res: Response):
         }).execute()
     except Exception as e:
         logger.error(f"Failed to save code generation record (table might not exist): {e}")
-       # // Don't fail the request, just log the error
+        # Don't fail the request, just log the error
     return response
 
 @app.get("/search")
