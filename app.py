@@ -2589,12 +2589,28 @@ if len(clean_prompt) > 4000:  # Increased from 1000 to 4000
     }
 
     try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            r = await client.post(
-                "https://api.openai.com/v1/images/generations",
-                json=payload,
-                headers=headers
-            )
+        async def fetch_data():
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    
+    payload = {
+        "model": "dall-e-3",
+        "prompt": "Your prompt here",
+        "n": 1,
+        "size": "1024x1024",
+        "response_format": "b64_json"
+    }
+    
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        response = await client.post(
+            "https://api.openai.com/v1/images/generations",
+            json=payload,
+            headers=headers
+        )
+        response.raise_for_status()
+        return response.json()
             
             # Log the response for debugging
             if r.status_code != 200:
