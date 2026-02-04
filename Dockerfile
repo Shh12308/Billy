@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     libglib2.0-0 \
     libgl1 \
+    judge0  # <--- ADD THIS LINE
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
