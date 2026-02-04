@@ -2590,10 +2590,10 @@ if len(clean_prompt) > 4000:  # Increased from 1000 to 4000
 
     try:
         async def fetch_data():
-    headers = {
-        "Authorization": f"Bearer {OPENAI_API_KEY}",
-        "Content-Type": "application/json"
-    }
+            headers = {
+            "Authorization": f"Bearer {OPENAI_API_KEY}",
+            "Content-Type": "application/json"
+        }
     
     payload = {
         "model": "dall-e-3",
