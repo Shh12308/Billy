@@ -1184,7 +1184,7 @@ logger.info(f"RunwayML key present: {bool(RUNWAYML_API_KEY)}")
 # Models
 # -------------------
 # Update this line in your code
-CHAT_MODEL = os.getenv("CHAT_MODEL", "llama3-8b-8192")  # Using a currently supported model
+CHAT_MODEL = os.getenv("CHAT_MODEL", "llama-3.1-8b-instant") 
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions" # // Added missing URL
 
 # TTS/STT are handled via ElevenLabs now
