@@ -1842,7 +1842,6 @@ async def run_code_online(code: str, language: str = "python", stdin: str = ""):
     """
     try:
         # Use a free online Python executor like emkc.org or similar
-        # This example uses emkc.org's API which is free
         url = "https://emkc.org/api/v2/piston/execute"
         
         # Map languages to their identifiers
@@ -1879,55 +1878,58 @@ async def run_code_online(code: str, language: str = "python", stdin: str = ""):
             "run_memory_limit": -1
         }
         
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.post(url, json=payload)
-            response.raise_for_status()
-            result = response.json()
-            
-            # Extract the output
-            if result.get("compile") and result["compile"].get("code") != 0:
-                return {
-                    "stdout": "",
-                    "stderr": result["compile"].get("stderr", "Compilation error"),
-                    "status": {
-                        "id": 1,
-                        "description": "Compilation Error"
-                    },
-                    "time": 0,
-                    "memory": 0,
-                    "exit_code": result["compile"]["code"]
-                }
-            
-            if result.get("run") and result["run"].get("code") != 0:
-                return {
-                    "stdout": result["run"].get("stdout", ""),
-                    "stderr": result["run"].get("stderr", "Runtime error"),
-                    "status": {
-                        "id": 1,
-                        "description": "Runtime Error"
-                    },
-                    "time": result["run"].get("cpu_time", 0),
-                    "memory": result["run"].get("memory", 0),
-                    "exit_code": result["run"]["code"]
-                }
-            
+        client = httpx.AsyncClient(timeout=30)
+        response = await client.post(url, json=payload)
+        response.raise_for_status()
+        result = response.json()
+        
+        # Extract the output
+        if result.get("compile") and result["compile"].get("code") != 0:
+            return {
+                "stdout": "",
+                "stderr": result["compile"].get("stderr", "Compilation error"),
+                "status": {
+                    "id": 1,
+                    "description": "Compilation Error"
+                },
+                "time": 0,
+                "memory": 0,
+                "exit_code": result["compile"]["code"]
+            }
+        
+        if result.get("run") and result["run"].get("code") != 0:
             return {
                 "stdout": result["run"].get("stdout", ""),
-                "stderr": result["run"].get("stderr", ""),
+                "stderr": result["run"].get("stderr", "Runtime error"),
                 "status": {
-                    "id": 0,
-                    "description": "Success"
+                    "id": 1,
+                    "description": "Runtime Error"
                 },
                 "time": result["run"].get("cpu_time", 0),
                 "memory": result["run"].get("memory", 0),
-                "exit_code": 0
+                "exit_code": result["run"]["code"]
             }
+        
+        return {
+            "stdout": result["run"].get("stdout", ""),
+            "stderr": result["run"].get("stderr", ""),
+            "status": {
+                "id": 0,
+                "description": "Success"
+            },
+            "time": result["run"].get("cpu_time", 0),
+            "memory": result["run"].get("memory", 0),
+            "exit_code": 0
+        }
     except Exception as e:
         logger.error(f"Code execution failed: {e}")
         return {
             "error": f"Code execution failed: {str(e)}",
             "status": "error"
         }
+    finally:
+        if 'client' in locals():
+            await client.aclose()
 
 async def generate_ai_response(conversation_id: str, user_id: str, messages: list):
     """
