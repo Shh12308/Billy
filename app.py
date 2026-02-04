@@ -2549,76 +2549,60 @@ async def _generate_image_core(
     return_base64: bool = False
 ):
     if not OPENAI_API_KEY:
-        raise HTTPException(500, "Missing OPENAI_API_KEY")
+        raise HTTPException(status_code=500, detail="Missing OPENAI_API_KEY")
 
-    # Sanitize prompt to avoid content policy violations
     prompt = sanitize_prompt(prompt)
-    
-    # Content moderation check
+
     is_flagged = await nsfw_check(prompt)
     if is_flagged:
         raise HTTPException(
-            status_code=400, 
+            status_code=400,
             detail="Image generation prompt violates content policy."
         )
 
     provider_used = "openai"
     urls = []
 
-    # Clean and validate the prompt
     clean_prompt = prompt.strip()
     if not clean_prompt:
-        raise HTTPException(400, "Empty prompt provided")
-    
-if len(clean_prompt) > 4000:  # Increased from 1000 to 4000
-    clean_prompt = clean_prompt[:4000] + "..."
-    logger.warning(f"Prompt truncated to 4000 characters")
+        raise HTTPException(status_code=400, detail="Empty prompt provided")
+
+    if len(clean_prompt) > 4000:
+        clean_prompt = clean_prompt[:4000] + "..."
+        logger.warning("Prompt truncated to 4000 characters")
 
     payload = {
         "model": "dall-e-3",
         "prompt": clean_prompt,
-        "n": 1,  # DALL·E 3 supports only 1 image
+        "n": 1,
         "size": "1024x1024",
         "response_format": "b64_json",
-        "quality": "standard"  # Add quality parameter
+        "quality": "standard"
     }
 
     headers = {
         "Authorization": f"Bearer {OPENAI_API_KEY}",
-        "content-type": "application/json"
+        "Content-Type": "application/json"
     }
 
-try:
-    async def fetch_data():
-        headers = {
-            "Authorization": f"Bearer {OPENAI_API_KEY}",
-            "Content-Type": "application/json"
-        }
-
-        payload = {
-            "model": "dall-e-3",
-            "prompt": "Your prompt here",
-            "n": 1,
-            "size": "1024x1024",
-            "response_format": "b64_json"
-        }
-
+    try:
         async with httpx.AsyncClient(timeout=120.0) as client:
             response = await client.post(
                 "https://api.openai.com/v1/images/generations",
                 json=payload,
                 headers=headers
             )
-            response.raise_for_status()
-            return response.json()
 
-except Exception as e:
-    logger.error(f"Image generation failed: {str(e)}")
-    raise HTTPException(status_code=400, detail=f"Image generation failed: {str(e)}")
+            response.raise_for_status()
+            result = response.json()
+
+    except Exception as e:
+        logger.error(f"Image generation failed: {str(e)}")
+        raise HTTPException(status_code=400, detail="Image generation failed")
 
     if not result or not result.get("data"):
         logger.error("OpenAI returned empty image response: %s", result)
-        raise HTTPException(500, "Image generation failed")
+        raise HTTPException(status_code=500, detail="Image generation failed")
 
     for img in result["data"]:
         try:
@@ -2630,14 +2614,12 @@ except Exception as e:
             filename = f"{uuid.uuid4().hex}.png"
             storage_path = f"anonymous/{filename}"
 
-            # Upload to Supabase
-            upload = supabase.storage.from_("ai-images").upload(
+            supabase.storage.from_("ai-images").upload(
                 path=storage_path,
                 file=image_bytes,
                 file_options={"content-type": "image/png"}
             )
 
-            # Save image record with user ID
             try:
                 supabase.table("images").insert({
                     "id": str(uuid.uuid4()),
@@ -2648,7 +2630,6 @@ except Exception as e:
             except Exception as e:
                 logger.error(f"Failed to save image record: {e}")
 
-            # Get public URL instead of signed URL
             public_url = get_public_url("ai-images", storage_path)
             urls.append(public_url)
 
@@ -2657,15 +2638,16 @@ except Exception as e:
             continue
 
     if not urls:
-        raise HTTPException(500, "No images generated")
+        raise HTTPException(status_code=500, detail="No images generated")
 
     cache_result(prompt, provider_used, {"images": urls})
 
     return {
         "provider": provider_used,
-        "images": [{"url": url, "type": "image/png"} for url in urls],  # Updated format
+        "images": [{"url": url, "type": "image/png"} for url in urls],
         "user_id": user_id
     }
+    
 
 async def load_artifact(conversation_id: str):
     try:
