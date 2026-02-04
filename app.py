@@ -521,13 +521,16 @@ def get_user_profile(user_id: str) -> dict:
         return {"nickname": "User", "personality": "friendly"}
 
 def get_public_url(bucket: str, path: str) -> str:
-    """Get public URL from Supabase Storage"""
+    """
+    Get the correct public URL for a file in a public bucket.
+    """
     # Make sure to use the full URL including the protocol
     if not SUPABASE_URL.startswith(('http://', 'https://')):
         base_url = f"https://{SUPABASE_URL}"
     else:
-        base_url = SUPABASE_URL
+        base_url = f"https://{SUPABASE_URL}"
     
+    # This is the correct URL structure for a public bucket
     return f"{base_url}/storage/v1/object/public/{bucket}/{path}"
 
 @app.get("/test/image/{image_path:path}")
