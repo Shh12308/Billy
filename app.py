@@ -2544,7 +2544,7 @@ async def nsfw_check(prompt: str) -> bool:
             # For less severe categories, check the score threshold
             threshold_categories = {
                 "sexual": 0.5,
-                "violence": 0.5
+                "violence": 0.5,
                 "violence/graphic": 0.5,
                 "self-harm": 0.5,
                 "illicit": 0.5
