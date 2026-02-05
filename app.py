@@ -5860,6 +5860,533 @@ async def chat_with_tools(user_id: str, messages: list):
     else:
         # No tool call was needed, just return the AI's direct response
         return response_message["content"]
+
+@app.post("/ask/universal/stream")
+async def ask_universal_stream(request: Request, response: Response):
+    """
+    Streaming version of the universal endpoint.
+    Returns Server-Sent Events (SSE) for real-time responses.
+    """
+    try:
+        body = await request.json()
+        prompt = body.get("prompt", "").strip()
+        conversation_id = body.get("conversation_id")
+
+        if not prompt:
+            raise HTTPException(status_code=400, detail="prompt required")
+
+        # Get user and conversation
+        user = await get_or_create_user(request, response)
+        user_id = user.id
+
+        # Get or create conversation
+        if not conversation_id:
+            conversation_id = await asyncio.to_thread(get_or_create_conversation, user_id)
+        else:
+            conv_check = await asyncio.to_thread(
+                lambda: supabase
+                .table("conversations")
+                .select("id")
+                .eq("id", conversation_id)
+                .eq("user_id", user_id)
+                .limit(1)
+                .execute()
+            )
+
+            if not conv_check.data:
+                conversation_id = await asyncio.to_thread(get_or_create_conversation, user_id)
+
+        history = await asyncio.to_thread(load_conversation_history, user_id, limit=20)
+        profile = await asyncio.to_thread(get_user_profile, user_id)
+        personality = profile.get("personality", "friendly")
+        nickname = profile.get("nickname", f"User{user_id[:8]}")
+
+        # Save user message
+        await asyncio.to_thread(
+            lambda: supabase.table("messages").insert({
+                "id": str(uuid.uuid4()),
+                "conversation_id": conversation_id,
+                "user_id": user_id,
+                "role": "user",
+                "content": prompt,
+                "created_at": datetime.utcnow().isoformat()
+            }).execute()
+        )
+
+        await asyncio.to_thread(
+            lambda: supabase.table("conversations").update({
+            "updated_at": datetime.utcnow().isoformat()
+        }).eq("id", conversation_id).execute()
+        )
+
+        # Detect intent and route to appropriate handler
+        intent = detect_intent(prompt)
+        
+        async def event_generator():
+            try:
+                # Handle file-based operations with clear error messages
+                if intent in ["img2img", "vision"]:
+                    error_msg = f"'{intent}' requires uploading an image file. "
+                    if intent == "img2img":
+                        error_msg += "Please use the /img2img endpoint."
+                    else:  # vision
+                        error_msg += "Please use the /vision/analyze endpoint."
+                    
+                    result = {"error": error_msg, "type": intent}
+                    
+                    # Save assistant message with error
+                    await asyncio.to_thread(
+                        lambda: supabase.table("messages").insert({
+                            "id": str(uuid.uuid4()),
+                            "conversation_id": conversation_id,
+                            "user_id": user_id,
+                            "role": "assistant",
+                            "content": json.dumps(result),
+                            "created_at": datetime.utcnow().isoformat()
+                        }).execute()
+                    )
+                    
+                    yield sse({
+                        "status": "error",
+                        "reply": result,
+                        "conversation_id": conversation_id,
+                        "user_id": user_id,
+                        "type": intent
+                    })
+                    yield sse({"type": "done"})
+                    return
+                
+                # Handle image generation
+                elif intent == "image":
+                    yield sse({"type": "starting", "message": "Generating image..."})
+                    
+                    samples = 1
+                    sample_match = re.search(r'(\d+)\s+(image|images)', prompt.lower())
+                    if sample_match:
+                        samples = min(int(sample_match.group(1)), 4)
+                    
+                    try:
+                        # Use the existing image generation handler with streaming
+                        async for chunk in image_stream_helper(prompt, samples, user_id):
+                            yield chunk
+                        
+                        yield sse({"type": "done"})
+                        return
+                    except Exception as e:
+                        logger.error(f"Image generation failed: {e}")
+                        error_result = {"error": str(e), "type": "image"}
+                        
+                        # Save error message
+                        await asyncio.to_thread(
+                            lambda: supabase.table("messages").insert({
+                                "id": str(uuid.uuid4()),
+                                "conversation_id": conversation_id,
+                                "user_id": user_id,
+                                "role": "assistant",
+                                "content": json.dumps(error_result),
+                                "created_at": datetime.utcnow().isoformat()
+                            }).execute()
+                        )
+                        
+                        yield sse({
+                            "status": "error",
+                            "reply": error_result,
+                            "conversation_id": conversation_id,
+                            "user_id": user_id,
+                            "type": "image"
+                        })
+                        yield sse({"type": "done"})
+                        return
+                
+                # Handle video generation
+                elif intent == "video":
+                    yield sse({"type": "starting", "message": "Generating video..."})
+                    
+                    samples = 1
+                    sample_match = re.search(r'(\d+)\s+(video|videos)', prompt.lower())
+                    if sample_match:
+                        samples = min(int(sample_match.group(1)), 2)
+                    
+                    try:
+                        # Use the existing video generation handler with streaming
+                        async for chunk in video_generation_handler(prompt, user_id, stream=True):
+                            yield chunk
+                        
+                        yield sse({"type": "done"})
+                        return
+                    except Exception as e:
+                        logger.error(f"Video generation failed: {e}")
+                        error_result = {"error": str(e), "type": "video"}
+                        
+                        # Save error message
+                        await asyncio.to_thread(
+                            lambda: supabase.table("messages").insert({
+                                "id": str(uuid.uuid4()),
+                                "conversation_id": conversation_id,
+                                "user_id": user_id,
+                                "role": "assistant",
+                                "content": json.dumps(error_result),
+                                "created_at": datetime.utcnow().isoformat()
+                            }).execute()
+                        )
+                        
+                        yield sse({
+                            "status": "error",
+                            "reply": error_result,
+                            "conversation_id": conversation_id,
+                            "user_id": user_id,
+                            "type": "video"
+                        })
+                        yield sse({"type": "done"})
+                        return
+                
+                # Handle code generation
+                elif intent == "code":
+                    yield sse({"type": "starting", "message": "Generating code..."})
+                    
+                    language = "python"
+                    lang_match = re.search(r'(python|javascript|java|c\+\+|c#|php|ruby|go|rust|swift|kotlin)\s+code', prompt.lower())
+                    if lang_match:
+                        language = lang_match.group(1)
+                    
+                    run_flag = "run" in prompt.lower() or "execute" in prompt.lower()
+                    
+                    try:
+                        # Generate code
+                        code_prompt = f"Write a complete {language} program to: {prompt}"
+                        payload = {
+                            "model": CHAT_MODEL,
+                            "messages": [{"role": "user", "content": code_prompt}],
+                            "max_tokens": 2048,
+                            "stream": True
+                        }
+                        
+                        full_code = ""
+                        
+                        async with httpx.AsyncClient(timeout=None) as client:
+                            async with client.stream(
+                                "POST",
+                                "https://api.groq.com/openai/v1/chat/completions",
+                                headers=get_groq_headers(),
+                                json=payload
+                            ) as resp:
+                                async for line in resp.aiter_lines():
+                                    if not line or not line.startswith("data:"):
+                                        continue
+                                    
+                                    data = line[6:].strip()
+                                    if data == "[DONE]":
+                                        break
+                                    
+                                    try:
+                                        chunk = json.loads(data)
+                                        delta = chunk["choices"][0]["delta"].get("content")
+                                        if delta:
+                                            full_code += delta
+                                            yield sse({"type": "code_chunk", "text": delta})
+                                    except Exception:
+                                        continue
+                        
+                        result = {
+                            "language": language,
+                            "generated_code": full_code,
+                            "user_id": user_id
+                        }
+                        
+                        # Run code if requested
+                        if run_flag:
+                            yield sse({"type": "progress", "message": "Running code..."})
+                            execution = await run_code_online(full_code, language)
+                            result["execution"] = execution
+                            yield sse({"type": "execution", "result": execution})
+                        
+                        try:
+                            await save_code_generation_record(user_id, language, prompt, full_code)
+                        except Exception as e:
+                            logger.error(f"Failed to save code generation record: {e}")
+                        
+                        # Save assistant message with code
+                        await asyncio.to_thread(
+                            lambda: supabase.table("messages").insert({
+                                "id": str(uuid.uuid4()),
+                                "conversation_id": conversation_id,
+                                "user_id": user_id,
+                                "role": "assistant",
+                                "content": json.dumps(result),
+                                "created_at": datetime.utcnow().isoformat()
+                            }).execute()
+                        )
+                        
+                        yield sse({
+                            "status": "completed",
+                            "reply": result,
+                            "conversation_id": conversation_id,
+                            "user_id": user_id,
+                            "type": "code"
+                        })
+                        yield sse({"type": "done"})
+                        return
+                    except Exception as e:
+                        logger.error(f"Code generation failed: {e}")
+                        error_result = {"error": str(e), "type": "code"}
+                        
+                        # Save error message
+                        await asyncio.to_thread(
+                            lambda: supabase.table("messages").insert({
+                                "id": str(uuid.uuid4()),
+                                "conversation_id": conversation_id,
+                                "user_id": user_id,
+                                "role": "assistant",
+                                "content": json.dumps(error_result),
+                                "created_at": datetime.utcnow().isoformat()
+                            }).execute()
+                        )
+                        
+                        yield sse({
+                            "status": "error",
+                            "reply": error_result,
+                            "conversation_id": conversation_id,
+                            "user_id": user_id,
+                            "type": "code"
+                        })
+                        yield sse({"type": "done"})
+                        return
+                
+                # Handle web search
+                elif intent == "search":
+                    yield sse({"type": "starting", "message": "Searching..."})
+                    
+                    query = prompt
+                    if "search for" in prompt.lower():
+                        query = prompt.lower().split("search for", 1)[1].strip()
+                    elif "look up" in prompt.lower():
+                        query = prompt.lower().split("look up", 1)[1].strip()
+                    elif "find" in prompt.lower():
+                        query = prompt.lower().split("find", 1)[1].strip()
+                    
+                    try:
+                        result = await duckduckgo_search(query)
+                        
+                        # Save assistant message with search results
+                        await asyncio.to_thread(
+                            lambda: supabase.table("messages").insert({
+                                "id": str(uuid.uuid4()),
+                                "conversation_id": conversation_id,
+                                "user_id": user_id,
+                                "role": "assistant",
+                                "content": json.dumps(result),
+                                "created_at": datetime.utcnow().isoformat()
+                            }).execute()
+                        )
+                        
+                        yield sse({
+                            "status": "completed",
+                            "reply": result,
+                            "conversation_id": conversation_id,
+                            "user_id": user_id,
+                            "type": "search"
+                        })
+                        yield sse({"type": "done"})
+                        return
+                    except Exception as e:
+                        logger.error(f"Search failed: {e}")
+                        error_result = {"error": str(e), "type": "search"}
+                        
+                        # Save error message
+                        await asyncio.to_thread(
+                            lambda: supabase.table("messages").insert({
+                                "id": str(uuid.uuid4()),
+                                "conversation_id": conversation_id,
+                                "user_id": user_id,
+                                "role": "assistant",
+                                "content": json.dumps(error_result),
+                                "created_at": datetime.utcnow().isoformat()
+                            }).execute()
+                        )
+                        
+                        yield sse({
+                            "status": "error",
+                            "reply": error_result,
+                            "conversation_id": conversation_id,
+                            "user_id": user_id,
+                            "type": "search"
+                        })
+                        yield sse({"type": "done"})
+                        return
+                
+                # Handle text-to-speech
+                elif intent == "tts":
+                    yield sse({"type": "starting", "message": "Generating speech..."})
+                    
+                    text = prompt
+                    if "say" in prompt.lower():
+                        text = prompt.lower().split("say", 1)[1].strip()
+                    elif "speak" in prompt.lower():
+                        text = prompt.lower().split("speak", 1)[1].strip()
+                    elif "read" in prompt.lower():
+                        text = prompt.lower().split("read", 1)[1].strip()
+                    elif "tell me" in prompt.lower():
+                        text = prompt.lower().split("tell me", 1)[1].strip()
+                    
+                    try:
+                        headers = {
+                            "Authorization": f"Bearer {OPENAI_API_KEY}",
+                            "Content-Type": "application/json"
+                        }
+                        
+                        payload = {
+                            "model": "tts-1",
+                            "voice": "alloy",
+                            "input": text
+                        }
+                        
+                        async with httpx.AsyncClient(timeout=60) as client:
+                            r = await client.post(
+                                "https://api.openai.com/v1/audio/speech",
+                                headers=headers,
+                                json=payload
+                            )
+                            r.raise_for_status()
+                        
+                        audio_b64 = base64.b64encode(r.content).decode()
+                        
+                        result = {
+                            "text": text,
+                            "audio": audio_b64
+                        }
+                        
+                        # Save assistant message with audio
+                        await asyncio.to_thread(
+                            lambda: supabase.table("messages").insert({
+                                "id": str(uuid.uuid4()),
+                                "conversation_id": conversation_id,
+                                "user_id": user_id,
+                                "role": "assistant",
+                                "content": json.dumps(result),
+                                "created_at": datetime.utcnow().isoformat()
+                            }).execute()
+                        )
+                        
+                        yield sse({
+                            "status": "completed",
+                            "reply": result,
+                            "conversation_id": conversation_id,
+                            "user_id": user_id,
+                            "type": "tts"
+                        })
+                        yield sse({"type": "done"})
+                        return
+                    except Exception as e:
+                        logger.error(f"TTS failed: {e}")
+                        error_result = {"error": str(e), "type": "tts"}
+                        
+                        # Save error message
+                        await asyncio.to_thread(
+                            lambda: supabase.table("messages").insert({
+                                "id": str(uuid.uuid4()),
+                                "conversation_id": conversation_id,
+                                "user_id": user_id,
+                                "role": "assistant",
+                                "content": json.dumps(error_result),
+                                "created_at": datetime.utcnow().isoformat()
+                            }).execute()
+                        )
+                        
+                        yield sse({
+                            "status": "error",
+                            "reply": error_result,
+                            "conversation_id": conversation_id,
+                            "user_id": user_id,
+                            "type": "tts"
+                        })
+                        yield sse({"type": "done"})
+                        return
+                
+                # Default to chat if no specific intent detected
+                else:
+                    yield sse({"type": "starting", "message": "Thinking..."})
+                    
+                    # --- UPDATED SYSTEM PROMPT ---
+                    system_prompt = (
+                        PERSONALITY_MAP.get(personality, PERSONALITY_MAP["friendly"])
+                        + f"\nUser name: {nickname}\n"
+                        "You are a helpful AI assistant with access to a web search tool. "
+                        "For questions about recent events, specific facts you are unsure about, or any information that may be time-sensitive, use the web_search tool to find the most accurate and up-to-date information. "
+                        "Do not mention that you used a tool unless the user asks. Just provide the answer directly.\n"
+                        "Maintain memory and context.\n"
+                    )
+
+                    messages = [{"role": "system", "content": system_prompt}]
+                    for msg in history:
+                        if msg.get("role") in ["user", "assistant"] and msg.get("content"):
+                            messages.append({"role": msg["role"], "content": msg["content"]})
+
+                    messages.append({"role": "user", "content": prompt})
+                    messages = truncate_messages(messages, max_tokens=4096, completion_tokens=500)
+
+                    try:
+                        # Use our helper function that handles tool calling
+                        assistant_reply = await chat_with_tools(user_id, messages)
+                        
+                        # Stream the response character by character
+                        for char in assistant_reply:
+                            yield sse({"type": "token", "text": char})
+                            await asyncio.sleep(0.01)  # Small delay for streaming effect
+                        
+                        # Save the complete response
+                        await asyncio.to_thread(
+                            lambda: supabase.table("messages").insert({
+                                "id": str(uuid.uuid4()),
+                                "conversation_id": conversation_id,
+                                "user_id": user_id,
+                                "role": "assistant",
+                                "content": assistant_reply,
+                                "created_at": datetime.utcnow().isoformat()
+                            }).execute()
+                        )
+                        
+                        yield sse({
+                            "status": "completed",
+                            "reply": assistant_reply,
+                            "conversation_id": conversation_id,
+                            "user_id": user_id,
+                            "type": "chat"
+                        })
+                        yield sse({"type": "done"})
+                    except httpx.HTTPStatusError as e:
+                        # Handle potential errors from the API calls within the helper
+                        logger.error(f"Groq API Error during tool-enabled chat: {e.response.status_code}")
+                        try:
+                            error_details = e.response.json()
+                            error_msg = f"Groq API error: {error_details.get('error', {}).get('message', 'Unknown error from Groq')}"
+                            yield sse({"type": "error", "message": error_msg})
+                        except json.JSONDecodeError:
+                            yield sse({"type": "error", "message": f"Groq API returned an error: {e.response.status_code} - {e.response.text}"})
+                        yield sse({"type": "done"})
+                    except Exception as e:
+                        logger.error(f"An unexpected error occurred in tool-enabled chat: {e}")
+                        yield sse({"type": "error", "message": "Chat processing failed"})
+                        yield sse({"type": "done"})
+            except Exception as e:
+                logger.error(f"Error in streaming universal endpoint: {e}")
+                yield sse({"type": "error", "message": str(e)})
+                yield sse({"type": "done"})
+        
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
+    except HTTPException as e:
+        # Re-raise HTTPExceptions
+        raise e
+    except Exception as e:
+        logger.error(f"/ask/universal/stream failed: {e}")
+        raise HTTPException(status_code=500, detail="Chat processing failed")
         
 @app.post("/ask/universal")
 async def ask_universal(request: Request, response: Response):
