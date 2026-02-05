@@ -5861,6 +5861,490 @@ async def chat_with_tools(user_id: str, messages: list):
         # No tool call was needed, just return the AI's direct response
         return response_message["content"]
 
+@app.post("/ask/universal")
+async def ask_universal(request: Request, response: Response):
+    """
+    Universal endpoint that handles all types of requests (chat, image generation, video generation, etc.)
+    Returns a complete response at once (non-streaming).
+    """
+    try:
+        body = await request.json()
+        prompt = body.get("prompt", "").strip()
+        conversation_id = body.get("conversation_id")
+
+        if not prompt:
+            raise HTTPException(status_code=400, detail="prompt required")
+
+        # Get user and conversation
+        user = await get_or_create_user(request, response)
+        user_id = user.id
+
+        # Get or create conversation
+        if not conversation_id:
+            conversation_id = await asyncio.to_thread(get_or_create_conversation, user_id)
+        else:
+            conv_check = await asyncio.to_thread(
+                lambda: supabase
+                .table("conversations")
+                .select("id")
+                .eq("id", conversation_id)
+                .eq("user_id", user_id)
+                .limit(1)
+                .execute()
+            )
+
+            if not conv_check.data:
+                conversation_id = await asyncio.to_thread(get_or_create_conversation, user_id)
+
+        history = await asyncio.to_thread(load_conversation_history, user_id, limit=20)
+        profile = await asyncio.to_thread(get_user_profile, user_id)
+        personality = profile.get("personality", "friendly")
+        nickname = profile.get("nickname", f"User{user_id[:8]}")
+
+        # Save user message
+        await asyncio.to_thread(
+            lambda: supabase.table("messages").insert({
+                "id": str(uuid.uuid4()),
+                "conversation_id": conversation_id,
+                "user_id": user_id,
+                "role": "user",
+                "content": prompt,
+                "created_at": datetime.utcnow().isoformat()
+            }).execute()
+        )
+
+        await asyncio.to_thread(
+            lambda: supabase.table("conversations").update({
+            "updated_at": datetime.utcnow().isoformat()
+        }).eq("id", conversation_id).execute()
+        )
+
+        # Detect intent and route to appropriate handler
+        intent = detect_intent(prompt)
+        
+        # Handle file-based operations with clear error messages
+        if intent in ["img2img", "vision"]:
+            error_msg = f"'{intent}' requires uploading an image file. "
+            if intent == "img2img":
+                error_msg += "Please use the /img2img endpoint."
+            else:  # vision
+                error_msg += "Please use the /vision/analyze endpoint."
+            
+            result = {"error": error_msg, "type": intent}
+            
+            # Save assistant message with error
+            await asyncio.to_thread(
+                lambda: supabase.table("messages").insert({
+                    "id": str(uuid.uuid4()),
+                    "conversation_id": conversation_id,
+                    "user_id": user_id,
+                    "role": "assistant",
+                    "content": json.dumps(result),
+                    "created_at": datetime.utcnow().isoformat()
+                }).execute()
+            )
+            
+            return {
+                "status": "error",
+                "reply": result,
+                "conversation_id": conversation_id,
+                "user_id": user_id,
+                "type": intent
+            }
+        
+        # Handle image generation
+        elif intent == "image":
+            samples = 1
+            sample_match = re.search(r'(\d+)\s+(image|images)', prompt.lower())
+            if sample_match:
+                samples = min(int(sample_match.group(1)), 4)
+            
+            try:
+                result = await _generate_image_core(prompt, samples, user_id, return_base64=False)
+                
+                # Save assistant message with image
+                await asyncio.to_thread(
+                    lambda: supabase.table("messages").insert({
+                        "id": str(uuid.uuid4()),
+                        "conversation_id": conversation_id,
+                        "user_id": user_id,
+                        "role": "assistant",
+                        "content": json.dumps(result),
+                        "created_at": datetime.utcnow().isoformat()
+                    }).execute()
+                )
+                
+                return {
+                    "status": "completed",
+                    "reply": result,
+                    "conversation_id": conversation_id,
+                    "user_id": user_id,
+                    "type": "image"
+                }
+            except Exception as e:
+                logger.error(f"Image generation failed: {e}")
+                error_result = {"error": str(e), "type": "image"}
+                
+                # Save error message
+                await asyncio.to_thread(
+                    lambda: supabase.table("messages").insert({
+                        "id": str(uuid.uuid4()),
+                        "conversation_id": conversation_id,
+                        "user_id": user_id,
+                        "role": "assistant",
+                        "content": json.dumps(error_result),
+                        "created_at": datetime.utcnow().isoformat()
+                    }).execute()
+                )
+                
+                return {
+                    "status": "error",
+                    "reply": error_result,
+                    "conversation_id": conversation_id,
+                    "user_id": user_id,
+                    "type": "image"
+                }
+        
+        # Handle video generation
+        elif intent == "video":
+            samples = 1
+            sample_match = re.search(r'(\d+)\s+(video|videos)', prompt.lower())
+            if sample_match:
+                samples = min(int(sample_match.group(1)), 2)
+            
+            try:
+                result = await generate_video_internal(prompt, samples, user_id)
+                
+                # Save assistant message with video
+                await asyncio.to_thread(
+                    lambda: supabase.table("messages").insert({
+                        "id": str(uuid.uuid4()),
+                        "conversation_id": conversation_id,
+                        "user_id": user_id,
+                        "role": "assistant",
+                        "content": json.dumps(result),
+                        "created_at": datetime.utcnow().isoformat()
+                    }).execute()
+                )
+                
+                return {
+                    "status": "completed",
+                    "reply": result,
+                    "conversation_id": conversation_id,
+                    "user_id": user_id,
+                    "type": "video"
+                }
+            except Exception as e:
+                logger.error(f"Video generation failed: {e}")
+                error_result = {"error": str(e), "type": "video"}
+                
+                # Save error message
+                await asyncio.to_thread(
+                    lambda: supabase.table("messages").insert({
+                        "id": str(uuid.uuid4()),
+                        "conversation_id": conversation_id,
+                        "user_id": user_id,
+                        "role": "assistant",
+                        "content": json.dumps(error_result),
+                        "created_at": datetime.utcnow().isoformat()
+                    }).execute()
+                )
+                
+                return {
+                    "status": "error",
+                    "reply": error_result,
+                    "conversation_id": conversation_id,
+                    "user_id": user_id,
+                    "type": "video"
+                }
+        
+        # Handle code generation
+        elif intent == "code":
+            language = "python"
+            lang_match = re.search(r'(python|javascript|java|c\+\+|c#|php|ruby|go|rust|swift|kotlin)\s+code', prompt.lower())
+            if lang_match:
+                language = lang_match.group(1)
+            
+            run_flag = "run" in prompt.lower() or "execute" in prompt.lower()
+            
+            try:
+                code_prompt = f"Write a complete {language} program to: {prompt}"
+                payload = {
+                    "model": CHAT_MODEL,
+                    "messages": [{"role": "user", "content": code_prompt}],
+                    "max_tokens": 2048
+                }
+                
+                async with httpx.AsyncClient(timeout=60) as client:
+                    r = await client.post(
+                        "https://api.groq.com/openai/v1/chat/completions",
+                        headers=get_groq_headers(),
+                        json=payload
+                    )
+                    r.raise_for_status()
+                    code = r.json()["choices"][0]["message"]["content"]
+                
+                result = {
+                    "language": language,
+                    "generated_code": code,
+                    "user_id": user_id
+                }
+                
+                if run_flag:
+                    # FIXED: Use the free online code executor instead of Judge0
+                    execution = await run_code_online(code, language)
+                    result["execution"] = execution
+                
+                try:
+                    await save_code_generation_record(user_id, language, prompt, code)
+                except Exception as e:
+                    logger.error(f"Failed to save code generation record: {e}")
+                
+                # Save assistant message with code
+                await asyncio.to_thread(
+                    lambda: supabase.table("messages").insert({
+                        "id": str(uuid.uuid4()),
+                        "conversation_id": conversation_id,
+                        "user_id": user_id,
+                        "role": "assistant",
+                        "content": json.dumps(result),
+                        "created_at": datetime.utcnow().isoformat()
+                    }).execute()
+                )
+                
+                return {
+                    "status": "completed",
+                    "reply": result,
+                    "conversation_id": conversation_id,
+                    "user_id": user_id,
+                    "type": "code"
+                }
+            except Exception as e:
+                logger.error(f"Code generation failed: {e}")
+                error_result = {"error": str(e), "type": "code"}
+                
+                # Save error message
+                await asyncio.to_thread(
+                    lambda: supabase.table("messages").insert({
+                        "id": str(uuid.uuid4()),
+                        "conversation_id": conversation_id,
+                        "user_id": user_id,
+                        "role": "assistant",
+                        "content": json.dumps(error_result),
+                        "created_at": datetime.utcnow().isoformat()
+                    }).execute()
+                )
+                
+                return {
+                    "status": "error",
+                    "reply": error_result,
+                    "conversation_id": conversation_id,
+                    "user_id": user_id,
+                    "type": "code"
+                }
+        
+        # Handle web search
+        elif intent == "search":
+            query = prompt
+            if "search for" in prompt.lower():
+                query = prompt.lower().split("search for", 1)[1].strip()
+            elif "look up" in prompt.lower():
+                query = prompt.lower().split("look up", 1)[1].strip()
+            elif "find" in prompt.lower():
+                query = prompt.lower().split("find", 1)[1].strip()
+            
+            try:
+                result = await duckduckgo_search(query)
+                
+                # Save assistant message with search results
+                await asyncio.to_thread(
+                    lambda: supabase.table("messages").insert({
+                        "id": str(uuid.uuid4()),
+                        "conversation_id": conversation_id,
+                        "user_id": user_id,
+                        "role": "assistant",
+                        "content": json.dumps(result),
+                        "created_at": datetime.utcnow().isoformat()
+                    }).execute()
+                )
+                
+                return {
+                    "status": "completed",
+                    "reply": result,
+                    "conversation_id": conversation_id,
+                    "user_id": user_id,
+                    "type": "search"
+                }
+            except Exception as e:
+                logger.error(f"Search failed: {e}")
+                error_result = {"error": str(e), "type": "search"}
+                
+                # Save error message
+                await asyncio.to_thread(
+                    lambda: supabase.table("messages").insert({
+                        "id": str(uuid.uuid4()),
+                        "conversation_id": conversation_id,
+                        "user_id": user_id,
+                        "role": "assistant",
+                        "content": json.dumps(error_result),
+                        "created_at": datetime.utcnow().isoformat()
+                    }).execute()
+                )
+                
+                return {
+                    "status": "error",
+                    "reply": error_result,
+                    "conversation_id": conversation_id,
+                    "user_id": user_id,
+                    "type": "search"
+                }
+        
+        # Handle text-to-speech
+        elif intent == "tts":
+            text = prompt
+            if "say" in prompt.lower():
+                text = prompt.lower().split("say", 1)[1].strip()
+            elif "speak" in prompt.lower():
+                text = prompt.lower().split("speak", 1)[1].strip()
+            elif "read" in prompt.lower():
+                text = prompt.lower().split("read", 1)[1].strip()
+            elif "tell me" in prompt.lower():
+                text = prompt.lower().split("tell me", 1)[1].strip()
+            
+            try:
+                headers = {
+                    "Authorization": f"Bearer {OPENAI_API_KEY}",
+                    "Content-Type": "application/json"
+                }
+                
+                payload = {
+                    "model": "tts-1",
+                    "voice": "alloy",
+                    "input": text
+                }
+                
+                async with httpx.AsyncClient(timeout=60) as client:
+                    r = await client.post(
+                        "https://api.openai.com/v1/audio/speech",
+                        headers=headers,
+                        json=payload
+                    )
+                    r.raise_for_status()
+                
+                audio_b64 = base64.b64encode(r.content).decode()
+                
+                result = {
+                    "text": text,
+                    "audio": audio_b64
+                }
+                
+                # Save assistant message with audio
+                await asyncio.to_thread(
+                    lambda: supabase.table("messages").insert({
+                        "id": str(uuid.uuid4()),
+                        "conversation_id": conversation_id,
+                        "user_id": user_id,
+                        "role": "assistant",
+                        "content": json.dumps(result),
+                        "created_at": datetime.utcnow().isoformat()
+                    }).execute()
+                )
+                
+                return {
+                    "status": "completed",
+                    "reply": result,
+                    "conversation_id": conversation_id,
+                    "user_id": user_id,
+                    "type": "tts"
+                }
+            except Exception as e:
+                logger.error(f"TTS failed: {e}")
+                error_result = {"error": str(e), "type": "tts"}
+                
+                # Save error message
+                await asyncio.to_thread(
+                    lambda: supabase.table("messages").insert({
+                        "id": str(uuid.uuid4()),
+                        "conversation_id": conversation_id,
+                        "user_id": user_id,
+                        "role": "assistant",
+                        "content": json.dumps(error_result),
+                        "created_at": datetime.utcnow().isoformat()
+                    }).execute()
+                )
+                
+                return {
+                    "status": "error",
+                    "reply": error_result,
+                    "conversation_id": conversation_id,
+                    "user_id": user_id,
+                    "type": "tts"
+                }
+        
+        # Default to chat if no specific intent detected
+        else:
+            # --- UPDATED SYSTEM PROMPT ---
+            system_prompt = (
+                PERSONALITY_MAP.get(personality, PERSONALITY_MAP["friendly"])
+                + f"\nUser name: {nickname}\n"
+                "You are a helpful AI assistant with access to a web search tool. "
+                "For questions about recent events, specific facts you are unsure about, or any information that may be time-sensitive, use the web_search tool to find the most accurate and up-to-date information. "
+                "Do not mention that you used a tool unless the user asks. Just provide the answer directly.\n"
+                "Maintain memory and context.\n"
+            )
+
+            messages = [{"role": "system", "content": system_prompt}]
+            for msg in history:
+                if msg.get("role") in ["user", "assistant"] and msg.get("content"):
+                    messages.append({"role": msg["role"], "content": msg["content"]})
+
+            messages.append({"role": "user", "content": prompt})
+            messages = truncate_messages(messages, max_tokens=4096, completion_tokens=500)
+
+            try:
+                # Use our helper function that handles tool calling
+                assistant_reply = await chat_with_tools(user_id, messages)
+            except httpx.HTTPStatusError as e:
+                # Handle potential errors from the API calls within the helper
+                logger.error(f"Groq API Error during tool-enabled chat: {e.response.status_code}")
+                try:
+                    error_details = e.response.json()
+                    raise HTTPException(
+                        status_code=500, 
+                        detail=f"Groq API error: {error_details.get('error', {}).get('message', 'Unknown error from Groq')}"
+                    )
+                except json.JSONDecodeError:
+                    raise HTTPException(status_code=500, detail=f"Groq API returned an error: {e.response.status_code} - {e.response.text}")
+            except Exception as e:
+                logger.error(f"An unexpected error occurred in tool-enabled chat: {e}")
+                raise HTTPException(status_code=500, detail="Chat processing failed")
+
+            await asyncio.to_thread(
+                lambda: supabase.table("messages").insert({
+                    "id": str(uuid.uuid4()),
+                    "conversation_id": conversation_id,
+                    "user_id": user_id,
+                    "role": "assistant",
+                    "content": assistant_reply,
+                    "created_at": datetime.utcnow().isoformat()
+                }).execute()
+            )
+
+            return {
+                "status": "completed",
+                "reply": assistant_reply,
+                "conversation_id": conversation_id,
+                "user_id": user_id,
+                "type": "chat"
+            }
+
+    except HTTPException as e:
+        # Re-raise HTTPExceptions (like the one we just created)
+        raise e
+    except Exception as e:
+        logger.error(f"/ask/universal failed: {e}")
+        raise HTTPException(status_code=500, detail="Chat processing failed")
+
 @app.post("/ask/universal/stream")
 async def ask_universal_stream(request: Request, response: Response):
     """
@@ -6388,486 +6872,6 @@ async def ask_universal_stream(request: Request, response: Response):
         logger.error(f"/ask/universal/stream failed: {e}")
         raise HTTPException(status_code=500, detail="Chat processing failed")
         
-@app.post("/ask/universal")
-async def ask_universal(request: Request, response: Response):
-    try:
-        body = await request.json()
-        prompt = body.get("prompt", "").strip()
-        conversation_id = body.get("conversation_id")
-
-        if not prompt:
-            raise HTTPException(status_code=400, detail="prompt required")
-
-        # Get user and conversation
-        user = await get_or_create_user(request, response)
-        user_id = user.id
-
-        # Get or create conversation
-        if not conversation_id:
-            conversation_id = await asyncio.to_thread(get_or_create_conversation, user_id)
-        else:
-            conv_check = await asyncio.to_thread(
-                lambda: supabase
-                .table("conversations")
-                .select("id")
-                .eq("id", conversation_id)
-                .eq("user_id", user_id)
-                .limit(1)
-                .execute()
-            )
-
-            if not conv_check.data:
-                conversation_id = await asyncio.to_thread(get_or_create_conversation, user_id)
-
-        history = await asyncio.to_thread(load_conversation_history, user_id, limit=20)
-        profile = await asyncio.to_thread(get_user_profile, user_id)
-        personality = profile.get("personality", "friendly")
-        nickname = profile.get("nickname", f"User{user_id[:8]}")
-
-        # Save user message
-        await asyncio.to_thread(
-            lambda: supabase.table("messages").insert({
-                "id": str(uuid.uuid4()),
-                "conversation_id": conversation_id,
-                "user_id": user_id,
-                "role": "user",
-                "content": prompt,
-                "created_at": datetime.utcnow().isoformat()
-            }).execute()
-        )
-
-        await asyncio.to_thread(
-            lambda: supabase.table("conversations").update({
-            "updated_at": datetime.utcnow().isoformat()
-        }).eq("id", conversation_id).execute()
-        )
-
-        # Detect intent and route to appropriate handler
-        intent = detect_intent(prompt)
-        
-        # Handle file-based operations with clear error messages
-        if intent in ["img2img", "vision"]:
-            error_msg = f"'{intent}' requires uploading an image file. "
-            if intent == "img2img":
-                error_msg += "Please use the /img2img endpoint."
-            else:  # vision
-                error_msg += "Please use the /vision/analyze endpoint."
-            
-            result = {"error": error_msg, "type": intent}
-            
-            # Save assistant message with error
-            await asyncio.to_thread(
-                lambda: supabase.table("messages").insert({
-                    "id": str(uuid.uuid4()),
-                    "conversation_id": conversation_id,
-                    "user_id": user_id,
-                    "role": "assistant",
-                    "content": json.dumps(result),
-                    "created_at": datetime.utcnow().isoformat()
-                }).execute()
-            )
-            
-            return {
-                "status": "error",
-                "reply": result,
-                "conversation_id": conversation_id,
-                "user_id": user_id,
-                "type": intent
-            }
-        
-        # Handle image generation
-        elif intent == "image":
-            samples = 1
-            sample_match = re.search(r'(\d+)\s+(image|images)', prompt.lower())
-            if sample_match:
-                samples = min(int(sample_match.group(1)), 4)
-            
-            try:
-                result = await _generate_image_core(prompt, samples, user_id, return_base64=False)
-                
-                # Save assistant message with image
-                await asyncio.to_thread(
-                    lambda: supabase.table("messages").insert({
-                        "id": str(uuid.uuid4()),
-                        "conversation_id": conversation_id,
-                        "user_id": user_id,
-                        "role": "assistant",
-                        "content": json.dumps(result),
-                        "created_at": datetime.utcnow().isoformat()
-                    }).execute()
-                )
-                
-                return {
-                    "status": "completed",
-                    "reply": result,
-                    "conversation_id": conversation_id,
-                    "user_id": user_id,
-                    "type": "image"
-                }
-            except Exception as e:
-                logger.error(f"Image generation failed: {e}")
-                error_result = {"error": str(e), "type": "image"}
-                
-                # Save error message
-                await asyncio.to_thread(
-                    lambda: supabase.table("messages").insert({
-                        "id": str(uuid.uuid4()),
-                        "conversation_id": conversation_id,
-                        "user_id": user_id,
-                        "role": "assistant",
-                        "content": json.dumps(error_result),
-                        "created_at": datetime.utcnow().isoformat()
-                    }).execute()
-                )
-                
-                return {
-                    "status": "error",
-                    "reply": error_result,
-                    "conversation_id": conversation_id,
-                    "user_id": user_id,
-                    "type": "image"
-                }
-        
-        # Handle video generation
-        elif intent == "video":
-            samples = 1
-            sample_match = re.search(r'(\d+)\s+(video|videos)', prompt.lower())
-            if sample_match:
-                samples = min(int(sample_match.group(1)), 2)
-            
-            try:
-                result = await generate_video_internal(prompt, samples, user_id)
-                
-                # Save assistant message with video
-                await asyncio.to_thread(
-                    lambda: supabase.table("messages").insert({
-                        "id": str(uuid.uuid4()),
-                        "conversation_id": conversation_id,
-                        "user_id": user_id,
-                        "role": "assistant",
-                        "content": json.dumps(result),
-                        "created_at": datetime.utcnow().isoformat()
-                    }).execute()
-                )
-                
-                return {
-                    "status": "completed",
-                    "reply": result,
-                    "conversation_id": conversation_id,
-                    "user_id": user_id,
-                    "type": "video"
-                }
-            except Exception as e:
-                logger.error(f"Video generation failed: {e}")
-                error_result = {"error": str(e), "type": "video"}
-                
-                # Save error message
-                await asyncio.to_thread(
-                    lambda: supabase.table("messages").insert({
-                        "id": str(uuid.uuid4()),
-                        "conversation_id": conversation_id,
-                        "user_id": user_id,
-                        "role": "assistant",
-                        "content": json.dumps(error_result),
-                        "created_at": datetime.utcnow().isoformat()
-                    }).execute()
-                )
-                
-                return {
-                    "status": "error",
-                    "reply": error_result,
-                    "conversation_id": conversation_id,
-                    "user_id": user_id,
-                    "type": "video"
-                }
-        
-        # Handle code generation
-        elif intent == "code":
-            language = "python"
-            lang_match = re.search(r'(python|javascript|java|c\+\+|c#|php|ruby|go|rust|swift|kotlin)\s+code', prompt.lower())
-            if lang_match:
-                language = lang_match.group(1)
-            
-            run_flag = "run" in prompt.lower() or "execute" in prompt.lower()
-            
-            try:
-                code_prompt = f"Write a complete {language} program to: {prompt}"
-                payload = {
-                    "model": CHAT_MODEL,
-                    "messages": [{"role": "user", "content": code_prompt}],
-                    "max_tokens": 2048
-                }
-                
-                async with httpx.AsyncClient(timeout=60) as client:
-                    r = await client.post(
-                        "https://api.groq.com/openai/v1/chat/completions",
-                        headers=get_groq_headers(),
-                        json=payload
-                    )
-                    r.raise_for_status()
-                    code = r.json()["choices"][0]["message"]["content"]
-                
-                result = {
-                    "language": language,
-                    "generated_code": code,
-                    "user_id": user_id
-                }
-                
-                if run_flag:
-                    # FIXED: Use the free online code executor instead of Judge0
-                    execution = await run_code_online(code, language)
-                    result["execution"] = execution
-                
-                try:
-                    await save_code_generation_record(user_id, language, prompt, code)
-                except Exception as e:
-                    logger.error(f"Failed to save code generation record: {e}")
-                
-                # Save assistant message with code
-                await asyncio.to_thread(
-                    lambda: supabase.table("messages").insert({
-                        "id": str(uuid.uuid4()),
-                        "conversation_id": conversation_id,
-                        "user_id": user_id,
-                        "role": "assistant",
-                        "content": json.dumps(result),
-                        "created_at": datetime.utcnow().isoformat()
-                    }).execute()
-                )
-                
-                return {
-                    "status": "completed",
-                    "reply": result,
-                    "conversation_id": conversation_id,
-                    "user_id": user_id,
-                    "type": "code"
-                }
-            except Exception as e:
-                logger.error(f"Code generation failed: {e}")
-                error_result = {"error": str(e), "type": "code"}
-                
-                # Save error message
-                await asyncio.to_thread(
-                    lambda: supabase.table("messages").insert({
-                        "id": str(uuid.uuid4()),
-                        "conversation_id": conversation_id,
-                        "user_id": user_id,
-                        "role": "assistant",
-                        "content": json.dumps(error_result),
-                        "created_at": datetime.utcnow().isoformat()
-                    }).execute()
-                )
-                
-                return {
-                    "status": "error",
-                    "reply": error_result,
-                    "conversation_id": conversation_id,
-                    "user_id": user_id,
-                    "type": "code"
-                }
-        
-        # Handle web search
-        elif intent == "search":
-            query = prompt
-            if "search for" in prompt.lower():
-                query = prompt.lower().split("search for", 1)[1].strip()
-            elif "look up" in prompt.lower():
-                query = prompt.lower().split("look up", 1)[1].strip()
-            elif "find" in prompt.lower():
-                query = prompt.lower().split("find", 1)[1].strip()
-            
-            try:
-                result = await duckduckgo_search(query)
-                
-                # Save assistant message with search results
-                await asyncio.to_thread(
-                    lambda: supabase.table("messages").insert({
-                        "id": str(uuid.uuid4()),
-                        "conversation_id": conversation_id,
-                        "user_id": user_id,
-                        "role": "assistant",
-                        "content": json.dumps(result),
-                        "created_at": datetime.utcnow().isoformat()
-                    }).execute()
-                )
-                
-                return {
-                    "status": "completed",
-                    "reply": result,
-                    "conversation_id": conversation_id,
-                    "user_id": user_id,
-                    "type": "search"
-                }
-            except Exception as e:
-                logger.error(f"Search failed: {e}")
-                error_result = {"error": str(e), "type": "search"}
-                
-                # Save error message
-                await asyncio.to_thread(
-                    lambda: supabase.table("messages").insert({
-                        "id": str(uuid.uuid4()),
-                        "conversation_id": conversation_id,
-                        "user_id": user_id,
-                        "role": "assistant",
-                        "content": json.dumps(error_result),
-                        "created_at": datetime.utcnow().isoformat()
-                    }).execute()
-                )
-                
-                return {
-                    "status": "error",
-                    "reply": error_result,
-                    "conversation_id": conversation_id,
-                    "user_id": user_id,
-                    "type": "search"
-                }
-        
-        # Handle text-to-speech
-        elif intent == "tts":
-            text = prompt
-            if "say" in prompt.lower():
-                text = prompt.lower().split("say", 1)[1].strip()
-            elif "speak" in prompt.lower():
-                text = prompt.lower().split("speak", 1)[1].strip()
-            elif "read" in prompt.lower():
-                text = prompt.lower().split("read", 1)[1].strip()
-            elif "tell me" in prompt.lower():
-                text = prompt.lower().split("tell me", 1)[1].strip()
-            
-            try:
-                headers = {
-                    "Authorization": f"Bearer {OPENAI_API_KEY}",
-                    "Content-Type": "application/json"
-                }
-                
-                payload = {
-                    "model": "tts-1",
-                    "voice": "alloy",
-                    "input": text
-                }
-                
-                async with httpx.AsyncClient(timeout=60) as client:
-                    r = await client.post(
-                        "https://api.openai.com/v1/audio/speech",
-                        headers=headers,
-                        json=payload
-                    )
-                    r.raise_for_status()
-                
-                audio_b64 = base64.b64encode(r.content).decode()
-                
-                result = {
-                    "text": text,
-                    "audio": audio_b64
-                }
-                
-                # Save assistant message with audio
-                await asyncio.to_thread(
-                    lambda: supabase.table("messages").insert({
-                        "id": str(uuid.uuid4()),
-                        "conversation_id": conversation_id,
-                        "user_id": user_id,
-                        "role": "assistant",
-                        "content": json.dumps(result),
-                        "created_at": datetime.utcnow().isoformat()
-                    }).execute()
-                )
-                
-                return {
-                    "status": "completed",
-                    "reply": result,
-                    "conversation_id": conversation_id,
-                    "user_id": user_id,
-                    "type": "tts"
-                }
-            except Exception as e:
-                logger.error(f"TTS failed: {e}")
-                error_result = {"error": str(e), "type": "tts"}
-                
-                # Save error message
-                await asyncio.to_thread(
-                    lambda: supabase.table("messages").insert({
-                        "id": str(uuid.uuid4()),
-                        "conversation_id": conversation_id,
-                        "user_id": user_id,
-                        "role": "assistant",
-                        "content": json.dumps(error_result),
-                        "created_at": datetime.utcnow().isoformat()
-                    }).execute()
-                )
-                
-                return {
-                    "status": "error",
-                    "reply": error_result,
-                    "conversation_id": conversation_id,
-                    "user_id": user_id,
-                    "type": "tts"
-                }
-        
-        # Default to chat if no specific intent detected
-        else:
-            # --- UPDATED SYSTEM PROMPT ---
-            system_prompt = (
-                PERSONALITY_MAP.get(personality, PERSONALITY_MAP["friendly"])
-                + f"\nUser name: {nickname}\n"
-                "You are a helpful AI assistant with access to a web search tool. "
-                "For questions about recent events, specific facts you are unsure about, or any information that may be time-sensitive, use the web_search tool to find the most accurate and up-to-date information. "
-                "Do not mention that you used a tool unless the user asks. Just provide the answer directly.\n"
-                "Maintain memory and context.\n"
-            )
-
-            messages = [{"role": "system", "content": system_prompt}]
-            for msg in history:
-                if msg.get("role") in ["user", "assistant"] and msg.get("content"):
-                    messages.append({"role": msg["role"], "content": msg["content"]})
-
-            messages.append({"role": "user", "content": prompt})
-            messages = truncate_messages(messages, max_tokens=4096, completion_tokens=500)
-
-            try:
-                # Use our helper function that handles tool calling
-                assistant_reply = await chat_with_tools(user_id, messages)
-            except httpx.HTTPStatusError as e:
-                # Handle potential errors from the API calls within the helper
-                logger.error(f"Groq API Error during tool-enabled chat: {e.response.status_code}")
-                try:
-                    error_details = e.response.json()
-                    raise HTTPException(
-                        status_code=500, 
-                        detail=f"Groq API error: {error_details.get('error', {}).get('message', 'Unknown error from Groq')}"
-                    )
-                except json.JSONDecodeError:
-                    raise HTTPException(status_code=500, detail=f"Groq API returned an error: {e.response.status_code} - {e.response.text}")
-            except Exception as e:
-                logger.error(f"An unexpected error occurred in tool-enabled chat: {e}")
-                raise HTTPException(status_code=500, detail="Chat processing failed")
-
-            await asyncio.to_thread(
-                lambda: supabase.table("messages").insert({
-                    "id": str(uuid.uuid4()),
-                    "conversation_id": conversation_id,
-                    "user_id": user_id,
-                    "role": "assistant",
-                    "content": assistant_reply,
-                    "created_at": datetime.utcnow().isoformat()
-                }).execute()
-            )
-
-            return {
-                "status": "completed",
-                "reply": assistant_reply,
-                "conversation_id": conversation_id,
-                "user_id": user_id,
-                "type": "chat"
-            }
-
-    except HTTPException as e:
-        # Re-raise HTTPExceptions (like the one we just created)
-        raise e
-    except Exception as e:
-        logger.error(f"/ask/universal failed: {e}")
-        raise HTTPException(status_code=500, detail="Chat processing failed")@app.post("/ask/universal")
-
 @app.post("/message/{message_id}/edit")
 async def edit_message(
     message_id: str,
