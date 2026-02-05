@@ -48,6 +48,14 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.schedulers.base import STATE_RUNNING
+import json
+from fastapi.responses import StreamingResponse
+
+async def stream():
+    data = {"message": "hello"}
+    yield json.dumps(data)  # ✅ convert to string
+
+return StreamingResponse(stream(), media_type="application/json")
 
 app = FastAPI(
     title="ZyNaraAI1.0 Multimodal Server",
