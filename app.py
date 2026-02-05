@@ -6160,8 +6160,11 @@ async def ask_universal(request: Request, response: Response):
                         yield sse({"type": "starting", "message": "Generating video..."})
                         
                         try:
-                            # Use the existing video generation handler with streaming
-                            async for chunk in video_generation_handler(prompt, user_id, stream=True):
+                            # FIX: Await the video_generation_handler first to get the async generator
+                            video_generator = await video_generation_handler(prompt, user_id, stream=True)
+                            
+                            # Now iterate over the async generator
+                            async for chunk in video_generator:
                                 yield chunk
                             
                             yield sse({"type": "done"})
@@ -6185,7 +6188,8 @@ async def ask_universal(request: Request, response: Response):
                         }
                     )
                 else:
-                    result = await generate_video_internal(prompt, samples, user_id)
+                    # FIX: For non-streaming, also await the handler
+                    result = await video_generation_handler(prompt, user_id, stream=False)
                     
                     # Save assistant message with video
                     await save_assistant_message(json.dumps(result))
