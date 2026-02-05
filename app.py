@@ -1832,6 +1832,30 @@ def create_chart(data, chart_type, options):
         logger.error(f"Error creating chart: {e}")
         return f"<p>Error creating chart: {str(e)}</p>"
 
+# In your backend code, update the stream registration and cleanup functions
+
+async def register_stream(user_id, stream_id):
+    """Register a stream in the database with error handling"""
+    try:
+        supabase.table("active_streams").insert({
+            "user_id": user_id,
+            "stream_id": stream_id,
+            "started_at": datetime.now().isoformat()
+        }).execute()
+        return True
+    except Exception as e:
+        logger.error(f"Failed to register stream: {e}")
+        return False
+
+async def cleanup_stream(user_id):
+    """Clean up a stream from the database with error handling"""
+    try:
+        supabase.table("active_streams").delete().eq("user_id", user_id).execute()
+        return True
+    except Exception as e:
+        logger.error(f"Failed to cleanup active stream: {e}")
+        return False
+
 # Replace the run_code_judge0 function with this:
 async def run_code_online(code: str, language: str = "python", stdin: str = ""):
     """
