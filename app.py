@@ -5987,65 +5987,39 @@ async def ask_universal(request: Request, response: Response):
         if not prompt:
             raise HTTPException(status_code=400, detail="prompt required")
 
+# Correct structure
+
 try:
-    assistant_reply = await chat_with_tools(...)
-
+    assistant_reply = await chat_with_tools(user_id, messages)
 except Exception as e:
-    logger.error(f"Chat failed: {e}")
-    raise HTTPException(status_code=500, detail="Chat failed")
+    logger.error(f"Chat processing failed: {e}")
+    raise HTTPException(status_code=500, detail="Chat processing failed")
 
-# AFTER the try/except block:
+# Now, outside the try block:
 if stream:
-
     async def generator():
-        try:
-            # Send initial assistant role chunk (OpenAI style)
+        # OpenAI-style streaming
+        yield sse_json({
+            "id": f"chatcmpl-{uuid.uuid4().hex}",
+            "object": "chat.completion.chunk",
+            "choices": [{"delta": {"role": "assistant"}, "index": 0, "finish_reason": None}]
+        })
+
+        for char in assistant_reply:
             yield sse_json({
                 "id": f"chatcmpl-{uuid.uuid4().hex}",
                 "object": "chat.completion.chunk",
-                "choices": [
-                    {
-                        "delta": {"role": "assistant"},
-                        "index": 0,
-                        "finish_reason": None
-                    }
-                ]
+                "choices": [{"delta": {"content": char}, "index": 0, "finish_reason": None}]
             })
+            await asyncio.sleep(0.005)
 
-            # Stream token-by-token (or char-by-char if prebuilt)
-            for char in assistant_reply:
-                yield sse_json({
-                    "id": f"chatcmpl-{uuid.uuid4().hex}",
-                    "object": "chat.completion.chunk",
-                    "choices": [
-                        {
-                            "delta": {"content": char},
-                            "index": 0,
-                            "finish_reason": None
-                        }
-                    ]
-                })
-                await asyncio.sleep(0.005)
+        yield sse_json({
+            "id": f"chatcmpl-{uuid.uuid4().hex}",
+            "object": "chat.completion.chunk",
+            "choices": [{"delta": {}, "index": 0, "finish_reason": "stop"}]
+        })
 
-            # Send final chunk with finish_reason
-            yield sse_json({
-                "id": f"chatcmpl-{uuid.uuid4().hex}",
-                "object": "chat.completion.chunk",
-                "choices": [
-                    {
-                        "delta": {},
-                        "index": 0,
-                        "finish_reason": "stop"
-                    }
-                ]
-            })
-
-            # Send DONE marker (required for OpenAI-style clients)
-            yield sse_raw("[DONE]")
-
-        except Exception as e:
-            logger.error(f"Streaming error: {e}")
-            yield sse_raw("[DONE]")
+        yield sse_raw("[DONE]")
 
     return StreamingResponse(
         generator(),
@@ -6056,6 +6030,9 @@ if stream:
             "X-Accel-Buffering": "no"
         }
     )
+
+# Non-streaming fallback
+return create_response("completed", assistant_reply, "chat")
 
         # -------------------------
         # USER + CONVERSATION
