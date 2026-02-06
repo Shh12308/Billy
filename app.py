@@ -75,6 +75,12 @@ scheduler = AsyncIOScheduler()
 async def example_job():
     logger.info("Scheduled job running...")
 
+def sse_raw(data: str) -> str:
+    return f"data: {data}\n\n"
+
+def sse_json(data: dict) -> str:
+    return f"data: {json.dumps(data)}\n\n"
+    
 # Add jobs here if needed
 # scheduler.add_job(example_job, "interval", seconds=60)
 
@@ -5980,13 +5986,6 @@ async def ask_universal(request: Request, response: Response):
 
         if not prompt:
             raise HTTPException(status_code=400, detail="prompt required")
-
-def sse_raw(data: str) -> str:
-    return f"data: {data}\n\n"
-
-def sse_json(data: dict) -> str:
-    return f"data: {json.dumps(data)}\n\n"
-
 
 if stream:
 
