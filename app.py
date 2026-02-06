@@ -55,8 +55,6 @@ async def stream():
     data = {"message": "hello"}
     yield json.dumps(data)  # ✅ convert to string
 
-return StreamingResponse(stream(), media_type="application/json")
-
 app = FastAPI(
     title="ZyNaraAI1.0 Multimodal Server",
     redirect_slashes=False
