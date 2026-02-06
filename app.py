@@ -3230,7 +3230,7 @@ async def translate_text(prompt: str, user_id: str, stream: bool = False):
     target_lang = text_match.group(2).strip()
     
 #    // Map common language names to language codes
-lang_map = {
+        lang_map = {
     # 🌍 Global Major
     "english": "en",
     "spanish": "es",
