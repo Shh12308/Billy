@@ -5987,6 +5987,14 @@ async def ask_universal(request: Request, response: Response):
         if not prompt:
             raise HTTPException(status_code=400, detail="prompt required")
 
+try:
+    assistant_reply = await chat_with_tools(...)
+
+except Exception as e:
+    logger.error(f"Chat failed: {e}")
+    raise HTTPException(status_code=500, detail="Chat failed")
+
+# AFTER the try/except block:
 if stream:
 
     async def generator():
