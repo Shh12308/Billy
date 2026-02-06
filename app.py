@@ -6114,46 +6114,44 @@ async def ask_universal(request: Request, response: Response):
         # -------------------------
         # IMAGE GENERATION
         # -------------------------
-# In the /ask/universal endpoint, update the image generation section:
-
-elif intent == "image":
-    # Extract sample count from prompt
-    sample_match = re.search(r'(\d+)\s+(image|images)', prompt.lower())
-    if sample_match:
-        num_samples = min(int(sample_match.group(1)), 4)  # Cap at 4 images
-    else:
-        num_samples = samples  # Use provided samples or default to 1
-    
-    if stream:
-        async def event_generator():
-            yield sse({"type": "starting", "message": "Generating image..."})
-            try:
-                # Generate the image
-                result = await _generate_image_core(prompt, num_samples, user_id, return_base64=False)
+        elif intent == "image":
+            # Extract sample count from prompt
+            sample_match = re.search(r'(\d+)\s+(image|images)', prompt.lower())
+            if sample_match:
+                num_samples = min(int(sample_match.group(1)), 4)  # Cap at 4 images
+            else:
+                num_samples = samples  # Use provided samples or default to 1
+            
+            if stream:
+                async def event_generator():
+                    yield sse({"type": "starting", "message": "Generating image..."})
+                    try:
+                        # Generate the image
+                        result = await _generate_image_core(prompt, num_samples, user_id, return_base64=False)
+                        
+                        yield sse({
+                            "type": "images",
+                            "provider": result["provider"],
+                            "images": result["images"]  # Already in the correct format
+                        })
+                        yield sse({"type": "done"})
+                    except Exception as e:
+                        logger.error(f"Image generation failed: {e}")
+                        yield sse({"type": "error", "message": str(e)})
                 
-                yield sse({
-                    "type": "images",
-                    "provider": result["provider"],
-                    "images": result["images"]  # Already in the correct format
-                })
-                yield sse({"type": "done"})
-            except Exception as e:
-                logger.error(f"Image generation failed: {e}")
-                yield sse({"type": "error", "message": str(e)})
-        
-        return StreamingResponse(
-            event_generator(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no"
-            }
-        )
-    else:
-        # Non-streaming version
-        return await _generate_image_core(prompt, num_samples, user_id, return_base64=False)
-        
+                return StreamingResponse(
+                    event_generator(),
+                    media_type="text/event-stream",
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive",
+                        "X-Accel-Buffering": "no"
+                    }
+                )
+            else:
+                # Non-streaming version
+                return await _generate_image_core(prompt, num_samples, user_id, return_base64=False)
+                
         # -------------------------
         # VIDEO GENERATION
         # -------------------------
@@ -6161,13 +6159,15 @@ elif intent == "image":
             # Extract sample count from prompt
             sample_match = re.search(r'(\d+)\s+(video|videos)', prompt.lower())
             if sample_match:
-                samples = min(int(sample_match.group(1)), 2)  # Cap at 2 videos
+                num_samples = min(int(sample_match.group(1)), 2)  # Cap at 2 videos
+            else:
+                num_samples = 1  # Default to 1 video
             
             if stream:
                 async def event_generator():
                     yield sse({"type": "starting", "message": "Generating video..."})
                     try:
-                        result = await generate_video_internal(prompt, samples, user_id)
+                        result = await generate_video_internal(prompt, num_samples, user_id)
                         yield sse({
                             "type": "videos",
                             "provider": result["provider"],
@@ -6189,7 +6189,7 @@ elif intent == "image":
                 )
             else:
                 # Non-streaming version
-                return await generate_video_internal(prompt, samples, user_id)
+                return await generate_video_internal(prompt, num_samples, user_id)
 
         # -------------------------
         # VISION ANALYSIS
