@@ -6000,10 +6000,16 @@ async def ask_universal(request: Request, response: Response):
         user = await get_or_create_user(request, response)
         user_id = user.id
 
-        if not conversation_id:
-            conversation_id = await asyncio.to_thread(
-                get_or_create_conversation, user_id
-            )
+        # Validate and potentially fix the conversation_id
+        if conversation_id:
+            # Check if it's a valid UUID
+            uuid_pattern = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$', re.IGNORECASE)
+            if not uuid_pattern.match(conversation_id):
+                # Invalid UUID, generate a new one
+                conversation_id = str(uuid.uuid4())
+        else:
+            # No conversation_id provided, create a new one
+            conversation_id = str(uuid.uuid4())
 
         # -------------------------
         # SAVE USER MESSAGE
