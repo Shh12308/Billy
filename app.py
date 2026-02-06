@@ -562,18 +562,25 @@ async def test_image_url(image_path: str):
 
 async def generate_video_internal(prompt: str, samples: int = 1, user_id: str = None) -> dict:
     """
-    Generate videos using Stability AI and Hugging Face
+    Generate videos using available video generation APIs
     """
     # Check for available video generation APIs
     STABILITY_API_KEY = os.getenv("STABILITY_API_KEY")
     HF_API_KEY = os.getenv("HF_API_KEY")
     
-    # Try Stability AI first (usually higher quality)
+    # Try Stability AI first (image-to-video approach)
+    if STABILITY_API_KEY:
+        try:
+            return await generate_video_stability_img2vid(prompt, samples, user_id)
+        except HTTPException as e:
+            logger.warning(f"Stability AI img2vid failed: {e.detail}")
+    
+    # Try direct Stability AI text-to-video
     if STABILITY_API_KEY:
         try:
             return await generate_video_stability(prompt, samples, user_id)
         except HTTPException as e:
-            logger.warning(f"Stability AI video generation failed: {e.detail}")
+            logger.warning(f"Stability AI text-to-video failed: {e.detail}")
     
     # Try Hugging Face as fallback
     if HF_API_KEY:
@@ -585,9 +592,10 @@ async def generate_video_internal(prompt: str, samples: int = 1, user_id: str = 
     # If all APIs fail, use placeholder
     return await generate_placeholder_video(prompt, samples, user_id)
     
-async def generate_video_stability(prompt: str, samples: int = 1, user_id: str = None) -> dict:
+aasync def generate_video_stability_img2vid(prompt: str, samples: int = 1, user_id: str = None) -> dict:
     """
-    Generate videos using Stability AI's video generation API
+    Generate videos using Stability AI's image-to-video API
+    First generates an image, then converts to video
     """
     STABILITY_API_KEY = os.getenv("STABILITY_API_KEY")
     if not STABILITY_API_KEY:
@@ -598,109 +606,139 @@ async def generate_video_stability(prompt: str, samples: int = 1, user_id: str =
     
     for i in range(samples):
         try:
-            # Prepare the API request
-            headers = {
+            # Step 1: Generate an image from the prompt
+            image_headers = {
                 "Authorization": f"Bearer {STABILITY_API_KEY}",
                 "content-type": "application/json",
                 "accept": "application/json"
             }
             
-            # Use the correct endpoint for Stable Video Diffusion
-            payload = {
+            image_payload = {
                 "prompt": prompt,
+                "samples": 1,
                 "seed": random.randint(0, 4294967295),
+                "steps": 30,
                 "cfg_scale": 7.0,
-                "motion_bucket_id": 40
+                "width": 1024,
+                "height": 576,  # 16:9 aspect ratio
+                "output_format": "png"
             }
             
-            # Submit the request
             async with httpx.AsyncClient(timeout=120.0) as client:
-                # Try the latest Stable Video Diffusion endpoint
-                response = await client.post(
-                    "https://api.stability.ai/v1/generation/stable-video-diffusion/text-to-video",
-                    headers=headers,
-                    json=payload
+                # Generate image
+                image_response = await client.post(
+                    "https://api.stability.ai/v1/generation/stable-diffusion-xl-1024-v1-0/text-to-image",
+                    headers=image_headers,
+                    json=image_payload
                 )
                 
-                # If that fails, try the v2beta endpoint
-                if response.status_code == 404:
-                    response = await client.post(
-                        "https://api.stability.ai/v2beta/generate/video",
-                        headers=headers,
-                        json=payload
-                    )
+                if image_response.status_code != 200:
+                    logger.error(f"Image generation failed: {image_response.status_code}")
+                    continue
                 
-                # If still failing, try the older endpoint
-                if response.status_code == 404:
-                    response = await client.post(
-                        "https://api.stability.ai/v2beta/image-to-video",
-                        headers=headers,
-                        json=payload
-                    )
+                image_result = image_response.json()
                 
-                # If all endpoints fail, fall back to placeholder
-                if response.status_code == 404:
-                    logger.warning("Stability AI video generation endpoint not found, using placeholder")
-                    return await generate_placeholder_video(prompt, samples, user_id)
+                # Get the image URL
+                image_url = None
+                if "artifacts" in image_result:
+                    image_url = image_result["artifacts"][0]["base64"]
+                    # Decode base64 image
+                    import base64
+                    image_data = base64.b64decode(image_url)
+                else:
+                    logger.error("No image in response")
+                    continue
                 
-                response.raise_for_status()
-                result = response.json()
+                # Step 2: Convert image to video
+                video_headers = {
+                    "Authorization": f"Bearer {STABILITY_API_KEY}",
+                    "content-type": "application/json",
+                    "accept": "application/json"
+                }
                 
-                # Handle different response formats
-                if "id" in result:
-                    # Async generation - need to poll for result
-                    generation_id = result.get("id")
-                    
-                    # Poll for completion
+                # Save image to temporary file
+                with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as temp_file:
+                    temp_file.write(image_data)
+                    temp_path = temp_file.name
+                
+                # Upload image to get a URL
+                image_filename = f"temp_{uuid.uuid4().hex[:8]}.png"
+                image_storage_path = f"temp/{image_filename}"
+                
+                supabase.storage.from_("ai-images").upload(
+                    path=image_storage_path,
+                    file=image_data,
+                    file_options={"content-type": "image/png"}
+                )
+                
+                # Get public URL for the image
+                image_public_url = get_public_url("ai-images", image_storage_path)
+                
+                # Now convert to video
+                video_payload = {
+                    "image": image_public_url,
+                    "seed": random.randint(0, 4294967295),
+                    "cfg_scale": 7.0,
+                    "motion_bucket_id": 40
+                }
+                
+                video_response = await client.post(
+                    "https://api.stability.ai/v2beta/image-to-video",
+                    headers=video_headers,
+                    json=video_payload
+                )
+                
+                if video_response.status_code != 200:
+                    logger.error(f"Video generation failed: {video_response.status_code}")
+                    # Clean up temp image
+                    try:
+                        supabase.storage.from_("ai-images").remove([image_storage_path])
+                    except:
+                        pass
+                    continue
+                
+                video_result = video_response.json()
+                
+                # Handle the video result
+                if "id" in video_result:
+                    # Poll for result
+                    generation_id = video_result.get("id")
                     video_url = None
-                    max_attempts = 60  # Maximum polling attempts (5 minutes)
+                    max_attempts = 60
                     
                     for attempt in range(max_attempts):
-                        # Check generation status
                         status_response = await client.get(
-                            f"https://api.stability.ai/v1/generation/stable-video-diffusion/result/{generation_id}",
-                            headers=headers
+                            f"https://api.stability.ai/v2beta/result/{generation_id}",
+                            headers=video_headers
                         )
                         
-                        if status_response.status_code == 404:
-                            # Try alternative status endpoint
-                            status_response = await client.get(
-                                f"https://api.stability.ai/v2beta/result/{generation_id}",
-                                headers=headers
-                            )
-                        
-                        status_response.raise_for_status()
-                        status_data = status_response.json()
-                        
-                        status = status_data.get("status")
-                        
-                        if status == "completed":
-                            video_url = status_data.get("video")
-                            break
-                        elif status == "failed":
-                            error_message = status_data.get("error", "Unknown error")
-                            raise HTTPException(500, f"Video generation failed: {error_message}")
-                        
-                        # Wait before polling again
-                        await asyncio.sleep(5)
+                        if status_response.status_code == 200:
+                            status_data = status_response.json()
+                            status = status_data.get("status")
+                            
+                            if status == "completed":
+                                video_url = status_data.get("video")
+                                break
+                            elif status == "failed":
+                                break
+                            
+                            await asyncio.sleep(5)
                     
                     if not video_url:
-                        raise HTTPException(500, "Video generation timed out")
-                elif "video" in result:
-                    # Direct video URL in response
-                    video_url = result.get("video")
-                elif "output" in result and isinstance(result["output"], dict):
-                    # Nested output structure
-                    video_url = result["output"].get("video")
+                        logger.error("Video generation timed out")
+                        continue
                 else:
-                    # Unexpected response format
-                    logger.error(f"Unexpected response format from Stability AI: {result}")
-                    return await generate_placeholder_video(prompt, samples, user_id)
+                    # Direct video URL
+                    video_url = video_result.get("video")
+                
+                if not video_url:
+                    logger.error("No video URL found")
+                    continue
                 
                 # Download the video
-                video_response = await client.get(video_url)
-                video_response.raise_for_status()
-                video_bytes = video_response.content
+                video_download_response = await client.get(video_url)
+                video_download_response.raise_for_status()
+                video_bytes = video_download_response.content
                 
                 # Upload to Supabase
                 filename = f"{uuid.uuid4().hex[:8]}.mp4"
@@ -719,7 +757,7 @@ async def generate_video_stability(prompt: str, samples: int = 1, user_id: str =
                         "user_id": user_id,
                         "video_path": storage_path,
                         "prompt": prompt,
-                        "provider": "stability-ai",
+                        "provider": "stability-ai-img2vid",
                         "created_at": datetime.now().isoformat()
                     }).execute()
                 except Exception as e:
@@ -729,16 +767,21 @@ async def generate_video_stability(prompt: str, samples: int = 1, user_id: str =
                 public_url = get_public_url("ai-videos", storage_path)
                 urls.append(public_url)
                 
+                # Clean up temp image
+                try:
+                    supabase.storage.from_("ai-images").remove([image_storage_path])
+                except:
+                    pass
+                
         except Exception as e:
             logger.error(f"Video generation failed: {e}")
-            # Continue with other samples if one fails
             continue
     
     if not urls:
         return await generate_placeholder_video(prompt, samples, user_id)
     
     return {
-        "provider": "stability-ai",
+        "provider": "stability-ai-img2vid",
         "videos": [{"url": url, "type": "video/mp4"} for url in urls]
     }
     
@@ -8198,6 +8241,59 @@ async def generate_video_stream(req: Request, res: Response):
             "X-Accel-Buffering": "no"
         }
     )
+
+@app.get("/debug/stability")
+async def debug_stability():
+    """Debug endpoint to test Stability AI API"""
+    STABILITY_API_KEY = os.getenv("STABILITY_API_KEY")
+    if not STABILITY_API_KEY:
+        return {"error": "STABILITY_API_KEY not configured"}
+    
+    headers = {
+        "Authorization": f"Bearer {STABILITY_API_KEY}",
+        "content-type": "application/json",
+    }
+    
+    # Test account info
+    async with httpx.AsyncClient(timeout=30) as client:
+        try:
+            response = await client.get(
+                "https://api.stability.ai/v1/user/account",
+                headers=headers
+            )
+            account_info = response.json() if response.status_code == 200 else {"error": response.text}
+            
+            # Test available endpoints
+            endpoints_to_test = [
+                "https://api.stability.ai/v2beta/image-to-video",
+                "https://api.stability.ai/v2beta/text-to-video",
+                "https://api.stability.ai/v1/generation/stable-video-diffusion/text-to-video",
+                "https://api.stability.ai/v2alpha/generation/stable-video-diffusion/text-to-video"
+            ]
+            
+            endpoint_status = {}
+            for endpoint in endpoints_to_test:
+                try:
+                    test_response = await client.post(
+                        endpoint,
+                        headers=headers,
+                        json={"prompt": "test"}
+                    )
+                    endpoint_status[endpoint] = {
+                        "status": test_response.status_code,
+                        "available": test_response.status_code != 404
+                    }
+                except Exception as e:
+                    endpoint_status[endpoint] = {
+                        "error": str(e)
+                    }
+            
+            return {
+                "account": account_info,
+                "endpoints": endpoint_status
+            }
+        except Exception as e:
+            return {"error": str(e)}
 
 # Add missing function for prompt sanitization
 def sanitize_prompt(prompt: str) -> str:
