@@ -75,11 +75,11 @@ scheduler = AsyncIOScheduler()
 async def example_job():
     logger.info("Scheduled job running...")
 
-def sse_raw(data: str) -> str:
-    return f"data: {data}\n\n"
-
-def sse_json(data: dict) -> str:
-    return f"data: {json.dumps(data)}\n\n"
+def sse(data: dict) -> str:
+    """
+    Formats a dict as a Server-Sent Event (SSE) message.
+    """
+    return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
     
 # Add jobs here if needed
 # scheduler.add_job(example_job, "interval", seconds=60)
@@ -5194,6 +5194,79 @@ async def stop_handler(prompt: str, user_id: str, stream: bool = False):
         else:
             return {"stopped": False}
 
+
+async def chat_with_tools(user_id: str, messages: list):
+    """
+    Handles a chat conversation with tool calling capabilities.
+    Makes an initial call, checks if the AI wants to use a tool,
+    executes the tool, and then makes a final call to synthesize the answer.
+    """
+    # Initial payload with tools enabled
+    payload = {
+        "model": CHAT_MODEL,
+        "messages": messages,
+        "tools": TOOLS,  # Your existing TOOLS list (web_search, run_code)
+        "tool_choice": "auto",  # Let the AI decide when to use a tool
+        "max_tokens": 1500,
+    }
+
+    headers = get_groq_headers()
+
+    # --- First API Call ---
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.post(GROQ_URL, headers=headers, json=payload)
+        r.raise_for_status()
+        response_data = r.json()
+
+    response_message = response_data["choices"][0]["message"]
+    
+    # Check if the model wants to call a tool
+    if response_message.get("tool_calls"):
+        # Append the assistant's response (which includes the tool call request) to the message history
+        messages.append(response_message)
+
+        # Execute each tool call the AI requested
+        for tool_call in response_message["tool_calls"]:
+            function_name = tool_call["function"]["name"]
+            function_args = json.loads(tool_call["function"]["arguments"])
+
+            if function_name == "web_search":
+                # Execute the search
+                result = await duckduckgo_search(function_args["query"])
+            elif function_name == "run_code":
+                # Execute the code
+                result = await run_code_safely(function_args["task"])
+            else:
+                result = {"error": f"Unknown tool: {function_name}"}
+
+            # Append the result of the tool execution back to the message history
+            messages.append({
+                "tool_call_id": tool_call["id"],
+                "role": "tool",
+                "name": function_name,
+                "content": json.dumps(result) # Tool results must be a string
+            })
+
+        # --- Second API Call ---
+        # Now, send the entire conversation history (including the tool results) back to the AI
+        # to get the final, synthesized answer.
+        final_payload = {
+            "model": CHAT_MODEL,
+            "messages": messages,
+            "max_tokens": 1500, 
+        }
+        
+        async with httpx.AsyncClient(timeout=60) as client: # Longer timeout for the final call
+            r = await client.post(GROQ_URL, headers=headers, json=final_payload)
+            r.raise_for_status()
+            final_response_data = r.json()
+
+        return final_response_data["choices"][0]["message"]["content"]
+    else:
+        # No tool call was needed, just return the AI's direct response
+        return response_message["content"]
+
+
 async def vision_history_handler(prompt: str, user_id: str, stream: bool = False):
     """Handle getting vision history"""
     try:
@@ -5904,78 +5977,6 @@ def load_conversation_history(user_id: str, limit: int = 20):
 #// =========================================================
 #// 🚀 HELPER FUNCTION FOR TOOL-ENABLED CHAT
 #// =========================================================
-
-async def chat_with_tools(user_id: str, messages: list):
-    """
-    Handles a chat conversation with tool calling capabilities.
-    Makes an initial call, checks if the AI wants to use a tool,
-    executes the tool, and then makes a final call to synthesize the answer.
-    """
-    # Initial payload with tools enabled
-    payload = {
-        "model": CHAT_MODEL,
-        "messages": messages,
-        "tools": TOOLS,  # Your existing TOOLS list (web_search, run_code)
-        "tool_choice": "auto",  # Let the AI decide when to use a tool
-        "max_tokens": 1500,
-    }
-
-    headers = get_groq_headers()
-
-    # --- First API Call ---
-    async with httpx.AsyncClient(timeout=30) as client:
-        r = await client.post(GROQ_URL, headers=headers, json=payload)
-        r.raise_for_status()
-        response_data = r.json()
-
-    response_message = response_data["choices"][0]["message"]
-    
-    # Check if the model wants to call a tool
-    if response_message.get("tool_calls"):
-        # Append the assistant's response (which includes the tool call request) to the message history
-        messages.append(response_message)
-
-        # Execute each tool call the AI requested
-        for tool_call in response_message["tool_calls"]:
-            function_name = tool_call["function"]["name"]
-            function_args = json.loads(tool_call["function"]["arguments"])
-
-            if function_name == "web_search":
-                # Execute the search
-                result = await duckduckgo_search(function_args["query"])
-            elif function_name == "run_code":
-                # Execute the code
-                result = await run_code_safely(function_args["task"])
-            else:
-                result = {"error": f"Unknown tool: {function_name}"}
-
-            # Append the result of the tool execution back to the message history
-            messages.append({
-                "tool_call_id": tool_call["id"],
-                "role": "tool",
-                "name": function_name,
-                "content": json.dumps(result) # Tool results must be a string
-            })
-
-        # --- Second API Call ---
-        # Now, send the entire conversation history (including the tool results) back to the AI
-        # to get the final, synthesized answer.
-        final_payload = {
-            "model": CHAT_MODEL,
-            "messages": messages,
-            "max_tokens": 1500, 
-        }
-        
-        async with httpx.AsyncClient(timeout=60) as client: # Longer timeout for the final call
-            r = await client.post(GROQ_URL, headers=headers, json=final_payload)
-            r.raise_for_status()
-            final_response_data = r.json()
-
-        return final_response_data["choices"][0]["message"]["content"]
-    else:
-        # No tool call was needed, just return the AI's direct response
-        return response_message["content"]
-
 @app.post("/ask/universal")
 async def ask_universal(request: Request, response: Response):
     try:
@@ -5986,9 +5987,12 @@ async def ask_universal(request: Request, response: Response):
         prompt = body.get("prompt", "").strip()
         conversation_id = body.get("conversation_id")
         stream = body.get("stream", False)
+        files = body.get("files", [])  # Handle uploaded files
+        tts = body.get("tts", False)  # Text-to-speech flag
+        samples = max(1, int(body.get("samples", 1)))  # Number of samples for generation
 
-        if not prompt:
-            raise HTTPException(status_code=400, detail="prompt required")
+        if not prompt and not files:
+            raise HTTPException(status_code=400, detail="prompt or files required")
 
         # -------------------------
         # USER & CONVERSATION
@@ -6004,28 +6008,24 @@ async def ask_universal(request: Request, response: Response):
         # -------------------------
         # SAVE USER MESSAGE
         # -------------------------
+        message_content = prompt
+        if files:
+            # If files are provided, include them in the message
+            message_content = json.dumps({
+                "text": prompt,
+                "files": files
+            })
+
         await asyncio.to_thread(
             lambda: supabase.table("messages").insert({
                 "id": str(uuid.uuid4()),
                 "conversation_id": conversation_id,
                 "user_id": user_id,
                 "role": "user",
-                "content": prompt,
+                "content": message_content,
                 "created_at": datetime.utcnow().isoformat()
             }).execute()
         )
-
-        # -------------------------
-        # RESPONSE CREATOR
-        # -------------------------
-        def create_response(status, reply, response_type):
-            return {
-                "status": status,
-                "reply": reply,
-                "conversation_id": conversation_id,
-                "user_id": user_id,
-                "type": response_type
-            }
 
         # -------------------------
         # INTENT DETECTION
@@ -6050,7 +6050,6 @@ async def ask_universal(request: Request, response: Response):
                     for char in assistant_reply:
                         yield sse({"type": "token", "text": char})
                         await asyncio.sleep(0.005)
-                    yield sse(create_response("completed", assistant_reply, "chat"))
                     yield sse({"type": "done"})
 
                 return StreamingResponse(
@@ -6064,16 +6063,561 @@ async def ask_universal(request: Request, response: Response):
                 )
 
             # --- NON-STREAMING RESPONSE ---
-            return create_response("completed", assistant_reply, "chat")
+            return {
+                "status": "completed",
+                "reply": assistant_reply,
+                "conversation_id": conversation_id,
+                "user_id": user_id,
+                "type": "chat"
+            }
 
-        # Add other intents (image, video, etc.) below in the same pattern
-        # ...
+        # -------------------------
+        # IMAGE GENERATION
+        # -------------------------
+        elif intent == "image":
+            if stream:
+                async def event_generator():
+                    yield sse({"type": "starting", "message": "Generating image..."})
+                    try:
+                        # Extract any sample count from the prompt
+                        sample_match = re.search(r'(\d+)\s+(image|images)', prompt.lower())
+                        if sample_match:
+                            samples = min(int(sample_match.group(1)), 4)  # Cap at 4 images
+                        
+                        # Generate the image
+                        result = await _generate_image_core(prompt, samples, user_id, return_base64=False)
+                        
+                        yield sse({
+                            "type": "images",
+                            "provider": result["provider"],
+                            "images": result["images"]  # Already in the correct format
+                        })
+                        yield sse({"type": "done"})
+                    except Exception as e:
+                        logger.error(f"Image generation failed: {e}")
+                        yield sse({"type": "error", "message": str(e)})
+                
+                return StreamingResponse(
+                    event_generator(),
+                    media_type="text/event-stream",
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive",
+                        "X-Accel-Buffering": "no"
+                    }
+                )
+            else:
+                # Non-streaming version
+                sample_match = re.search(r'(\d+)\s+(image|images)', prompt.lower())
+                if sample_match:
+                    samples = min(int(sample_match.group(1)), 4)  # Cap at 4 images
+                
+                return await _generate_image_core(prompt, samples, user_id, return_base64=False)
+
+        # -------------------------
+        # VIDEO GENERATION
+        # -------------------------
+        elif intent == "video":
+            # Extract sample count from prompt
+            sample_match = re.search(r'(\d+)\s+(video|videos)', prompt.lower())
+            if sample_match:
+                samples = min(int(sample_match.group(1)), 2)  # Cap at 2 videos
+            
+            if stream:
+                async def event_generator():
+                    yield sse({"type": "starting", "message": "Generating video..."})
+                    try:
+                        result = await generate_video_internal(prompt, samples, user_id)
+                        yield sse({
+                            "type": "videos",
+                            "provider": result["provider"],
+                            "videos": result["videos"]
+                        })
+                        yield sse({"type": "done"})
+                    except Exception as e:
+                        logger.error(f"Video generation failed: {e}")
+                        yield sse({"type": "error", "message": str(e)})
+                
+                return StreamingResponse(
+                    event_generator(),
+                    media_type="text/event-stream",
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive",
+                        "X-Accel-Buffering": "no"
+                    }
+                )
+            else:
+                # Non-streaming version
+                return await generate_video_internal(prompt, samples, user_id)
+
+        # -------------------------
+        # VISION ANALYSIS
+        # -------------------------
+        elif intent == "vision" and files:
+            if not files or len(files) == 0:
+                raise HTTPException(400, "No files provided for vision analysis")
+            
+            # Get the first image file
+            image_file = files[0]
+            image_url = image_file.get("url")
+            
+            if not image_url:
+                raise HTTPException(400, "Invalid image file")
+            
+            if stream:
+                async def event_generator():
+                    yield sse({"type": "starting", "message": "Analyzing image..."})
+                    try:
+                        # Download the image from the URL
+                        async with httpx.AsyncClient(timeout=30) as client:
+                            response = await client.get(image_url)
+                            response.raise_for_status()
+                            image_bytes = response.content
+                        
+                        # Create a temporary file
+                        with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as temp_file:
+                            temp_file.write(image_bytes)
+                            temp_path = temp_file.name
+                        
+                        # Create a mock UploadFile object
+                        from fastapi import UploadFile
+                        image_upload = UploadFile(filename="image.png", file=open(temp_path, "rb"))
+                        
+                        # Analyze the image
+                        result = await vision_analyze(request, image_upload)
+                        
+                        # Clean up the temporary file
+                        os.unlink(temp_path)
+                        
+                        yield sse({
+                            "type": "vision_result",
+                            "objects": result.get("objects", []),
+                            "faces_detected": result.get("faces_detected", 0),
+                            "dominant_colors": result.get("dominant_colors", []),
+                            "image_url": result.get("image_url", ""),
+                            "annotated_image_url": result.get("annotated_image_url", "")
+                        })
+                        yield sse({"type": "done"})
+                    except Exception as e:
+                        logger.error(f"Vision analysis failed: {e}")
+                        yield sse({"type": "error", "message": str(e)})
+                
+                return StreamingResponse(
+                    event_generator(),
+                    media_type="text/event-stream",
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive",
+                        "X-Accel-Buffering": "no"
+                    }
+                )
+            else:
+                # Non-streaming version
+                # Download the image from the URL
+                async with httpx.AsyncClient(timeout=30) as client:
+                    response = await client.get(image_url)
+                    response.raise_for_status()
+                    image_bytes = response.content
+                
+                # Create a temporary file
+                with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as temp_file:
+                    temp_file.write(image_bytes)
+                    temp_path = temp_file.name
+                
+                # Create a mock UploadFile object
+                from fastapi import UploadFile
+                image_upload = UploadFile(filename="image.png", file=open(temp_path, "rb"))
+                
+                # Analyze the image
+                result = await vision_analyze(request, image_upload)
+                
+                # Clean up the temporary file
+                os.unlink(temp_path)
+                
+                return result
+
+        # -------------------------
+        # IMG2VID (IMAGE TO VIDEO)
+        # -------------------------
+        elif intent == "img2vid" and files:
+            if not files or len(files) == 0:
+                raise HTTPException(400, "No files provided for img2vid")
+            
+            # Get the first image file
+            image_file = files[0]
+            image_url = image_file.get("url")
+            
+            if not image_url:
+                raise HTTPException(400, "Invalid image file")
+            
+            # Extract duration from prompt if specified
+            duration = 4  # Default duration
+            duration_match = re.search(r'duration[:\s]+(\d+)', prompt.lower())
+            if duration_match:
+                duration = min(max(int(duration_match.group(1)), 1), 14)  # Between 1-14 seconds
+            
+            if stream:
+                async def event_generator():
+                    yield sse({"type": "starting", "message": "Creating video from image..."})
+                    try:
+                        # Download the image from the URL
+                        async with httpx.AsyncClient(timeout=30) as client:
+                            response = await client.get(image_url)
+                            response.raise_for_status()
+                            image_bytes = response.content
+                        
+                        # Create a temporary file
+                        with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as temp_file:
+                            temp_file.write(image_bytes)
+                            temp_path = temp_file.name
+                        
+                        # Create a mock UploadFile object
+                        from fastapi import UploadFile
+                        image_upload = UploadFile(filename="image.png", file=open(temp_path, "rb"))
+                        
+                        # Generate video from image
+                        result = await img2vid(request, image_upload, prompt, duration)
+                        
+                        # Clean up the temporary file
+                        os.unlink(temp_path)
+                        
+                        yield sse({
+                            "type": "video_result",
+                            "provider": result.get("provider", "runwayml-gen2-img2vid"),
+                            "video": result.get("video", {})
+                        })
+                        yield sse({"type": "done"})
+                    except Exception as e:
+                        logger.error(f"Img2vid failed: {e}")
+                        yield sse({"type": "error", "message": str(e)})
+                
+                return StreamingResponse(
+                    event_generator(),
+                    media_type="text/event-stream",
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive",
+                        "X-Accel-Buffering": "no"
+                    }
+                )
+            else:
+                # Non-streaming version
+                # Download the image from the URL
+                async with httpx.AsyncClient(timeout=30) as client:
+                    response = await client.get(image_url)
+                    response.raise_for_status()
+                    image_bytes = response.content
+                
+                # Create a temporary file
+                with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as temp_file:
+                    temp_file.write(image_bytes)
+                    temp_path = temp_file.name
+                
+                # Create a mock UploadFile object
+                from fastapi import UploadFile
+                image_upload = UploadFile(filename="image.png", file=open(temp_path, "rb"))
+                
+                # Generate video from image
+                result = await img2vid(request, image_upload, prompt, duration)
+                
+                # Clean up the temporary file
+                os.unlink(temp_path)
+                
+                return result
+
+        # -------------------------
+        # CODE GENERATION
+        # -------------------------
+        elif intent == "code":
+            # Extract language from prompt
+            language = "python"
+            lang_match = re.search(r'(python|javascript|java|c\+\+|c#|php|ruby|go|rust|swift|kotlin)\s+code', prompt.lower())
+            if lang_match:
+                language = lang_match.group(1)
+            
+            # Extract run flag
+            run_flag = "run" in prompt.lower() or "execute" in prompt.lower()
+            
+            if stream:
+                async def event_generator():
+                    yield sse({"type": "starting", "message": f"Generating {language} code..."})
+                    try:
+                        # Generate code
+                        code_prompt = f"Write a complete {language} program to: {prompt}"
+                        payload = {
+                            "model": CHAT_MODEL,
+                            "messages": [{"role": "user", "content": code_prompt}],
+                            "max_tokens": 2048
+                        }
+                        async with httpx.AsyncClient(timeout=60) as client:
+                            r = await client.post(
+                                "https://api.groq.com/openai/v1/chat/completions",
+                                headers=get_groq_headers(),
+                                json=payload
+                            )
+                            r.raise_for_status()
+                            code = r.json()["choices"][0]["message"]["content"]
+                        
+                        yield sse({
+                            "type": "code",
+                            "language": language,
+                            "code": code
+                        })
+                        
+                        # Run code if requested
+                        if run_flag:
+                            yield sse({"type": "progress", "message": "Running code..."})
+                            execution = await run_code_online(code, language)
+                            yield sse({
+                                "type": "execution",
+                                "result": execution
+                            })
+                        
+                        # Save code generation record
+                        try:
+                            supabase.table("code_generations").insert({
+                                "id": str(uuid.uuid4()),
+                                "user_id": user_id,
+                                "language": language,
+                                "prompt": prompt,
+                                "code": code,
+                                "created_at": datetime.now().isoformat()
+                            }).execute()
+                        except Exception as e:
+                            logger.error(f"Failed to save code generation record: {e}")
+                        
+                        yield sse({"type": "done"})
+                    except Exception as e:
+                        logger.error(f"Code generation failed: {e}")
+                        yield sse({"type": "error", "message": str(e)})
+                
+                return StreamingResponse(
+                    event_generator(),
+                    media_type="text/event-stream",
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive",
+                        "X-Accel-Buffering": "no"
+                    }
+                )
+            else:
+                # Non-streaming version
+                code_prompt = f"Write a complete {language} program to: {prompt}"
+                payload = {
+                    "model": CHAT_MODEL,
+                    "messages": [{"role": "user", "content": code_prompt}],
+                    "max_tokens": 2048
+                }
+                async with httpx.AsyncClient(timeout=60) as client:
+                    r = await client.post(
+                        "https://api.groq.com/openai/v1/chat/completions",
+                        headers=get_groq_headers(),
+                        json=payload
+                    )
+                    r.raise_for_status()
+                    code = r.json()["choices"][0]["message"]["content"]
+                
+                result = {
+                    "language": language,
+                    "generated_code": code,
+                    "user_id": user_id
+                }
+                
+                # Run code if requested
+                if run_flag:
+                    execution = await run_code_online(code, language)
+                    result["execution"] = execution
+                
+                # Save code generation record
+                try:
+                    supabase.table("code_generations").insert({
+                        "id": str(uuid.uuid4()),
+                        "user_id": user_id,
+                        "language": language,
+                        "prompt": prompt,
+                        "code": code,
+                        "created_at": datetime.now().isoformat()
+                    }).execute()
+                except Exception as e:
+                    logger.error(f"Failed to save code generation record: {e}")
+                
+                return result
+
+        # -------------------------
+        # WEB SEARCH
+        # -------------------------
+        elif intent == "search":
+            # Extract query from prompt
+            query = prompt
+            if "search for" in prompt.lower():
+                query = prompt.lower().split("search for", 1)[1].strip()
+            elif "look up" in prompt.lower():
+                query = prompt.lower().split("look up", 1)[1].strip()
+            elif "find" in prompt.lower():
+                query = prompt.lower().split("find", 1)[1].strip()
+            
+            if stream:
+                async def event_generator():
+                    yield sse({"type": "starting", "message": "Searching..."})
+                    try:
+                        result = await duckduckgo_search(query)
+                        yield sse({
+                            "type": "search_results",
+                            "query": query,
+                            "results": result
+                        })
+                        yield sse({"type": "done"})
+                    except Exception as e:
+                        logger.error(f"Search failed: {e}")
+                        yield sse({"type": "error", "message": str(e)})
+                
+                return StreamingResponse(
+                    event_generator(),
+                    media_type="text/event-stream",
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive",
+                        "X-Accel-Buffering": "no"
+                    }
+                )
+            else:
+                # Non-streaming version
+                return await duckduckgo_search(query)
+
+        # -------------------------
+        # TEXT-TO-SPEECH
+        # -------------------------
+        elif intent == "tts" or tts:
+            # Extract text to speak
+            text = prompt
+            if "say" in prompt.lower():
+                text = prompt.lower().split("say", 1)[1].strip()
+            elif "speak" in prompt.lower():
+                text = prompt.lower().split("speak", 1)[1].strip()
+            elif "read" in prompt.lower():
+                text = prompt.lower().split("read", 1)[1].strip()
+            
+            if stream:
+                async def event_generator():
+                    yield sse({"type": "starting", "message": "Generating speech..."})
+                    try:
+                        headers = {
+                            "Authorization": f"Bearer {OPENAI_API_KEY}",
+                            "Content-Type": "application/json"
+                        }
+                        
+                        payload = {
+                            "model": "tts-1",
+                            "voice": "alloy",
+                            "input": text
+                        }
+                        
+                        async with httpx.AsyncClient(timeout=60) as client:
+                            r = await client.post(
+                                "https://api.openai.com/v1/audio/speech",
+                                headers=headers,
+                                json=payload
+                            )
+                            r.raise_for_status()
+                        
+                        # Convert to base64
+                        audio_b64 = base64.b64encode(r.content).decode()
+                        
+                        yield sse({
+                            "type": "audio",
+                            "text": text,
+                            "audio": audio_b64
+                        })
+                        yield sse({"type": "done"})
+                    except Exception as e:
+                        logger.error(f"TTS failed: {e}")
+                        yield sse({"type": "error", "message": str(e)})
+                
+                return StreamingResponse(
+                    event_generator(),
+                    media_type="text/event-stream",
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive",
+                        "X-Accel-Buffering": "no"
+                    }
+                )
+            else:
+                # Non-streaming version
+                headers = {
+                    "Authorization": f"Bearer {OPENAI_API_KEY}",
+                    "Content-Type": "application/json"
+                }
+                
+                payload = {
+                    "model": "tts-1",
+                    "voice": "alloy",
+                    "input": text
+                }
+                
+                async with httpx.AsyncClient(timeout=60) as client:
+                    r = await client.post(
+                        "https://api.openai.com/v1/audio/speech",
+                        headers=headers,
+                        json=payload
+                    )
+                    r.raise_for_status()
+                
+                # Convert to base64
+                audio_b64 = base64.b64encode(r.content).decode()
+                
+                return {
+                    "text": text,
+                    "audio": audio_b64
+                }
+
+        # -------------------------
+        # DEFAULT: CHAT
+        # -------------------------
+        else:
+            # Default to chat for any unrecognized intent
+            messages = [{"role": "user", "content": prompt}]
+            try:
+                assistant_reply = await chat_with_tools(user_id, messages)
+            except Exception as e:
+                logger.error(f"Chat processing failed: {e}")
+                raise HTTPException(status_code=500, detail="Chat processing failed")
+
+            # --- STREAMING RESPONSE ---
+            if stream:
+                async def generator():
+                    yield sse({"type": "starting"})
+                    for char in assistant_reply:
+                        yield sse({"type": "token", "text": char})
+                        await asyncio.sleep(0.005)
+                    yield sse({"type": "done"})
+
+                return StreamingResponse(
+                    generator(),
+                    media_type="text/event-stream",
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive",
+                        "X-Accel-Buffering": "no"
+                    }
+                )
+
+            # --- NON-STREAMING RESPONSE ---
+            return {
+                "status": "completed",
+                "reply": assistant_reply,
+                "conversation_id": conversation_id,
+                "user_id": user_id,
+                "type": "chat"
+            }
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"/ask/universal failed: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
+        
         
 @app.post("/message/{message_id}/edit")
 async def edit_message(
