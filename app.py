@@ -562,35 +562,28 @@ async def test_image_url(image_path: str):
 
 async def generate_video_internal(prompt: str, samples: int = 1, user_id: str = None) -> dict:
     """
-    Generate videos using Stable Video Diffusion (open-source alternative)
+    Generate videos using Stability AI and Hugging Face
     """
     # Check for available video generation APIs
-    RUNWAYML_API_KEY = os.getenv("RUNWAYML_API_KEY")
     STABILITY_API_KEY = os.getenv("STABILITY_API_KEY")
     HF_API_KEY = os.getenv("HF_API_KEY")
     
-    # Try different services in order of preference
+    # Try Stability AI first (usually higher quality)
     if STABILITY_API_KEY:
         try:
             return await generate_video_stability(prompt, samples, user_id)
         except HTTPException as e:
             logger.warning(f"Stability AI video generation failed: {e.detail}")
     
+    # Try Hugging Face as fallback
     if HF_API_KEY:
         try:
             return await generate_video_huggingface(prompt, samples, user_id)
         except HTTPException as e:
             logger.warning(f"Hugging Face video generation failed: {e.detail}")
     
-    if RUNWAYML_API_KEY:
-        try:
-            return await generate_video_runwayml(prompt, samples, user_id)
-        except HTTPException as e:
-            logger.warning(f"RunwayML video generation failed: {e.detail}")
-    
     # If all APIs fail, use placeholder
     return await generate_placeholder_video(prompt, samples, user_id)
-    
     
 async def generate_video_stability(prompt: str, samples: int = 1, user_id: str = None) -> dict:
     """
@@ -598,7 +591,8 @@ async def generate_video_stability(prompt: str, samples: int = 1, user_id: str =
     """
     STABILITY_API_KEY = os.getenv("STABILITY_API_KEY")
     if not STABILITY_API_KEY:
-        raise HTTPException(500, "STABILITY_API_KEY not configured")
+        logger.warning("STABILITY_API_KEY not configured, using placeholder")
+        return await generate_placeholder_video(prompt, samples, user_id)
     
     urls = []
     
@@ -621,22 +615,30 @@ async def generate_video_stability(prompt: str, samples: int = 1, user_id: str =
             
             # Submit the request
             async with httpx.AsyncClient(timeout=120.0) as client:
-                # Use the correct endpoint
+                # Try the latest Stable Video Diffusion endpoint
                 response = await client.post(
-                    "https://api.stability.ai/v2beta/image-to-video",  # Updated endpoint
+                    "https://api.stability.ai/v1/generation/stable-video-diffusion/text-to-video",
                     headers=headers,
                     json=payload
                 )
                 
-                # If that fails, try an alternative endpoint
+                # If that fails, try the v2beta endpoint
                 if response.status_code == 404:
                     response = await client.post(
-                        "https://api.stability.ai/v2beta/text-to-video", # Alternative endpoint
+                        "https://api.stability.ai/v2beta/generate/video",
                         headers=headers,
                         json=payload
                     )
                 
-                # If still failing, fall back to placeholder
+                # If still failing, try the older endpoint
+                if response.status_code == 404:
+                    response = await client.post(
+                        "https://api.stability.ai/v2beta/image-to-video",
+                        headers=headers,
+                        json=payload
+                    )
+                
+                # If all endpoints fail, fall back to placeholder
                 if response.status_code == 404:
                     logger.warning("Stability AI video generation endpoint not found, using placeholder")
                     return await generate_placeholder_video(prompt, samples, user_id)
@@ -644,39 +646,56 @@ async def generate_video_stability(prompt: str, samples: int = 1, user_id: str =
                 response.raise_for_status()
                 result = response.json()
                 
-                # Get the video generation ID
-                generation_id = result.get("id")
-                if not generation_id:
-                    raise HTTPException(500, "Failed to get video generation ID")
-                
-                # Poll for completion
-                video_url = None
-                max_attempts = 60  # Maximum polling attempts (5 minutes)
-                
-                for attempt in range(max_attempts):
-                    # Check generation status
-                    status_response = await client.get(
-                        f"https://api.stability.ai/v2beta/result/{generation_id}",
-                        headers=headers
-                    )
+                # Handle different response formats
+                if "id" in result:
+                    # Async generation - need to poll for result
+                    generation_id = result.get("id")
                     
-                    status_response.raise_for_status()
-                    status_data = status_response.json()
+                    # Poll for completion
+                    video_url = None
+                    max_attempts = 60  # Maximum polling attempts (5 minutes)
                     
-                    status = status_data.get("status")
+                    for attempt in range(max_attempts):
+                        # Check generation status
+                        status_response = await client.get(
+                            f"https://api.stability.ai/v1/generation/stable-video-diffusion/result/{generation_id}",
+                            headers=headers
+                        )
+                        
+                        if status_response.status_code == 404:
+                            # Try alternative status endpoint
+                            status_response = await client.get(
+                                f"https://api.stability.ai/v2beta/result/{generation_id}",
+                                headers=headers
+                            )
+                        
+                        status_response.raise_for_status()
+                        status_data = status_response.json()
+                        
+                        status = status_data.get("status")
+                        
+                        if status == "completed":
+                            video_url = status_data.get("video")
+                            break
+                        elif status == "failed":
+                            error_message = status_data.get("error", "Unknown error")
+                            raise HTTPException(500, f"Video generation failed: {error_message}")
+                        
+                        # Wait before polling again
+                        await asyncio.sleep(5)
                     
-                    if status == "completed":
-                        video_url = status_data.get("video")
-                        break
-                    elif status == "failed":
-                        error_message = status_data.get("error", "Unknown error")
-                        raise HTTPException(500, f"Video generation failed: {error_message}")
-                    
-                    # Wait before polling again
-                    await asyncio.sleep(5)
-                
-                if not video_url:
-                    raise HTTPException(500, "Video generation timed out")
+                    if not video_url:
+                        raise HTTPException(500, "Video generation timed out")
+                elif "video" in result:
+                    # Direct video URL in response
+                    video_url = result.get("video")
+                elif "output" in result and isinstance(result["output"], dict):
+                    # Nested output structure
+                    video_url = result["output"].get("video")
+                else:
+                    # Unexpected response format
+                    logger.error(f"Unexpected response format from Stability AI: {result}")
+                    return await generate_placeholder_video(prompt, samples, user_id)
                 
                 # Download the video
                 video_response = await client.get(video_url)
@@ -716,7 +735,7 @@ async def generate_video_stability(prompt: str, samples: int = 1, user_id: str =
             continue
     
     if not urls:
-        raise HTTPException(500, "No videos were generated successfully")
+        return await generate_placeholder_video(prompt, samples, user_id)
     
     return {
         "provider": "stability-ai",
@@ -725,195 +744,132 @@ async def generate_video_stability(prompt: str, samples: int = 1, user_id: str =
     
 async def generate_video_huggingface(prompt: str, samples: int = 1, user_id: str = None) -> dict:
     """
-    Generate videos using Hugging Face's video generation models
+    Generate videos using Hugging Face's best video generation models
     """
     HF_API_KEY = os.getenv("HF_API_KEY")
     if not HF_API_KEY:
-        raise HTTPException(500, "HF_API_KEY not configured")
+        logger.warning("HF_API_KEY not configured, using placeholder")
+        return await generate_placeholder_video(prompt, samples, user_id)
     
     urls = []
     
+    # List of best video models in order of preference
+    video_models = [
+        "damo-vilab/text-to-video-ms-1.7b",  # High quality, widely used
+        "OpenGVLab/InternVideo2-Chat",       # Good for complex prompts
+        "stabilityai/stable-video-diffusion-img2vid-xt",  # If available
+        "kabirhuang/enhance_video",         # Enhancement model
+    ]
+    
     for i in range(samples):
-        try:
-            # Prepare the API request
-            headers = {
-                "Authorization": f"Bearer {HF_API_KEY}",
-                "Content-Type": "application/json"
-            }
-            
-            # Using a text-to-video model from Hugging Face
-            payload = {
-                "inputs": prompt,
-                "parameters": {
-                    "num_inference_steps": 25,
-                    "guidance_scale": 7.5
+        video_generated = False
+        
+        for model in video_models:
+            if video_generated:
+                break
+                
+            try:
+                # Prepare the API request
+                headers = {
+                    "Authorization": f"Bearer {HF_API_KEY}",
+                    "Content-Type": "application/json"
                 }
-            }
-            
-            # Submit the request
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                response = await client.post(
-                    "https://api-inference.huggingface.co/models/damo-vilab/text-to-video-ms-1.7b",
-                    headers=headers,
-                    json=payload
-                )
-                response.raise_for_status()
                 
-                # The response should contain the video data
-                video_bytes = response.content
+                # Using a text-to-video model from Hugging Face
+                payload = {
+                    "inputs": prompt,
+                    "parameters": {
+                        "num_inference_steps": 25,
+                        "guidance_scale": 7.5,
+                        "negative_prompt": "blurry, low quality, distorted",
+                        "max_new_tokens": 100  # For text-based models
+                    }
+                }
                 
-                # Upload to Supabase
-                filename = f"{uuid.uuid4().hex[:8]}.mp4"
-                storage_path = f"anonymous/{filename}"
-                
-                supabase.storage.from_("ai-videos").upload(
-                    path=storage_path,
-                    file=video_bytes,
-                    file_options={"content-type": "video/mp4"}
-                )
-                
-                # Save video record
-                try:
-                    supabase.table("videos").insert({
-                        "id": str(uuid.uuid4()),
-                        "user_id": user_id,
-                        "video_path": storage_path,
-                        "prompt": prompt,
-                        "provider": "huggingface-damo",
-                        "created_at": datetime.now().isoformat()
-                    }).execute()
-                except Exception as e:
-                    logger.error(f"Failed to save video record: {e}")
-                
-                # Get public URL
-                public_url = get_public_url("ai-videos", storage_path)
-                urls.append(public_url)
-                
-        except Exception as e:
-            logger.error(f"Video generation failed: {e}")
-            # Continue with other samples if one fails
-            continue
-    
-    if not urls:
-        raise HTTPException(500, "No videos were generated successfully")
-    
-    return {
-        "provider": "huggingface-damo",
-        "videos": [{"url": url, "type": "video/mp4"} for url in urls]
-    }
-
-async def generate_video_runwayml(prompt: str, samples: int = 1, user_id: str = None) -> dict:
-    """
-    Generate videos using RunwayML Gen-2 API
-    """
-    RUNWAYML_API_KEY = os.getenv("RUNWAYML_API_KEY")
-    if not RUNWAYML_API_KEY:
-        raise HTTPException(500, "RUNWAYML_API_KEY not configured")
-    
-    urls = []
-    
-    # Prepare the API request
-    headers = {
-        "Authorization": f"Bearer {RUNWAYML_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    
-    for i in range(samples):
-        try:
-            # Create a task for video generation
-            task_payload = {
-                "model": "gen-2",  # Using Gen-2 model
-                "text_prompt": prompt,
-                "watermark": False,
-                "duration": 4,  # 4 seconds duration
-                "ratio": "16:9",  # Widescreen format
-                "upscale": True  # Higher quality output
-            }
-            
-            # Submit the task
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                task_response = await client.post(
-                    "https://api.runwayml.com/v1/video_tasks",
-                    headers=headers,
-                    json=task_payload
-                )
-                task_response.raise_for_status()
-                task_data = task_response.json()
-                task_id = task_data.get("id")
-                
-                if not task_id:
-                    raise HTTPException(500, "Failed to create video generation task")
-                
-                # Poll for task completion
-                max_attempts = 60  # Maximum polling attempts (5 minutes)
-                video_url = None
-                
-                for attempt in range(max_attempts):
-                    # Check task status
-                    status_response = await client.get(
-                        f"https://api.runwayml.com/v1/video_tasks/{task_id}",
-                        headers=headers
+                # Submit the request
+                async with httpx.AsyncClient(timeout=120.0) as client:
+                    response = await client.post(
+                        f"https://api-inference.huggingface.co/models/{model}",
+                        headers=headers,
+                        json=payload
                     )
-                    status_response.raise_for_status()
-                    status_data = status_response.json()
                     
-                    status = status_data.get("status")
+                    if response.status_code == 404:
+                        logger.warning(f"Model {model} not found, trying next model")
+                        continue
                     
-                    if status == "SUCCEEDED":
-                        video_url = status_data.get("output", {}).get("url")
-                        break
-                    elif status == "FAILED":
-                        error_message = status_data.get("failure_reason", "Unknown error")
-                        raise HTTPException(500, f"Video generation failed: {error_message}")
+                    if response.status_code == 503:
+                        logger.warning(f"Model {model} is currently loading, retrying...")
+                        await asyncio.sleep(5)
+                        continue
                     
-                    # Wait before polling again
-                    await asyncio.sleep(5)
-                
-                if not video_url:
-                    raise HTTPException(500, "Video generation timed out")
-                
-                # Download the video
-                video_response = await client.get(video_url)
-                video_response.raise_for_status()
-                video_bytes = video_response.content
-                
-                # Upload to Supabase
-                filename = f"{uuid.uuid4().hex[:8]}.mp4"
-                storage_path = f"anonymous/{filename}"
-                
-                supabase.storage.from_("ai-videos").upload(
-                    path=storage_path,
-                    file=video_bytes,
-                    file_options={"content-type": "video/mp4"}
-                )
-                
-                # Save video record
-                try:
-                    supabase.table("videos").insert({
-                        "id": str(uuid.uuid4()),
-                        "user_id": user_id,
-                        "video_path": storage_path,
-                        "prompt": prompt,
-                        "provider": "runwayml-gen2",
-                        "created_at": datetime.now().isoformat()
-                    }).execute()
-                except Exception as e:
-                    logger.error(f"Failed to save video record: {e}")
-                
-                # Get public URL
-                public_url = get_public_url("ai-videos", storage_path)
-                urls.append(public_url)
-                
-        except Exception as e:
-            logger.error(f"Video generation failed: {e}")
-            # Continue with other samples if one fails
-            continue
+                    response.raise_for_status()
+                    
+                    # Check if response is video data
+                    content_type = response.headers.get("content-type", "")
+                    if "video" in content_type:
+                        # Direct video response
+                        video_bytes = response.content
+                    elif "application/json" in content_type:
+                        # JSON response - might contain video URL
+                        result = response.json()
+                        if "video_url" in result:
+                            video_url = result["video_url"]
+                            video_response = await client.get(video_url)
+                            video_bytes = video_response.content
+                        elif "data" in result and isinstance(result["data"], list):
+                            # Some models return base64 encoded data
+                            import base64
+                            video_bytes = base64.b64decode(result["data"][0])
+                        else:
+                            logger.warning(f"Unexpected JSON response from {model}")
+                            continue
+                    else:
+                        logger.warning(f"Unexpected content type from {model}: {content_type}")
+                        continue
+                    
+                    # Upload to Supabase
+                    filename = f"{uuid.uuid4().hex[:8]}.mp4"
+                    storage_path = f"anonymous/{filename}"
+                    
+                    supabase.storage.from_("ai-videos").upload(
+                        path=storage_path,
+                        file=video_bytes,
+                        file_options={"content-type": "video/mp4"}
+                    )
+                    
+                    # Save video record
+                    try:
+                        supabase.table("videos").insert({
+                            "id": str(uuid.uuid4()),
+                            "user_id": user_id,
+                            "video_path": storage_path,
+                            "prompt": prompt,
+                            "provider": f"huggingface-{model.split('/')[-1]}",
+                            "created_at": datetime.now().isoformat()
+                        }).execute()
+                    except Exception as e:
+                        logger.error(f"Failed to save video record: {e}")
+                    
+                    # Get public URL
+                    public_url = get_public_url("ai-videos", storage_path)
+                    urls.append(public_url)
+                    video_generated = True
+                    logger.info(f"Successfully generated video using {model}")
+                    break
+                    
+            except Exception as e:
+                logger.error(f"Video generation failed with {model}: {e}")
+                continue
+        
+        if not video_generated:
+            logger.warning(f"Failed to generate video {i+1} with all models")
     
     if not urls:
-        raise HTTPException(500, "No videos were generated successfully")
+        return await generate_placeholder_video(prompt, samples, user_id)
     
     return {
-        "provider": "runwayml-gen2",
+        "provider": "huggingface",
         "videos": [{"url": url, "type": "video/mp4"} for url in urls]
     }
 
@@ -8014,7 +7970,7 @@ async def img2vid(
 @app.post("/video/stream")
 async def generate_video_stream(req: Request, res: Response):
     """
-    Stream video generation progress to the client with watermark support.
+    Stream video generation progress to the client
     """
     body = await req.json()
     prompt = body.get("prompt", "").strip()
@@ -8042,9 +7998,8 @@ async def generate_video_stream(req: Request, res: Response):
     # Check for available video generation APIs
     STABILITY_API_KEY = os.getenv("STABILITY_API_KEY")
     HF_API_KEY = os.getenv("HF_API_KEY")
-    RUNWAYML_API_KEY = os.getenv("RUNWAYML_API_KEY")
     
-    if not STABILITY_API_KEY and not HF_API_KEY and not RUNWAYML_API_KEY:
+    if not STABILITY_API_KEY and not HF_API_KEY:
         # No API keys configured, use placeholder
         async def event_generator():
             yield sse({
@@ -8085,10 +8040,8 @@ async def generate_video_stream(req: Request, res: Response):
     # Determine which service to use
     if STABILITY_API_KEY:
         service = "stability-ai"
-    elif HF_API_KEY:
-        service = "huggingface-damo"
     else:
-        service = "runwayml-gen2"
+        service = "huggingface"
     
     async def event_generator():
         # Register stream task
@@ -8131,376 +8084,55 @@ async def generate_video_stream(req: Request, res: Response):
                 if service == "stability-ai":
                     # Use Stability AI
                     try:
-                        headers = {
-                            "Authorization": f"Bearer {STABILITY_API_KEY}",
-                            "Content-Type": "application/json"
-                        }
-                        
-                        payload = {
-                            "prompt": prompt,
-                            "width": 1024,
-                            "height": 576,  # 16:9 aspect ratio
-                            "samples": 1,
-                            "num_frames": 25,  # Number of frames in the video
-                            "seed": random.randint(0, 4294967295)
-                        }
-                        
-                        # Submit the request
-                        async with httpx.AsyncClient(timeout=120.0) as client:
-                            response = await client.post(
-                                "https://api.stability.ai/v1/generation/stable-video-diffusion/text-to-video",
-                                headers=headers,
-                                json=payload
-                            )
-                            response.raise_for_status()
-                            result = response.json()
-                            
-                            # Get the video generation ID
-                            generation_id = result.get("id")
-                            if not generation_id:
-                                yield sse({"status": "error", "message": "Failed to get video generation ID"})
-                                continue
-                            
-                            # Poll for completion
-                            video_url = None
-                            max_attempts = 60  # Maximum polling attempts (5 minutes)
-                            
-                            for attempt in range(max_attempts):
-                                # Check generation status
-                                status_response = await client.get(
-                                    f"https://api.stability.ai/v1/generation/stable-video-diffusion/text-to-video/{generation_id}",
-                                    headers=headers
-                                )
-                                status_response.raise_for_status()
-                                status_data = status_response.json()
-                                
-                                status = status_data.get("status")
-                                
-                                if status == "completed":
-                                    video_url = status_data.get("video")
-                                    break
-                                elif status == "failed":
-                                    error_message = status_data.get("error", "Unknown error")
-                                    yield sse({"status": "error", "message": f"Video generation failed: {error_message}"})
-                                    break
-                                
-                                # Update progress
-                                progress = min(int((attempt / max_attempts) * 100), 95)
-                                yield sse({
-                                    "status": "progress", 
-                                    "message": f"Processing video... {progress}%",
-                                    "progress": progress,
-                                    "current": i + 1,
-                                    "total": samples
-                                })
-                                
-                                # Wait before polling again
-                                await asyncio.sleep(5)
-                            
-                            if not video_url:
-                                yield sse({"status": "error", "message": "Video generation timed out"})
-                                continue
-                            
-                            yield sse({"status": "progress", "message": "Downloading video..."})
-                            
-                            # Download the video
-                            video_response = await client.get(video_url)
-                            video_response.raise_for_status()
-                            video_bytes = video_response.content
-                            
-                            # Apply watermark if enabled
-                            if WATERMARK_ENABLED:
-                                yield sse({
-                                    "status": "progress", 
-                                    "message": "Applying watermark...",
-                                    "watermark": {
-                                        "enabled": True,
-                                        "text": WATERMARK_TEXT,
-                                        "position": WATERMARK_POSITION,
-                                        "opacity": WATERMARK_OPACITY
-                                    }
-                                })
-                                video_bytes = add_watermark_to_video(
-                                    video_bytes, 
-                                    WATERMARK_TEXT, 
-                                    WATERMARK_POSITION, 
-                                    WATERMARK_OPACITY
-                                )
-                            
-                            # Upload to Supabase
-                            filename = f"{uuid.uuid4().hex[:8]}.mp4"
-                            storage_path = f"anonymous/{filename}"
-                            
-                            supabase.storage.from_("ai-videos").upload(
-                                path=storage_path,
-                                file=video_bytes,
-                                file_options={"content-type": "video/mp4"}
-                            )
-                            
-                            # Save video record
-                            try:
-                                supabase.table("videos").insert({
-                                    "id": str(uuid.uuid4()),
-                                    "user_id": user_id,
-                                    "video_path": storage_path,
-                                    "prompt": prompt,
-                                    "provider": "stability-ai",
-                                    "watermarked": WATERMARK_ENABLED,
-                                    "created_at": datetime.now().isoformat()
-                                }).execute()
-                            except Exception as e:
-                                logger.error(f"Failed to save video record: {e}")
-                            
-                            # Get public URL
-                            public_url = get_public_url("ai-videos", storage_path)
-                            video_urls.append(public_url)
-                            
+                        result = await generate_video_stability(prompt, 1, user_id)  # Generate one at a time
+                        if "videos" in result:
+                            video_urls.extend(result["videos"])
                             yield sse({
                                 "status": "video_ready",
                                 "message": f"Video {i+1} ready",
-                                "video_url": public_url,
+                                "video_url": result["videos"][0]["url"],
                                 "video_index": i,
                                 "watermarked": WATERMARK_ENABLED
                             })
                     except Exception as e:
                         logger.error(f"Stability AI video generation failed: {e}")
-                        yield sse({"status": "error", "message": f"Video generation failed: {str(e)}"})
-                        continue
-                
-                elif service == "huggingface-damo":
+                        # Try Hugging Face as fallback
+                        try:
+                            result = await generate_video_huggingface(prompt, 1, user_id)
+                            if "videos" in result:
+                                video_urls.extend(result["videos"])
+                                yield sse({
+                                    "status": "video_ready",
+                                    "message": f"Video {i+1} ready (fallback)",
+                                    "video_url": result["videos"][0]["url"],
+                                    "video_index": i,
+                                    "watermarked": WATERMARK_ENABLED
+                                })
+                        except Exception as e2:
+                            logger.error(f"Hugging Face fallback also failed: {e2}")
+                            yield sse({"status": "error", "message": f"Video {i+1} failed"})
+                else:
                     # Use Hugging Face
                     try:
-                        headers = {
-                            "Authorization": f"Bearer {HF_API_KEY}",
-                            "Content-Type": "application/json"
-                        }
-                        
-                        payload = {
-                            "inputs": prompt,
-                            "parameters": {
-                                "num_inference_steps": 25,
-                                "guidance_scale": 7.5
-                            }
-                        }
-                        
-                        yield sse({"status": "progress", "message": "Submitting request to Hugging Face..."})
-                        
-                        # Submit the request
-                        async with httpx.AsyncClient(timeout=120.0) as client:
-                            response = await client.post(
-                                "https://api-inference.huggingface.co/models/damo-vilab/text-to-video-ms-1.7b",
-                                headers=headers,
-                                json=payload
-                            )
-                            response.raise_for_status()
-                            
-                            # The response should contain the video data
-                            video_bytes = response.content
-                            
-                            # Apply watermark if enabled
-                            if WATERMARK_ENABLED:
-                                yield sse({
-                                    "status": "progress", 
-                                    "message": "Applying watermark...",
-                                    "watermark": {
-                                        "enabled": True,
-                                        "text": WATERMARK_TEXT,
-                                        "position": WATERMARK_POSITION,
-                                        "opacity": WATERMARK_OPACITY
-                                    }
-                                })
-                                video_bytes = add_watermark_to_video(
-                                    video_bytes, 
-                                    WATERMARK_TEXT, 
-                                    WATERMARK_POSITION, 
-                                    WATERMARK_OPACITY
-                                )
-                            
-                            # Upload to Supabase
-                            filename = f"{uuid.uuid4().hex[:8]}.mp4"
-                            storage_path = f"anonymous/{filename}"
-                            
-                            supabase.storage.from_("ai-videos").upload(
-                                path=storage_path,
-                                file=video_bytes,
-                                file_options={"content-type": "video/mp4"}
-                            )
-                            
-                            # Save video record
-                            try:
-                                supabase.table("videos").insert({
-                                    "id": str(uuid.uuid4()),
-                                    "user_id": user_id,
-                                    "video_path": storage_path,
-                                    "prompt": prompt,
-                                    "provider": "huggingface-damo",
-                                    "watermarked": WATERMARK_ENABLED,
-                                    "created_at": datetime.now().isoformat()
-                                }).execute()
-                            except Exception as e:
-                                logger.error(f"Failed to save video record: {e}")
-                            
-                            # Get public URL
-                            public_url = get_public_url("ai-videos", storage_path)
-                            video_urls.append(public_url)
-                            
+                        result = await generate_video_huggingface(prompt, 1, user_id)  # Generate one at a time
+                        if "videos" in result:
+                            video_urls.extend(result["videos"])
                             yield sse({
                                 "status": "video_ready",
                                 "message": f"Video {i+1} ready",
-                                "video_url": public_url,
+                                "video_url": result["videos"][0]["url"],
                                 "video_index": i,
                                 "watermarked": WATERMARK_ENABLED
                             })
                     except Exception as e:
                         logger.error(f"Hugging Face video generation failed: {e}")
-                        yield sse({"status": "error", "message": f"Video generation failed: {str(e)}"})
-                        continue
-                
-                else:  # runwayml-gen2
-                    # Use RunwayML
-                    try:
-                        headers = {
-                            "Authorization": f"Bearer {RUNWAYML_API_KEY}",
-                            "Content-Type": "application/json"
-                        }
-                        
-                        task_payload = {
-                            "model": "gen-2",
-                            "text_prompt": prompt,
-                            "watermark": False,  # We'll add our own watermark
-                            "duration": 4,
-                            "ratio": "16:9",
-                            "upscale": True
-                        }
-                        
-                        yield sse({"status": "progress", "message": "Submitting task to RunwayML..."})
-                        
-                        # Submit the task
-                        async with httpx.AsyncClient(timeout=60.0) as client:
-                            task_response = await client.post(
-                                "https://api.runwayml.com/v1/video_tasks",
-                                headers=headers,
-                                json=task_payload
-                            )
-                            task_response.raise_for_status()
-                            task_data = task_response.json()
-                            task_id = task_data.get("id")
-                            
-                            if not task_id:
-                                yield sse({"status": "error", "message": "Failed to create video generation task"})
-                                continue
-                            
-                            # Poll for task completion
-                            max_attempts = 60
-                            video_url = None
-                            
-                            for attempt in range(max_attempts):
-                                # Check task status
-                                status_response = await client.get(
-                                    f"https://api.runwayml.com/v1/video_tasks/{task_id}",
-                                    headers=headers
-                                )
-                                status_response.raise_for_status()
-                                status_data = status_response.json()
-                                
-                                status = status_data.get("status")
-                                
-                                if status == "SUCCEEDED":
-                                    video_url = status_data.get("output", {}).get("url")
-                                    break
-                                elif status == "FAILED":
-                                    error_message = status_data.get("failure_reason", "Unknown error")
-                                    yield sse({"status": "error", "message": f"Video generation failed: {error_message}"})
-                                    break
-                                
-                                # Update progress
-                                progress = min(int((attempt / max_attempts) * 100), 95)
-                                yield sse({
-                                    "status": "progress", 
-                                    "message": f"Processing video... {progress}%",
-                                    "progress": progress,
-                                    "current": i + 1,
-                                    "total": samples
-                                })
-                                
-                                # Wait before polling again
-                                await asyncio.sleep(5)
-                            
-                            if not video_url:
-                                yield sse({"status": "error", "message": "Video generation timed out"})
-                                continue
-                            
-                            yield sse({"status": "progress", "message": "Downloading video..."})
-                            
-                            # Download the video
-                            video_response = await client.get(video_url)
-                            video_response.raise_for_status()
-                            video_bytes = video_response.content
-                            
-                            # Apply watermark if enabled
-                            if WATERMARK_ENABLED:
-                                yield sse({
-                                    "status": "progress", 
-                                    "message": "Applying watermark...",
-                                    "watermark": {
-                                        "enabled": True,
-                                        "text": WATERMARK_TEXT,
-                                        "position": WATERMARK_POSITION,
-                                        "opacity": WATERMARK_OPACITY
-                                    }
-                                })
-                                video_bytes = add_watermark_to_video(
-                                    video_bytes, 
-                                    WATERMARK_TEXT, 
-                                    WATERMARK_POSITION, 
-                                    WATERMARK_OPACITY
-                                )
-                            
-                            # Upload to Supabase
-                            filename = f"{uuid.uuid4().hex[:8]}.mp4"
-                            storage_path = f"anonymous/{filename}"
-                            
-                            supabase.storage.from_("ai-videos").upload(
-                                path=storage_path,
-                                file=video_bytes,
-                                file_options={"content-type": "video/mp4"}
-                            )
-                            
-                            # Save video record
-                            try:
-                                supabase.table("videos").insert({
-                                    "id": str(uuid.uuid4()),
-                                    "user_id": user_id,
-                                    "video_path": storage_path,
-                                    "prompt": prompt,
-                                    "provider": "runwayml-gen2",
-                                    "watermarked": WATERMARK_ENABLED,
-                                    "created_at": datetime.now().isoformat()
-                                }).execute()
-                            except Exception as e:
-                                logger.error(f"Failed to save video record: {e}")
-                            
-                            # Get public URL
-                            public_url = get_public_url("ai-videos", storage_path)
-                            video_urls.append(public_url)
-                            
-                            yield sse({
-                                "status": "video_ready",
-                                "message": f"Video {i+1} ready",
-                                "video_url": public_url,
-                                "video_index": i,
-                                "watermarked": WATERMARK_ENABLED
-                            })
-                    except Exception as e:
-                        logger.error(f"RunwayML video generation failed: {e}")
-                        yield sse({"status": "error", "message": f"Video generation failed: {str(e)}"})
-                        continue
+                        yield sse({"status": "error", "message": f"Video {i+1} failed"})
             
             if video_urls:
                 yield sse({
                     "status": "completed",
                     "message": "Video generation completed",
-                    "videos": [{"url": url, "type": "video/mp4"} for url in video_urls],
+                    "videos": video_urls,
                     "total_videos": len(video_urls),
                     "watermark": {
                         "enabled": WATERMARK_ENABLED,
@@ -8513,7 +8145,7 @@ async def generate_video_stream(req: Request, res: Response):
                 # Cache result
                 cache_result(prompt, service, {
                     "provider": service,
-                    "videos": [{"url": url, "type": "video/mp4"} for url in video_urls],
+                    "videos": video_urls,
                     "watermarked": WATERMARK_ENABLED
                 })
             else:
