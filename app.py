@@ -6114,46 +6114,46 @@ async def ask_universal(request: Request, response: Response):
         # -------------------------
         # IMAGE GENERATION
         # -------------------------
-        elif intent == "image":
-            if stream:
-                async def event_generator():
-                    yield sse({"type": "starting", "message": "Generating image..."})
-                    try:
-                        # Extract any sample count from the prompt
-                        sample_match = re.search(r'(\d+)\s+(image|images)', prompt.lower())
-                        if sample_match:
-                            samples = min(int(sample_match.group(1)), 4)  # Cap at 4 images
-                        
-                        # Generate the image
-                        result = await _generate_image_core(prompt, samples, user_id, return_base64=False)
-                        
-                        yield sse({
-                            "type": "images",
-                            "provider": result["provider"],
-                            "images": result["images"]  # Already in the correct format
-                        })
-                        yield sse({"type": "done"})
-                    except Exception as e:
-                        logger.error(f"Image generation failed: {e}")
-                        yield sse({"type": "error", "message": str(e)})
-                
-                return StreamingResponse(
-                    event_generator(),
-                    media_type="text/event-stream",
-                    headers={
-                        "Cache-Control": "no-cache",
-                        "Connection": "keep-alive",
-                        "X-Accel-Buffering": "no"
-                    }
-                )
-            else:
-                # Non-streaming version
-                sample_match = re.search(r'(\d+)\s+(image|images)', prompt.lower())
-                if sample_match:
-                    samples = min(int(sample_match.group(1)), 4)  # Cap at 4 images
-                
-                return await _generate_image_core(prompt, samples, user_id, return_base64=False)
+# In the /ask/universal endpoint, update the image generation section:
 
+elif intent == "image":
+    # Extract sample count from prompt
+    sample_match = re.search(r'(\d+)\s+(image|images)', prompt.lower())
+    if sample_match:
+        num_samples = min(int(sample_match.group(1)), 4)  # Cap at 4 images
+    else:
+        num_samples = samples  # Use provided samples or default to 1
+    
+    if stream:
+        async def event_generator():
+            yield sse({"type": "starting", "message": "Generating image..."})
+            try:
+                # Generate the image
+                result = await _generate_image_core(prompt, num_samples, user_id, return_base64=False)
+                
+                yield sse({
+                    "type": "images",
+                    "provider": result["provider"],
+                    "images": result["images"]  # Already in the correct format
+                })
+                yield sse({"type": "done"})
+            except Exception as e:
+                logger.error(f"Image generation failed: {e}")
+                yield sse({"type": "error", "message": str(e)})
+        
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
+    else:
+        # Non-streaming version
+        return await _generate_image_core(prompt, num_samples, user_id, return_base64=False)
+        
         # -------------------------
         # VIDEO GENERATION
         # -------------------------
@@ -6742,8 +6742,7 @@ async def stop(request: Request, response: Response):
     
 #// -----------------------------
 #// Regenerate endpoint
-#// -----------------------------
-@app.post("/regenerate")
+#// -----------------------------@app.post("/regenerate")
 async def regenerate(req: Request, res: Response, tts: bool = False, samples: int = 1):
     """
     Cancel current stream (if any) and re-run the prompt as a fresh stream.
@@ -6755,21 +6754,21 @@ async def regenerate(req: Request, res: Response, tts: bool = False, samples: in
     if not prompt:
         raise HTTPException(400, "prompt required")
 
-#    // ✅ COOKIE USER
+    # Get user
     user = await get_or_create_user(req, res)
     user_id = user.id
 
- #   // ✅ CANCEL EXISTING STREAM (IF ANY)
+    # Cancel existing stream (if any)
     old_task = active_streams.get(user_id)
     if old_task and not old_task.done():
         old_task.cancel()
 
     async def event_generator():
-       # // ✅ REGISTER NEW STREAM
+        # Register new stream
         task = asyncio.current_task()
         active_streams[user_id] = task
 
-     #   // Also register in database
+        # Also register in database
         stream_id = str(uuid.uuid4())
         try:
             supabase.table("active_streams").insert({
@@ -6781,41 +6780,44 @@ async def regenerate(req: Request, res: Response, tts: bool = False, samples: in
             logger.error(f"Failed to register stream: {e}")
 
         try:
-        #    // --- IMAGE (OPTIONAL) ---
+            # Check if this is an image generation request
             if any(w in prompt.lower() for w in ("image", "draw", "illustrate", "painting", "art", "picture")):
                 try:
                     yield sse({"status": "image_start", "message": "Regenerating image"})
 
-                    img_payload = {
-                        "prompt": prompt,
-                        "samples": samples,
-                        "base64": False
-                    }
+                    # Extract sample count from prompt
+                    sample_match = re.search(r'(\d+)\s+(image|images)', prompt.lower())
+                    if sample_match:
+                        num_samples = min(int(sample_match.group(1)), 4)  # Cap at 4 images
+                    else:
+                        num_samples = samples  # Use provided samples or default to 1
 
-                    async with httpx.AsyncClient(timeout=None) as client:
-                        async with client.stream(
-                            "POST",
-                            "http://127.0.0.1:8000/image/stream",
-                            json=img_payload
-                        ) as resp:
-                            async for line in resp.aiter_lines():
-                                if line.strip():
-                                    yield line + "\n\n"
-
-                    yield sse({"status": "image_done"})
+                    # Generate images directly instead of calling another endpoint
+                    try:
+                        result = await _generate_image_core(prompt, num_samples, user_id, return_base64=False)
+                        
+                        yield sse({
+                            "type": "images",
+                            "provider": result["provider"],
+                            "images": result["images"]
+                        })
+                        yield sse({"status": "image_done"})
+                    except Exception as e:
+                        logger.error(f"Image generation failed: {e}")
+                        yield sse({"status": "image_error", "message": str(e)})
 
                 except Exception:
                     logger.exception("Image regenerate failed")
                     yield sse({"status": "image_error"})
 
-           # // --- CHAT ---
+            # Chat response
             payload = {
                 "model": CHAT_MODEL,
                 "stream": True,
                 "messages": [
                     {"role": "system", "content": safe_system_prompt(
-    build_contextual_prompt(user_id, prompt)
-)},
+                        build_contextual_prompt(user_id, prompt)
+                    )},
                     {"role": "user", "content": prompt}
                 ]
             }
@@ -6835,12 +6837,18 @@ async def regenerate(req: Request, res: Response, tts: bool = False, samples: in
                         if data == "[DONE]":
                             break
 
-                        yield sse({
-                            "status": "chat_progress",
-                            "message": data
-                        })
+                        try:
+                            chunk = json.loads(data)
+                            delta = chunk["choices"][0]["delta"].get("content")
+                            if delta:
+                                yield sse({
+                                    "status": "chat_progress",
+                                    "message": delta
+                                })
+                        except Exception:
+                            continue
 
-        #    // --- TTS (OPTIONAL) ---
+            # TTS (optional)
             if tts:
                 try:
                     tts_payload = {
@@ -6884,7 +6892,7 @@ async def regenerate(req: Request, res: Response, tts: bool = False, samples: in
             raise
 
         finally:
-       #     // ✅ CLEANUP
+            # Cleanup
             active_streams.pop(user_id, None)
             try:
                 supabase.table("active_streams").delete().eq("user_id", user_id).execute()
