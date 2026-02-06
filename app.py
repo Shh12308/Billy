@@ -2520,16 +2520,23 @@ def persist_message(user_id: str, conversation_id: str, role: str, content: str)
     except Exception as e:
         logger.error(f"Failed to persist message: {e}")
 
-def get_or_create_conversation(user_id: str) -> str:
-    """Get existing conversation or create new one"""
+async def get_or_create_conversation(user_id: str) -> str:
+    """Get existing conversation or create new one with proper UUID"""
     try:
         # Try to get most recent conversation
-        response = supabase.table("conversations").select("id").eq("user_id", user_id).order("updated_at", desc=True).limit(1).execute()
+        response = (
+            supabase.table("conversations")
+            .select("id")
+            .eq("user_id", user_id)
+            .order("updated_at", desc=True)
+            .limit(1)
+            .execute()
+        )
         
         if response.data:
             return response.data[0]["id"]
         
-        # Create new conversation
+        # Create new conversation with proper UUID
         conversation_id = str(uuid.uuid4())
         supabase.table("conversations").insert({
             "id": conversation_id,
@@ -2542,8 +2549,17 @@ def get_or_create_conversation(user_id: str) -> str:
         return conversation_id
     except Exception as e:
         logger.error(f"Failed to get or create conversation: {e}")
-        return str(uuid.uuid4())  # Fallback
+        # Return a new UUID as fallback
+        return str(uuid.uuid4()) # Fallback
 
+def is_valid_uuid(uuid_string: str) -> bool:
+    """Check if a string is a valid UUID"""
+    uuid_pattern = re.compile(
+        r'^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$', 
+        re.IGNORECASE
+    )
+    return bool(uuid_pattern.match(uuid_string))
+    
 def build_system_prompt(artifact: Union[str, None]):
     base = """
 You are a helpful AI assistant.
@@ -6012,6 +6028,35 @@ async def ask_universal(request: Request, response: Response):
             conversation_id = str(uuid.uuid4())
 
         # -------------------------
+        # ENSURE CONVERSATION EXISTS
+        # -------------------------
+        try:
+            # Check if conversation exists
+            conv_response = await asyncio.to_thread(
+                lambda: supabase.table("conversations")
+                .select("id, title")
+                .eq("id", conversation_id)
+                .execute()
+            )
+            
+            if not conv_response.data:
+                # Conversation doesn't exist, create it
+                await asyncio.to_thread(
+                    lambda: supabase.table("conversations")
+                    .insert({
+                        "id": conversation_id,
+                        "user_id": user_id,
+                        "title": prompt[:50] if len(prompt) > 50 else "New Chat",
+                        "created_at": datetime.utcnow().isoformat(),
+                        "updated_at": datetime.utcnow().isoformat()
+                    })
+                    .execute()
+                )
+        except Exception as e:
+            logger.error(f"Failed to check/create conversation: {e}")
+            # Continue anyway, the error will be caught below if needed
+
+        # -------------------------
         # SAVE USER MESSAGE
         # -------------------------
         message_content = prompt
@@ -6623,7 +6668,6 @@ async def ask_universal(request: Request, response: Response):
     except Exception as e:
         logger.error(f"/ask/universal failed: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
-        
         
 @app.post("/message/{message_id}/edit")
 async def edit_message(
