@@ -559,7 +559,7 @@ async def test_image_url(image_path: str):
             return {"url": public_url, "status": f"error: {response.status_code}"}
     except Exception as e:
         return {"url": public_url, "status": f"error: {str(e)}"}
-        
+
 async def generate_video_internal(prompt: str, samples: int = 1, user_id: str = None) -> dict:
     """
     Generate videos using Stable Video Diffusion (open-source alternative)
@@ -591,6 +591,7 @@ async def generate_video_internal(prompt: str, samples: int = 1, user_id: str = 
     # If all APIs fail, use placeholder
     return await generate_placeholder_video(prompt, samples, user_id)
     
+    
 async def generate_video_stability(prompt: str, samples: int = 1, user_id: str = None) -> dict:
     """
     Generate videos using Stability AI's video generation API
@@ -620,7 +621,7 @@ async def generate_video_stability(prompt: str, samples: int = 1, user_id: str =
             
             # Submit the request
             async with httpx.AsyncClient(timeout=120.0) as client:
-                # Try the correct endpoint
+                # Use the correct endpoint
                 response = await client.post(
                     "https://api.stability.ai/v2beta/image-to-video",  # Updated endpoint
                     headers=headers,
@@ -658,13 +659,6 @@ async def generate_video_stability(prompt: str, samples: int = 1, user_id: str =
                         f"https://api.stability.ai/v2beta/result/{generation_id}",
                         headers=headers
                     )
-                    
-                    # If that fails, try the alternative endpoint
-                    if status_response.status_code == 404:
-                        status_response = await client.get(
-                            f"https://api.stability.ai/v2beta/result/{generation_id}",
-                            headers=headers
-                        )
                     
                     status_response.raise_for_status()
                     status_data = status_response.json()
@@ -1095,16 +1089,16 @@ async def generate_placeholder_video(prompt: str, samples: int = 1, user_id: str
 # Update the image generation handler
 async def image_generation_handler(prompt: str, user_id: str, stream: bool = False):
     """Handle image generation requests"""
+    # Extract any sample count from the prompt
+    samples = 1
+    sample_match = re.search(r'(\d+)\s+(image|images)', prompt.lower())
+    if sample_match:
+        samples = min(int(sample_match.group(1)), 4)  # Cap at 4 images
+    
     if stream:
         async def event_generator():
             yield sse({"type": "starting", "message": "Generating image..."})
             try:
-                # Extract any sample count from the prompt
-                samples = 1
-                sample_match = re.search(r'(\d+)\s+(image|images)', prompt.lower())
-                if sample_match:
-                    samples = min(int(sample_match.group(1)), 4)  # Cap at 4 images
-                
                 # Generate the image
                 result = await _generate_image_core(prompt, samples, user_id, return_base64=False)
                 
@@ -1129,13 +1123,8 @@ async def image_generation_handler(prompt: str, user_id: str, stream: bool = Fal
         )
     else:
         # Non-streaming version
-        samples = 1
-        sample_match = re.search(r'(\d+)\s+(image|images)', prompt.lower())
-        if sample_match:
-            samples = min(int(sample_match.group(1)), 4)  # Cap at 4 images
-        
         return await _generate_image_core(prompt, samples, user_id, return_base64=False)
-
+        
 # Update the video generation handler
 async def video_generation_handler(prompt: str, user_id: str, stream: bool = False):
     """Handle video generation requests with RunwayML Gen-2"""
@@ -1172,7 +1161,7 @@ async def video_generation_handler(prompt: str, user_id: str, stream: bool = Fal
     else:
         # Non-streaming version
         return await generate_video_internal(prompt, samples, user_id)
-
+        
 # Add a function to check bucket visibility
 def check_bucket_visibility():
     try:
@@ -2697,7 +2686,7 @@ async def nsfw_check(prompt: str) -> bool:
     
 async def _generate_image_core(
     prompt: str,
-    samples: int,
+    samples: int,  # This is already a parameter
     user_id: str,
     return_base64: bool = False
 ):
