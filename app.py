@@ -592,7 +592,7 @@ async def generate_video_internal(prompt: str, samples: int = 1, user_id: str = 
     # If all APIs fail, use placeholder
     return await generate_placeholder_video(prompt, samples, user_id)
     
-aasync def generate_video_stability_img2vid(prompt: str, samples: int = 1, user_id: str = None) -> dict:
+async def generate_video_stability_img2vid(prompt: str, samples: int = 1, user_id: str = None) -> dict:
     """
     Generate videos using Stability AI's image-to-video API
     First generates an image, then converts to video
