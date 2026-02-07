@@ -7746,6 +7746,8 @@ async def check():
     return conv_check
 
 # Update the video endpoint with real RunwayML Gen-2 implementation
+# Find the generate_video_stream function and replace it with this corrected version:
+
 @app.post("/video/stream")
 async def generate_video_stream(req: Request, res: Response):
     """
@@ -7755,7 +7757,7 @@ async def generate_video_stream(req: Request, res: Response):
     prompt = body.get("prompt", "").strip()
     
     try:
-        samples = max(1, int(body.get("samples", 1))
+        samples = max(1, int(body.get("samples", 1)))
     except Exception:
         samples = 1
     
@@ -7764,7 +7766,10 @@ async def generate_video_stream(req: Request, res: Response):
     
     # Get user
     user = await get_or_create_user(req, res)
-    user_id = user_id
+    user_id = user.id
+    
+    # Initialize urls list
+    urls = []
     
     # Content moderation check
     is_flagged = await nsfw_check(prompt)
@@ -7836,17 +7841,17 @@ async def generate_video_stream(req: Request, res: Response):
             try:
                 # Run the model in a thread to avoid blocking
                 output = await asyncio.to_thread(
-                    replicate.run(
-                        "stability-ai/stable-video-diffusion",
-                        input={
-                            "prompt": prompt,
-                            "num_frames": 25,
-                            "num_inference_steps": 25,
-                            "guidance_scale": 7.5,
-                            "seed": random.randint(0, 4294967295),
-                            "width": 1024,
-                            "height": 576  # 16:9 aspect ratio
-                        }
+                    replicate.run,
+                    "stability-ai/stable-video-diffusion",
+                    input={
+                        "prompt": prompt,
+                        "num_frames": 25,
+                        "num_inference_steps": 25,
+                        "guidance_scale": 7.5,
+                        "seed": random.randint(0, 4294967295),
+                        "width": 1024,
+                        "height": 576  # 16:9 aspect ratio
+                    }
                 )
                 
                 # The output is typically a URL to the generated video
@@ -7864,12 +7869,11 @@ async def generate_video_stream(req: Request, res: Response):
                 filename = f"{uuid.uuid4().hex[:8]}.mp4"
                 storage_path = f"anonymous/{filename}"
                 
-# Correct
-supabase.storage.from_("ai-videos").upload(
-    path=storage_path,
-    file=video_bytes,
-    file_options={"content-type": "video/mp4"}  # <-- Added the missing closing brace here
-)                                              # <-- This ')' now correctly closes the function                                        # <-- This ')' now correctly closes the function
+                supabase.storage.from_("ai-videos").upload(
+                    path=storage_path,
+                    file=video_bytes,
+                    file_options={"content-type": "video/mp4"}
+                )
                 
                 # Save video record
                 try:
@@ -7889,43 +7893,45 @@ supabase.storage.from_("ai-videos").upload(
                 urls.append(public_url)
                 video_generated = True
                 
-            except Exception as e:
-                logger.error(f"Replicate video generation failed: {e}")
-                continue
-            
-            if video_generated:
                 yield sse({
                     "status": "video_ready",
                     "message": f"Video {i+1} ready",
                     "video_url": public_url,
                     "provider": "replicate",
-                    "model": model_to_use["name"],
                     "video_index": i,
                     "watermarked": WATERMARK_ENABLED
                 })
-                yield sse({"status": "done"})
                 
             except Exception as e:
-                logger.error(f"Video generation failed: {e}")
-                yield sse({"status": "error", "message": str(e)})
+                logger.error(f"Replicate video generation failed: {e}")
+                continue
+            
+            if not video_generated:
+                logger.warning(f"Failed to generate video {i+1}/{samples} with Replicate")
+                continue
         
-        if not video_generated:
-            logger.warning(f"Failed to generate video {i+1}/{samples} with Replicate")
-            continue
-        
-        if not urls:
-            logger.warning(f"No videos were generated successfully with Replicate")
-            return await generate_placeholder_video(prompt, samples, user_id)
-        
-        return StreamingResponse(
-            event_generator(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no"
-            }
-        )
+        if urls:
+            yield sse({"status": "done"})
+        else:
+            logger.warning("No videos were generated successfully with Replicate")
+            yield sse({
+                "status": "error", 
+                "message": "No videos were generated successfully with Replicate",
+                "watermark": {
+                    "enabled": WATERMARK_ENABLED,
+                    "text": WATERMARK_TEXT if WATERMARK_ENABLED else None
+                }
+            })
+    
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
     
     # If no videos were generated, use placeholder
     if not urls:
