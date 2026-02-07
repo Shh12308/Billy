@@ -7936,7 +7936,7 @@ supabase.storage.from_("ai-videos").upload(
                 "enabled": WATERMARK_ENABLED,
                 "text": WATERMARK_TEXT if WATERMARK_ENABLED else None
             }
-        )
+        })
     
     # Cleanup
     finally:
