@@ -7868,8 +7868,8 @@ async def generate_video_stream(req: Request, res: Response):
 supabase.storage.from_("ai-videos").upload(
     path=storage_path,
     file=video_bytes,
-    file_options={"content-type": "video/mp4"}  # <-- Added the closing '}' here
-)                                              # <-- This ')' now correctly closes the function
+    file_options={"content-type": "video/mp4"}  # <-- Added the missing closing brace here
+)                                              # <-- This ')' now correctly closes the function                                        # <-- This ')' now correctly closes the function
                 
                 # Save video record
                 try:
