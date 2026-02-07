@@ -598,46 +598,73 @@ async def generate_video_internal(prompt: str, samples: int = 1, user_id: str = 
 # Add this new helper function to your app.py file
 async def _generate_video_with_pixverse_replicate(prompt: str, num_samples: int):
     """
-    Generates a video using the pixverse/pixverse-v5.6 model on Replicate.
+    Generates a video using the Pixverse model on Replicate,
+    then uploads it to Supabase storage and returns the permanent URL.
     """
-    # The model identifier from your example
     model_id = "pixverse/pixverse-v5.6"
+    bucket_name = "ai-videos"
+    storage_path_prefix = "anonymous"
     
     generated_videos = []
     
-    # The model generates one video at a time, so we loop for the requested number of samples
     for i in range(num_samples):
         try:
-            # The input for the model
+            # 1. Generate video with Replicate
             input_data = {
                 "prompt": prompt,
-                "quality": "1080p"  # As per your example
+                "quality": "1080p"
             }
-
-            # Since replicate.run is synchronous, we run it in a separate thread
-            # to avoid blocking the async event loop.
             output = await asyncio.to_thread(
                 replicate.run,
                 model_id,
                 input=input_data
             )
             
-            # The output is a file-like object. We need its URL.
-            video_url = output.url
-            generated_videos.append({"url": video_url, "id": f"pixverse-{i+1}"})
-            logger.info(f"Successfully generated Pixverse video {i+1}/{num_samples}: {video_url}")
+            # 2. Download the video from the temporary Replicate URL
+            temp_video_url = output.url
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.get(temp_video_url)
+                response.raise_for_status() # Ensure the download was successful
+                video_bytes = response.content
+
+            # 3. Upload to Supabase Storage
+            # Create a unique filename
+            file_extension = ".mp4" # Pixverse outputs mp4
+            unique_filename = f"{uuid.uuid4()}{file_extension}"
+            storage_path = f"{storage_path_prefix}/{unique_filename}"
+            
+            # The upload method expects the file content as bytes
+            upload_response = supabase.storage.from_(bucket_name).upload(
+                path=storage_path,
+                file=video_bytes,
+                file_options={"content-type": "video/mp4"}
+            )
+
+            # Check for upload errors
+            if upload_response.data is None and "error" in upload_response:
+                logger.error(f"Supabase upload failed: {upload_response['error']}")
+                raise Exception(f"Supabase upload failed: {upload_response['error']}")
+
+            # 4. Get the permanent public URL from Supabase
+            public_url_response = supabase.storage.from_(bucket_name).get_public_url(storage_path)
+            
+            # The response from get_public_url is a direct string URL
+            public_url = public_url_response
+            
+            generated_videos.append({"url": public_url, "id": unique_filename})
+            logger.info(f"Successfully generated and saved video {i+1}/{num_samples} to Supabase: {public_url}")
 
         except Exception as e:
-            logger.error(f"Failed to generate video {i+1} with Pixverse: {e}")
+            logger.error(f"Failed to generate/save video {i+1}: {e}")
             # If one generation fails, we can choose to stop or continue.
             # For now, we'll re-raise the exception to stop the whole process.
             raise
 
     if not generated_videos:
-        raise ValueError("Pixverse failed to generate any videos.")
+        raise ValueError("Pixverse failed to generate and save any videos.")
 
     return {
-        "provider": "replicate-pixverse",
+        "provider": "supabase-storage", # Update provider name for clarity
         "videos": generated_videos
     }
     
