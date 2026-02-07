@@ -595,8 +595,7 @@ async def generate_video_internal(prompt: str, samples: int = 1, user_id: str = 
     # If all APIs fail, use placeholder
     return await generate_placeholder_video(prompt, samples, user_id)
     
-# Add this new helper function to your app.py file
-async def _generate_video_with_pixverse_replicate(prompt: str, num_samples: int):
+# Add this new helper function to your app.py fileasync def _generate_video_with_pixverse_replicate(prompt: str, num_samples: int):
     """
     Generates a video using the Pixverse model on Replicate,
     then uploads it to Supabase storage and returns the permanent URL.
@@ -627,44 +626,42 @@ async def _generate_video_with_pixverse_replicate(prompt: str, num_samples: int)
                 response.raise_for_status() # Ensure the download was successful
                 video_bytes = response.content
 
-            # 3. Upload to Supabase Storage
+            # 3. Upload to Supabase Storage (Corrected Logic)
             # Create a unique filename
             file_extension = ".mp4" # Pixverse outputs mp4
             unique_filename = f"{uuid.uuid4()}{file_extension}"
             storage_path = f"{storage_path_prefix}/{unique_filename}"
             
-            # The upload method expects the file content as bytes
-            upload_response = supabase.storage.from_(bucket_name).upload(
-                path=storage_path,
-                file=video_bytes,
-                file_options={"content-type": "video/mp4"}
-            )
-
-            # Check for upload errors
-            if upload_response.data is None and "error" in upload_response:
-                logger.error(f"Supabase upload failed: {upload_response['error']}")
-                raise Exception(f"Supabase upload failed: {upload_response['error']}")
+            # Use a try...except block to handle the upload correctly
+            try:
+                supabase.storage.from_(bucket_name).upload(
+                    path=storage_path,
+                    file=video_bytes,
+                    file_options={"content-type": "video/mp4"}
+                )
+                logger.info(f"Successfully uploaded {unique_filename} to Supabase.")
+            except Exception as e:
+                logger.error(f"Supabase upload failed for {unique_filename}: {e}")
+                # Re-raise the exception to stop the process
+                raise Exception(f"Supabase upload failed: {e}")
 
             # 4. Get the permanent public URL from Supabase
-            public_url_response = supabase.storage.from_(bucket_name).get_public_url(storage_path)
-            
-            # The response from get_public_url is a direct string URL
-            public_url = public_url_response
+            # This call is safe and returns a string URL
+            public_url = supabase.storage.from_(bucket_name).get_public_url(storage_path)
             
             generated_videos.append({"url": public_url, "id": unique_filename})
             logger.info(f"Successfully generated and saved video {i+1}/{num_samples} to Supabase: {public_url}")
 
         except Exception as e:
             logger.error(f"Failed to generate/save video {i+1}: {e}")
-            # If one generation fails, we can choose to stop or continue.
-            # For now, we'll re-raise the exception to stop the whole process.
+            # If one generation fails, we re-raise to stop the whole process.
             raise
 
     if not generated_videos:
         raise ValueError("Pixverse failed to generate and save any videos.")
 
     return {
-        "provider": "supabase-storage", # Update provider name for clarity
+        "provider": "supabase-storage",
         "videos": generated_videos
     }
     
