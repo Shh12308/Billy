@@ -6499,134 +6499,132 @@ async def ask_universal(request: Request, response: Response):
                 # Non-streaming version
                 return await _generate_image_core(prompt, num_samples, user_id, return_base64=False)
 
-        # Add these handlers in the ask_universal function, after the existing intent checks
-
-# -------------------------
-# MATH SOLVING
-# -------------------------
-elif intent == "math":
-    if stream:
-        async def event_generator():
-            yield sse({"type": "starting", "message": "Solving math problem..."})
-            try:
-                # Extract the math problem from the prompt
-                problem = prompt
-                result = await solve_math(problem)
+        # -------------------------
+        # MATH SOLVING
+        # -------------------------
+        elif intent == "math":
+            if stream:
+                async def event_generator():
+                    yield sse({"type": "starting", "message": "Solving math problem..."})
+                    try:
+                        # Extract the math problem from the prompt
+                        problem = prompt
+                        result = await solve_math(problem)
+                        
+                        yield sse({
+                            "type": "math_result",
+                            "problem": result.get("problem"),
+                            "result": result.get("result"),
+                            "steps": result.get("steps", [])
+                        })
+                        yield sse({"type": "done"})
+                    except Exception as e:
+                        logger.error(f"Math solving failed: {e}")
+                        yield sse({"type": "error", "message": str(e)})
                 
-                yield sse({
-                    "type": "math_result",
+                return StreamingResponse(
+                    event_generator(),
+                    media_type="text/event-stream",
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive",
+                        "X-Accel-Buffering": "no"
+                    }
+                )
+            else:
+                # Non-streaming version
+                result = await solve_math(prompt)
+                return {
                     "problem": result.get("problem"),
                     "result": result.get("result"),
                     "steps": result.get("steps", [])
-                })
-                yield sse({"type": "done"})
-            except Exception as e:
-                logger.error(f"Math solving failed: {e}")
-                yield sse({"type": "error", "message": str(e)})
-        
-        return StreamingResponse(
-            event_generator(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no"
-            }
-        )
-    else:
-        # Non-streaming version
-        result = await solve_math(prompt)
-        return {
-            "problem": result.get("problem"),
-            "result": result.get("result"),
-            "steps": result.get("steps", [])
-        }
+                }
 
-# -------------------------
-# JOKE TELLING
-# -------------------------
-elif intent == "joke":
-    if stream:
-        async def event_generator():
-            yield sse({"type": "starting", "message": "Finding a joke..."})
-            try:
-                # Extract category from prompt if specified
-                category = "general"
-                if "programming" in prompt.lower():
-                    category = "programming"
-                elif "math" in prompt.lower():
-                    category = "math"
-                elif "science" in prompt.lower():
-                    category = "science"
+        # -------------------------
+        # JOKE TELLING
+        # -------------------------
+        elif intent == "joke":
+            if stream:
+                async def event_generator():
+                    yield sse({"type": "starting", "message": "Finding a joke..."})
+                    try:
+                        # Extract category from prompt if specified
+                        category = "general"
+                        if "programming" in prompt.lower():
+                            category = "programming"
+                        elif "math" in prompt.lower():
+                            category = "math"
+                        elif "science" in prompt.lower():
+                            category = "science"
+                        
+                        result = await tell_joke(category)
+                        
+                        yield sse({
+                            "type": "joke",
+                            "joke": result.get("joke"),
+                            "category": result.get("category")
+                        })
+                        yield sse({"type": "done"})
+                    except Exception as e:
+                        logger.error(f"Joke telling failed: {e}")
+                        yield sse({"type": "error", "message": str(e)})
                 
-                result = await tell_joke(category)
-                
-                yield sse({
-                    "type": "joke",
+                return StreamingResponse(
+                    event_generator(),
+                    media_type="text/event-stream",
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive",
+                        "X-Accel-Buffering": "no"
+                    }
+                )
+            else:
+                # Non-streaming version
+                result = await tell_joke()
+                return {
                     "joke": result.get("joke"),
                     "category": result.get("category")
-                })
-                yield sse({"type": "done"})
+                }
+
+        # -------------------------
+        # PERSONAL INFORMATION
+        # -------------------------
+        elif intent == "personal":
+            # This will be handled by the enhanced chat_with_tools function
+            # which now checks user memory first
+            messages = [{"role": "user", "content": prompt}]
+            try:
+                assistant_reply = await chat_with_tools(user_id, messages)
             except Exception as e:
-                logger.error(f"Joke telling failed: {e}")
-                yield sse({"type": "error", "message": str(e)})
-        
-        return StreamingResponse(
-            event_generator(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no"
-            }
-        )
-    else:
-        # Non-streaming version
-        result = await tell_joke()
-        return {
-            "joke": result.get("joke"),
-            "category": result.get("category")
-        }
+                logger.error(f"Personal info processing failed: {e}")
+                raise HTTPException(status_code=500, detail="Personal info processing failed")
 
-# -------------------------
-# PERSONAL INFORMATION
-# -------------------------
-elif intent == "personal":
-    # This will be handled by the enhanced chat_with_tools function
-    # which now checks user memory first
-    messages = [{"role": "user", "content": prompt}]
-    try:
-        assistant_reply = await chat_with_tools(user_id, messages)
-    except Exception as e:
-        logger.error(f"Personal info processing failed: {e}")
-        raise HTTPException(status_code=500, detail="Personal info processing failed")
+            if stream:
+                async def generator():
+                    yield sse({"type": "starting"})
+                    for char in assistant_reply:
+                        yield sse({"type": "token", "text": char})
+                        await asyncio.sleep(0.005)
+                    yield sse({"type": "done"})
 
-    if stream:
-        async def generator():
-            yield sse({"type": "starting"})
-            for char in assistant_reply:
-                yield sse({"type": "token", "text": char})
-                await asyncio.sleep(0.005)
-            yield sse({"type": "done"})
-
-        return StreamingResponse(
-            generator(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no"
-            }
-        )
-    else:
-        return {
-            "status": "completed",
-            "reply": assistant_reply,
-            "conversation_id": conversation_id,
-            "user_id": user_id,
-            "type": "personal"
-        }
-        
+                return StreamingResponse(
+                    generator(),
+                    media_type="text/event-stream",
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive",
+                        "X-Accel-Buffering": "no"
+                    }
+                )
+            else:
+                return {
+                    "status": "completed",
+                    "reply": assistant_reply,
+                    "conversation_id": conversation_id,
+                    "user_id": user_id,
+                    "type": "personal"
+                }
+                
         # -------------------------
         # VIDEO GENERATION
         # -------------------------
