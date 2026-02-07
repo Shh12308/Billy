@@ -606,7 +606,7 @@ async def generate_video_huggingface(prompt: str, samples: int = 1, user_id: str
         raise HTTPException(status_code=503, detail="Hugging Face API key not configured for video fallback.")
 
     # --- FIX: Use a different, currently available model ---
-    API_URL = "https://api-inference.huggingface.co/models/cerspense/zeroscope-v2-xl"
+    API_URL = "https://router.huggingface.co/hf-inference/models/cerspense/zeroscope-v2-xl"
     headers = {"Authorization": f"Bearer {HF_API_KEY}"}
     
     urls = []
@@ -675,19 +675,21 @@ async def generate_video_huggingface(prompt: str, samples: int = 1, user_id: str
 
 async def generate_video_replicate(prompt: str, samples: int = 1, user_id: str = None) -> dict:
     """
-    Generate videos using Replicate API with proper authentication.
+    Generate videos using Replicate API with robust authentication.
     """
     REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
     if not REPLICATE_API_TOKEN:
-        logger.warning("REPLICATE_API_TOKEN not configured, using placeholder")
-        return await generate_placeholder_video(prompt, samples, user_id)
+        logger.warning("REPLICATE_API_TOKEN is not set in the environment. Skipping Replicate.")
+        # Don't raise an error, just go straight to the next fallback.
+        return await generate_video_huggingface(prompt, samples, user_id)
 
-    if not REPLICATE_API_TOKEN.startswith("r8_"):
-        logger.error(f"REPLICATE_API_KEY format is invalid. It should start with 'r8_'.")
-        # Don't expose the key, just log the error type.
-        raise HTTPException(status_code=500, detail="Server configuration error: Replicate API key is invalid.")
-
-    client = replicate.Client(api_token=REPLICATE_API_TOKEN)
+    logger.info("Replicate token found. Attempting to create client.")
+    try:
+        client = replicate.Client(api_token=REPLICATE_API_TOKEN)
+    except Exception as e:
+        logger.error(f"Failed to create Replicate client: {e}")
+        # Don't raise an error, just go straight to the next fallback.
+        return await generate_video_huggingface(prompt, samples, user_id)
 
     urls = []
     
