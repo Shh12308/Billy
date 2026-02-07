@@ -7759,9 +7759,7 @@ async def check():
     except Exception as e:
         logger.error(f"Error occurred: {e}")
         yield sse({"status": "error", "message": str(e)})
-    # Remove the orphaned finally block
-
-# OR if the finally belongs to the outer try block, make sure it's properly structured:
+# Replace the entire section from around line 7900 to 8000 with this:
 
 @app.post("/video/stream")
 async def generate_video_stream(req: Request, res: Response):
@@ -7802,7 +7800,7 @@ async def generate_video_stream(req: Request, res: Response):
                     "message": "No Replicate API key configured. Using placeholder.",
                     "watermark": {
                         "enabled": WATERMARK_ENABLED,
-                        "text": WATERMARK_TEXT if WATERMARK_ENABLED else None
+                        "text": WATERMARK_ENABLED and WATERMARK_TEXT or None
                     }
                 })
                 
@@ -7814,7 +7812,7 @@ async def generate_video_stream(req: Request, res: Response):
                     "videos": result["videos"],
                     "watermark": {
                         "enabled": WATERMARK_ENABLED,
-                        "text": WATERMARK_TEXT if WATERMARK_ENABLED else None
+                        "text": WATERMARK_ENABLED and WATERMARK_TEXT or None
                     }
                 })
             except Exception as e:
@@ -7842,7 +7840,7 @@ async def generate_video_stream(req: Request, res: Response):
                 "provider": "replicate",
                 "watermark": {
                     "enabled": WATERMARK_ENABLED,
-                    "text": WATERMARK_TEXT if WATERMARK_ENABLED else None
+                    "text": WATERMARK_ENABLED and WATERMARK_TEXT or None
                 }
             })
             
@@ -7941,26 +7939,10 @@ async def generate_video_stream(req: Request, res: Response):
             "X-Accel-Buffering": "no"
         }
     )
-    
-    # If no videos were generated, use placeholder
-    if not urls:
-        yield sse({
-            "status": "error", 
-            "message": "No videos were generated successfully with Replicate",
-            "watermark": {
-                "enabled": WATERMARK_ENABLED,
-                "text": WATERMARK_TEXT if WATERMARK_ENABLED else None
-            }
-        })
-    
-    # Cleanup
-    finally:
-        # Cleanup logic here if needed
-        pass
 
-# Update the main video generation function
+# Continue with the next function...
 @app.post("/video")
-async def generate_video(request: Request, response: BackgroundTasks, background_tasks: BackgroundTasks):
+async def generate_video(request: Request, response: Response):
     """
     Generate videos using only Replicate API
     """
@@ -7968,7 +7950,7 @@ async def generate_video(request: Request, response: BackgroundTasks, background
     prompt = body.get("prompt", "").strip()
     
     try:
-        samples = max(1, int(body.get("samples", 1))
+        samples = max(1, int(body.get("samples", 1)))
     except Exception:
         samples = 1
     
@@ -7977,13 +7959,13 @@ async def generate_video(request: Request, response: BackgroundTasks, background
     
     # Get user
     user = await get_or_create_user(request, response)
-    user_id = user_id
+    user_id = user.id
     
     # Generate video using only Replicate
     result = await generate_video_replicate(prompt, samples, user_id)
     
     return result
-
+    
 # Add a new endpoint for video-to-video generation
 @app.post("/video/img2vid")
 async def img2vid(
