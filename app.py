@@ -595,7 +595,8 @@ async def generate_video_internal(prompt: str, samples: int = 1, user_id: str = 
     # If all APIs fail, use placeholder
     return await generate_placeholder_video(prompt, samples, user_id)
     
-# Add this new helper function to your app.py fileasync def _generate_video_with_pixverse_replicate(prompt: str, num_samples: int):
+# Add this new helper function to your app.py fil
+async def _generate_video_with_pixverse_replicate(prompt: str, num_samples: int):
     """
     Generates a video using the Pixverse model on Replicate,
     then uploads it to Supabase storage and returns the permanent URL.
