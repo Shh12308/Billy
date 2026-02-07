@@ -37,6 +37,7 @@ from ultralytics import YOLO
 from torchvision import models, transforms
 import matplotlib.pyplot as plt
 import seaborn as sns
+import replicate
 import pandas as pd
 from transformers import pipeline, AutoTokenizer, AutoModelForSequenceClassification
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -593,23 +594,86 @@ async def generate_video_internal(prompt: str, samples: int = 1, user_id: str = 
     # If all APIs fail, use placeholder
     return await generate_placeholder_video(prompt, samples, user_id)
     
-import replicate
+async def generate_video_huggingface(prompt: str, samples: int = 1, user_id: str = None) -> dict:
+    """
+    Generate videos using the Hugging Face Inference API.
+    """
+    HF_API_KEY = os.getenv("HF_API_KEY")
+    if not HF_API_KEY:
+        logger.warning("HF_API_KEY not configured, cannot use Hugging Face fallback.")
+        raise HTTPException(status_code=503, detail="Hugging Face API key not configured for video fallback.")
+
+    API_URL = "https://api-inference.huggingface.co/models/damo-vilab/text-to-video-ms-1.7b"
+    headers = {"Authorization": f"Bearer {HF_API_KEY}"}
+    
+    urls = []
+    
+    for i in range(samples):
+        try:
+            payload = {"inputs": prompt}
+            
+            async with httpx.AsyncClient(timeout=300) as client: # HF can be slow
+                response = await client.post(API_URL, headers=headers, json=payload)
+                response.raise_for_status()
+                
+                # The HF API for this model returns a raw video file
+                video_bytes = response.content
+            
+            # Upload to Supabase
+            filename = f"{uuid.uuid4().hex[:8]}.mp4"
+            storage_path = f"anonymous/{filename}"
+            
+            supabase.storage.from_("ai-videos").upload(
+                path=storage_path,
+                file=video_bytes,
+                file_options={"content-type": "video/mp4"}
+            )
+            
+            # Save video record
+            try:
+                supabase.table("videos").insert({
+                    "id": str(uuid.uuid4()),
+                    "user_id": user_id,
+                    "video_path": storage_path,
+                    "prompt": prompt,
+                    "provider": "huggingface",
+                    "model": "damo-vilab/text-to-video-ms-1.7b",
+                    "created_at": datetime.now().isoformat()
+                }).execute()
+            except Exception as e:
+                logger.error(f"Failed to save video record: {e}")
+            
+            # Get public URL
+            public_url = get_public_url("ai-videos", storage_path)
+            urls.append(public_url)
+            
+        except Exception as e:
+            logger.error(f"Hugging Face video generation failed: {e}")
+            # Continue to the next sample if one fails
+            continue
+
+    if not urls:
+        raise HTTPException(status_code=500, detail="Failed to generate any videos with Hugging Face.")
+
+    return {
+        "provider": "huggingface",
+        "videos": [{"url": url, "type": "video/mp4"} for url in urls]
+    }
 
 async def generate_video_replicate(prompt: str, samples: int = 1, user_id: str = None) -> dict:
     """
-    Generate videos using Replicate API
+    Generate videos using Replicate API with proper authentication.
     """
     REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
     if not REPLICATE_API_TOKEN:
         logger.warning("REPLICATE_API_TOKEN not configured, using placeholder")
         return await generate_placeholder_video(prompt, samples, user_id)
     
-    # Set the API token
-    os.environ["REPLICATE_API_TOKEN"] = REPLICATE_API_TOKEN
-    
+    # --- FIX: Create a client instance for authentication ---
+    client = replicate.Client(api_token=REPLICATE_API_TOKEN)
+
     urls = []
     
-    # Best video models on Replicate (in order of preference)
     models = [
         {
             "name": "Stable Video Diffusion",
@@ -624,6 +688,7 @@ async def generate_video_replicate(prompt: str, samples: int = 1, user_id: str =
                 "height": 576
             }
         },
+        # ... your other models remain the same
         {
             "name": "Realistic Vision Video",
             "model": "lucataco/realistic-vision-video:9ca0f0d5d4a2f1f5b21b98f9557a0c873b99947bb2106f4e1a7545a5f7896f6",
@@ -676,9 +741,9 @@ async def generate_video_replicate(prompt: str, samples: int = 1, user_id: str =
             try:
                 logger.info(f"Trying Replicate model: {model_info['name']}")
                 
-                # Run the model
+                # --- FIX: Use the authenticated client to run the model ---
                 output = await asyncio.to_thread(
-                    replicate.run,
+                    client.run,
                     model_info["model"],
                     input=model_info["params"]
                 )
