@@ -6422,50 +6422,47 @@ async def ask_universal(request: Request, response: Response):
                     "type": "personal"
                 }
                 
-        # -------------------------
+         # -------------------------
         # VIDEO GENERATION
         # -------------------------
-# -------------------------
-# VIDEO GENERATION
-# -------------------------
-elif intent == "video":
-    # Extract sample count from prompt
-    sample_match = re.search(r'(\d+)\s+(video|videos)', prompt.lower())
-    if sample_match:
-        num_samples = min(int(sample_match.group(1)), 2)  # Cap at 2 videos to manage cost/time
-    else:
-        num_samples = 1  # Default to 1 video
-    
-    if stream:
-        async def event_generator():
-            yield sse({"type": "starting", "message": "Generating video with Pixverse..."})
-            try:
-                # Call our new helper function
-                result = await _generate_video_with_pixverse_replicate(prompt, num_samples)
+        elif intent == "video":
+            # Extract sample count from prompt
+            sample_match = re.search(r'(\d+)\s+(video|videos)', prompt.lower())
+            if sample_match:
+                num_samples = min(int(sample_match.group(1)), 2)  # Cap at 2 videos to manage cost/time
+            else:
+                num_samples = 1  # Default to 1 video
+            
+            if stream:
+                async def event_generator():
+                    yield sse({"type": "starting", "message": "Generating video with Pixverse..."})
+                    try:
+                        # Call our new helper function
+                        result = await _generate_video_with_pixverse_replicate(prompt, num_samples)
+                        
+                        yield sse({
+                            "type": "videos",
+                            "provider": result["provider"],
+                            "videos": result["videos"]
+                        })
+                        yield sse({"type": "done"})
+                    except Exception as e:
+                        logger.error(f"Video generation with Pixverse failed: {e}")
+                        yield sse({"type": "error", "message": str(e)})
                 
-                yield sse({
-                    "type": "videos",
-                    "provider": result["provider"],
-                    "videos": result["videos"]
-                })
-                yield sse({"type": "done"})
-            except Exception as e:
-                logger.error(f"Video generation with Pixverse failed: {e}")
-                yield sse({"type": "error", "message": str(e)})
-        
-        return StreamingResponse(
-            event_generator(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no"
-            }
-        )
-    else:
-        # Non-streaming version
-        return await _generate_video_with_pixverse_replicate(prompt, num_samples)
-
+                return StreamingResponse(
+                    event_generator(),
+                    media_type="text/event-stream",
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive",
+                        "X-Accel-Buffering": "no"
+                    }
+                )
+            else:
+                # Non-streaming version
+                return await _generate_video_with_pixverse_replicate(prompt, num_samples)
+                
         # -------------------------
         # VISION ANALYSIS
         # -------------------------
