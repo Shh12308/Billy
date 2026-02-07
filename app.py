@@ -7750,6 +7750,19 @@ async def check():
 
 # Replace the entire generate_video_stream function with this fixed version:
 
+# Find the section around line 7955 and replace it with this:
+
+# This should be part of the generate_video_stream function
+    try:
+        # Your code here...
+        pass
+    except Exception as e:
+        logger.error(f"Error occurred: {e}")
+        yield sse({"status": "error", "message": str(e)})
+    # Remove the orphaned finally block
+
+# OR if the finally belongs to the outer try block, make sure it's properly structured:
+
 @app.post("/video/stream")
 async def generate_video_stream(req: Request, res: Response):
     """
@@ -7783,17 +7796,17 @@ async def generate_video_stream(req: Request, res: Response):
     if not REPLICATE_API_TOKEN:
         # No API key, use placeholder
         async def event_generator():
-            yield sse({
-                "status": "starting", 
-                "message": "No Replicate API key configured. Using placeholder.",
-                "watermark": {
-                    "enabled": WATERMARK_ENABLED,
-                    "text": WATERMARK_TEXT if WATERMARK_ENABLED else None
-                }
-            })
-            
-            # Generate placeholder video
             try:
+                yield sse({
+                    "status": "starting", 
+                    "message": "No Replicate API key configured. Using placeholder.",
+                    "watermark": {
+                        "enabled": WATERMARK_ENABLED,
+                        "text": WATERMARK_TEXT if WATERMARK_ENABLED else None
+                    }
+                })
+                
+                # Generate placeholder video
                 result = await generate_placeholder_video(prompt, samples, user_id)
                 yield sse({
                     "status": "completed",
@@ -7834,7 +7847,6 @@ async def generate_video_stream(req: Request, res: Response):
             })
             
             urls = []
-            video_generated = False
             
             for i in range(samples):
                 try:
@@ -7849,7 +7861,7 @@ async def generate_video_stream(req: Request, res: Response):
                             "guidance_scale": 7.5,
                             "seed": random.randint(0, 4294967295),
                             "width": 1024,
-                            "height": 576  # 16:9 aspect ratio
+                            "height": 576
                         }
                     )
                     
@@ -7890,7 +7902,6 @@ async def generate_video_stream(req: Request, res: Response):
                     # Get public URL
                     public_url = get_public_url("ai-videos", storage_path)
                     urls.append(public_url)
-                    video_generated = True
                     
                     yield sse({
                         "status": "video_ready",
@@ -7904,22 +7915,13 @@ async def generate_video_stream(req: Request, res: Response):
                 except Exception as e:
                     logger.error(f"Replicate video generation failed: {e}")
                     continue
-                
-                if not video_generated:
-                    logger.warning(f"Failed to generate video {i+1}/{samples} with Replicate")
-                    continue
             
             if urls:
                 yield sse({"status": "done"})
             else:
-                logger.warning("No videos were generated successfully with Replicate")
                 yield sse({
                     "status": "error", 
-                    "message": "No videos were generated successfully with Replicate",
-                    "watermark": {
-                        "enabled": WATERMARK_ENABLED,
-                        "text": WATERMARK_TEXT if WATERMARK_ENABLED else None
-                    }
+                    "message": "No videos were generated successfully with Replicate"
                 })
         
         except asyncio.CancelledError:
