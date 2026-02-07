@@ -7864,11 +7864,12 @@ async def generate_video_stream(req: Request, res: Response):
                 filename = f"{uuid.uuid4().hex[:8]}.mp4"
                 storage_path = f"anonymous/{filename}"
                 
-                supabase.storage.from_("ai-videos").upload(
-                    path=storage_path,
-                    file=video_bytes,
-                    file_options={"content-type": "video/mp4"
-                )
+# Correct
+supabase.storage.from_("ai-videos").upload(
+    path=storage_path,
+    file=video_bytes,
+    file_options={"content-type": "video/mp4"}  # <-- Added the closing '}' here
+)                                              # <-- This ')' now correctly closes the function
                 
                 # Save video record
                 try:
