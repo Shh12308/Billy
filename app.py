@@ -2290,7 +2290,13 @@ def get_cached_result(prompt: str, provider: str) -> Optional[dict]:
     return None
 
 def get_system_prompt(user_message: Optional[str] = None) -> str:
-    base = "You are ZynaraAI1.0: helpful, concise, friendly, and focus entirely on what the user asks. Do not reference your creator or yourself unless explicitly asked."
+    base = """
+You are ZynaraAI1.0: helpful, concise, friendly, and intelligent. 
+You have access to tools for web search, code execution, math solving, and humor.
+You can remember personal information about users when they ask about themselves.
+When asked "what is my name" or similar questions, refer to the user's profile information.
+Do not reference your creator or yourself unless explicitly asked.
+"""
     if user_message:
         base += f" The user said: \"{user_message}\". Tailor your response to this."
     return base
@@ -3150,6 +3156,7 @@ PERSONALITY_MAP = {
     )
 }
 
+# Add this to your TOOLS list
 TOOLS = [
     {
         "type": "function",
@@ -3178,9 +3185,36 @@ TOOLS = [
                 "required": ["task"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "solve_math",
+            "description": "Solve mathematical problems and equations",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "problem": {"type": "string"}
+                },
+                "required": ["problem"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "tell_joke",
+            "description": "Tell a random joke",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "category": {"type": "string", "enum": ["general", "programming", "math", "science"]}
+                },
+                "required": []
+            }
+        }
     }
 ]
-
 #// Tracks currently active SSE/streaming tasks per user
 active_streams: Dict[str, asyncio.Task] = {}
 
@@ -3677,6 +3711,241 @@ async def create_knowledge_graph_endpoint(prompt: str, user_id: str, stream: boo
             "graph_id": graph_id
         }
 
+
+async def solve_math(problem: str) -> dict:
+    """Solve mathematical problems using Python"""
+    try:
+        # Create a safe environment for math execution
+        import sympy as sp
+        import numpy as np
+        
+        # Parse the problem
+        problem = problem.strip()
+        
+        # Handle different types of math problems
+        if "=" in problem and any(op in problem for op in ["+", "-", "*", "/", "^"]):
+            # It's an equation to solve
+            try:
+                # Parse the equation
+                eq = sp.sympify(problem)
+                
+                # Find the variable
+                variables = list(eq.free_symbols)
+                if variables:
+                    var = variables[0]
+                    solution = sp.solve(eq, var)
+                    
+                    return {
+                        "problem": problem,
+                        "solution": f"{var} = {solution[0]}",
+                        "steps": [
+                            f"Equation: {problem}",
+                            f"Solution: {var} = {solution[0]}"
+                        ]
+                    }
+            except Exception as e:
+                return {"error": f"Could not solve equation: {str(e)}"}
+        
+        elif any(op in problem for op in ["+", "-", "*", "/", "^", "sqrt", "sin", "cos", "tan", "log", "exp"]):
+            # It's an expression to evaluate
+            try:
+                # Create a safe namespace for evaluation
+                safe_dict = {
+                    "__builtins__": {},
+                    "sin": np.sin,
+                    "cos": np.cos,
+                    "tan": np.tan,
+                    "log": np.log,
+                    "exp": np.exp,
+                    "sqrt": np.sqrt,
+                    "pi": np.pi,
+                    "e": np.e
+                }
+                
+                # Evaluate the expression
+                result = eval(problem, safe_dict)
+                
+                return {
+                    "problem": problem,
+                    "result": float(result),
+                    "steps": [
+                        f"Expression: {problem}",
+                        f"Result: {result}"
+                    ]
+                }
+            except Exception as e:
+                return {"error": f"Could not evaluate expression: {str(e)}"}
+        
+        else:
+            # Try to evaluate as a general expression
+            try:
+                safe_dict = {
+                    "__builtins__": {},
+                    "sin": np.sin,
+                    "cos": np.cos,
+                    "tan": np.tan,
+                    "log": np.log,
+                    "exp": np.exp,
+                    "sqrt": np.sqrt,
+                    "pi": np.pi,
+                    "e": np.e
+                }
+                
+                result = eval(problem, safe_dict)
+                
+                return {
+                    "problem": problem,
+                    "result": float(result),
+                    "steps": [
+                        f"Expression: {problem}",
+                        f"Result: {result}"
+                    ]
+                }
+            except Exception as e:
+                return {"error": f"Could not solve: {str(e)}"}
+    
+    except Exception as e:
+        logger.error(f"Math solving failed: {e}")
+        return {"error": f"Math solving failed: {str(e)}"}
+
+async def tell_joke(category: str = "general") -> dict:
+    """Tell a joke based on category"""
+    jokes = {
+        "general": [
+            "Why don't scientists trust atoms? Because they make up everything!",
+            "Why did the scarecrow win an award? He was outstanding in his field.",
+            "Why don't eggs tell jokes? They'd crack each other up.",
+            "What do you call a bear with no teeth? A gummy bear."
+        ],
+        "programming": [
+            "Why do programmers always mix up Halloween and Christmas? Because Oct 31 equals Dec 25.",
+            "Why do Java developers wear glasses? Because they don't C#.",
+            "There are only 10 types of people in the world: those who understand binary and those who don't.",
+            "A SQL query walks into a bar, walks up to two tables and asks, 'Can I join you?'"
+        ],
+        "math": [
+            "Why was the math book sad? It had too many problems.",
+            "Parallel lines have so much in common. It's a shame they'll never meet.",
+            "Why did the obtuse angle go to the beach? Because it was over 90 degrees.",
+            "Why do mathematicians like parks? Because of all the natural logs."
+        ],
+        "science": [
+            "Why can't you trust an atom? Because they make up everything!",
+            "What did the neutron say to the proton? 'I'm positive you're negative.'",
+            "Why did the photon quit its job? It was tired of the light speed commute.",
+            "What do you call a fish with no eyes? Fsh."
+        ]
+    }
+    
+    if category in jokes:
+        joke = random.choice(jokes[category])
+    else:
+        # Pick a random category and then a random joke
+        category = random.choice(list(jokes.keys()))
+        joke = random.choice(jokes[category])
+    
+    return {
+        "joke": joke,
+        "category": category
+    }
+
+# Add this function to your code
+async def check_user_memory(user_id: str, query: str) -> Optional[dict]:
+    """Check if the query is about the user and return relevant information"""
+    query_lower = query.lower()
+    
+    # Check for personal pronouns and questions
+    personal_indicators = [
+        "my name", "what's my name", "who am i", "about me", "remember me",
+        "i am", "i'm", "i was", "i like", "i live in", "i work at",
+        "my email", "my phone", "my address"
+    ]
+    
+    if not any(indicator in query_lower for indicator in personal_indicators):
+        return None
+    
+    try:
+        # Get user profile
+        profile_response = supabase.table("profiles").select("*").eq("id", user_id).execute()
+        if not profile_response.data:
+            return None
+            
+        profile = profile_response.data[0]
+        
+        # Check for name queries
+        if "name" in query_lower:
+            if profile.get("nickname"):
+                return {
+                    "type": "name",
+                    "value": profile["nickname"],
+                    "context": "I remember your name is " + profile["nickname"]
+                }
+        
+        # Check for preference queries
+        if "like" in query_lower or "prefer" in query_lower:
+            preferences = profile.get("preferences", {})
+            if preferences:
+                # Find relevant preference
+                for key, value in preferences.items():
+                    if key.lower() in query_lower:
+                        return {
+                            "type": "preference",
+                            "key": key,
+                            "value": value,
+                            "context": f"I remember you {key} is {value}"
+                        }
+        
+        # Check for location
+        if "live" in query_lower or "from" in query_lower:
+            if profile.get("location"):
+                return {
+                    "type": "location",
+                    "value": profile["location"],
+                    "context": f"I remember you live in {profile['location']}"
+                }
+        
+        # Check for work
+        if "work" in query_lower or "job" in query_lower:
+            if profile.get("work"):
+                return {
+                    "type": "work",
+                    "value": profile["work"],
+                    "context": f"I remember you work at {profile['work']}"
+                }
+        
+        # Check for other personal info
+        for key in ["email", "phone", "birthday", "hobby"]:
+            if key in query_lower and profile.get(key):
+                return {
+                    "type": key,
+                    "value": profile[key],
+                    "context": f"I remember your {key} is {profile[key]}"
+                }
+        
+        # Check recent conversations for context
+        conv_response = supabase.table("conversations").select("id").eq("user_id", user_id).order("updated_at", desc=True).limit(1).execute()
+        if conv_response.data:
+            conversation_id = conv_response.data[0]["id"]
+            
+            # Search recent messages for relevant information
+            msg_response = supabase.table("messages").select("content").eq("conversation_id", conversation_id).order("created_at", desc=True).limit(20).execute()
+            
+            for msg in msg_response.data:
+                content = msg["content"].lower()
+                # Check if the message contains information that might answer the query
+                if any(word in content for word in query_lower.split() if len(word) > 2):
+                    return {
+                        "type": "conversation",
+                        "value": msg["content"],
+                        "context": "From our recent conversation: " + msg["content"]
+                    }
+        
+        return None
+        
+    except Exception as e:
+        logger.error(f"Failed to check user memory: {e}")
+        return None
+        
 async def train_custom_model(prompt: str, user_id: str, stream: bool = False):
     """Train a custom model"""
  #   // Extract training data from prompt
@@ -5246,11 +5515,20 @@ async def chat_with_tools(user_id: str, messages: list):
     Makes an initial call, checks if the AI wants to use a tool,
     executes the tool, and then makes a final call to synthesize the answer.
     """
+    # Check if the query is about the user
+    last_message = messages[-1]["content"] if messages else ""
+    user_memory = await check_user_memory(user_id, last_message)
+    
+    if user_memory:
+        # If we found relevant user information, add it to the system prompt
+        system_prompt = f"User information: {user_memory['context']}. Please refer to this information in your response."
+        messages.insert(0, {"role": "system", "content": system_prompt})
+    
     # Initial payload with tools enabled
     payload = {
         "model": CHAT_MODEL,
         "messages": messages,
-        "tools": TOOLS,  # Your existing TOOLS list (web_search, run_code)
+        "tools": TOOLS,  # Your updated TOOLS list
         "tool_choice": "auto",  # Let the AI decide when to use a tool
         "max_tokens": 1500,
     }
@@ -5281,6 +5559,12 @@ async def chat_with_tools(user_id: str, messages: list):
             elif function_name == "run_code":
                 # Execute the code
                 result = await run_code_safely(function_args["task"])
+            elif function_name == "solve_math":
+                # Solve the math problem
+                result = await solve_math(function_args["problem"])
+            elif function_name == "tell_joke":
+                # Tell a joke
+                result = await tell_joke(function_args.get("category", "general"))
             else:
                 result = {"error": f"Unknown tool: {function_name}"}
 
@@ -5481,6 +5765,27 @@ def detect_intent(prompt: str) -> str:
         "javascript code", "fix this code"
     ]):
         return "code"
+
+    # Math intent
+    if any(w in p for w in [
+        "calculate", "solve", "equation", "math", "compute", "calculate", "add", "subtract", 
+        "multiply", "divide", "square root", "sin", "cos", "tan", "log", "integral", "derivative"
+    ]):
+        return "math"
+
+    # Joke intent
+    if any(w in p for w in [
+        "joke", "funny", "laugh", "humor", "tell me a joke", "make me laugh"
+    ]):
+        return "joke"
+
+    # Personal information intent (enhanced)
+    if any(w in p for w in [
+        "my name", "what's my name", "who am i", "about me", "remember me",
+        "i am", "i'm", "i was", "i like", "i live in", "i work at",
+        "my email", "my phone", "my address", "my preferences"
+    ]):
+        return "personal"
 
   #  // 🔍 Search
     if any(w in p for w in [
@@ -6193,7 +6498,135 @@ async def ask_universal(request: Request, response: Response):
             else:
                 # Non-streaming version
                 return await _generate_image_core(prompt, num_samples, user_id, return_base64=False)
+
+        # Add these handlers in the ask_universal function, after the existing intent checks
+
+# -------------------------
+# MATH SOLVING
+# -------------------------
+elif intent == "math":
+    if stream:
+        async def event_generator():
+            yield sse({"type": "starting", "message": "Solving math problem..."})
+            try:
+                # Extract the math problem from the prompt
+                problem = prompt
+                result = await solve_math(problem)
                 
+                yield sse({
+                    "type": "math_result",
+                    "problem": result.get("problem"),
+                    "result": result.get("result"),
+                    "steps": result.get("steps", [])
+                })
+                yield sse({"type": "done"})
+            except Exception as e:
+                logger.error(f"Math solving failed: {e}")
+                yield sse({"type": "error", "message": str(e)})
+        
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
+    else:
+        # Non-streaming version
+        result = await solve_math(prompt)
+        return {
+            "problem": result.get("problem"),
+            "result": result.get("result"),
+            "steps": result.get("steps", [])
+        }
+
+# -------------------------
+# JOKE TELLING
+# -------------------------
+elif intent == "joke":
+    if stream:
+        async def event_generator():
+            yield sse({"type": "starting", "message": "Finding a joke..."})
+            try:
+                # Extract category from prompt if specified
+                category = "general"
+                if "programming" in prompt.lower():
+                    category = "programming"
+                elif "math" in prompt.lower():
+                    category = "math"
+                elif "science" in prompt.lower():
+                    category = "science"
+                
+                result = await tell_joke(category)
+                
+                yield sse({
+                    "type": "joke",
+                    "joke": result.get("joke"),
+                    "category": result.get("category")
+                })
+                yield sse({"type": "done"})
+            except Exception as e:
+                logger.error(f"Joke telling failed: {e}")
+                yield sse({"type": "error", "message": str(e)})
+        
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
+    else:
+        # Non-streaming version
+        result = await tell_joke()
+        return {
+            "joke": result.get("joke"),
+            "category": result.get("category")
+        }
+
+# -------------------------
+# PERSONAL INFORMATION
+# -------------------------
+elif intent == "personal":
+    # This will be handled by the enhanced chat_with_tools function
+    # which now checks user memory first
+    messages = [{"role": "user", "content": prompt}]
+    try:
+        assistant_reply = await chat_with_tools(user_id, messages)
+    except Exception as e:
+        logger.error(f"Personal info processing failed: {e}")
+        raise HTTPException(status_code=500, detail="Personal info processing failed")
+
+    if stream:
+        async def generator():
+            yield sse({"type": "starting"})
+            for char in assistant_reply:
+                yield sse({"type": "token", "text": char})
+                await asyncio.sleep(0.005)
+            yield sse({"type": "done"})
+
+        return StreamingResponse(
+            generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
+    else:
+        return {
+            "status": "completed",
+            "reply": assistant_reply,
+            "conversation_id": conversation_id,
+            "user_id": user_id,
+            "type": "personal"
+        }
+        
         # -------------------------
         # VIDEO GENERATION
         # -------------------------
@@ -6699,7 +7132,75 @@ async def ask_universal(request: Request, response: Response):
     except Exception as e:
         logger.error(f"/ask/universal failed: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.post("/user/profile")
+async def update_profile(request: Request, response: Response):
+    """Update user profile information"""
+    user = await get_or_create_user(request, response)
+    user_id = user.id
+    
+    body = await request.json()
+    
+    # Extract profile fields
+    profile_data = {
+        "nickname": body.get("nickname"),
+        "location": body.get("location"),
+        "work": body.get("work"),
+        "email": body.get("email"),
+        "phone": body.get("phone"),
+        "birthday": body.get("birthday"),
+        "hobby": body.get("hobby"),
+        "preferences": body.get("preferences", {})
+    }
+    
+    # Remove None values
+    profile_data = {k: v for k, v in profile_data.items() if v is not None}
+    
+    try:
+        # Update or create profile
+        existing = supabase.table("profiles").select("*").eq("id", user_id).execute()
         
+        if existing.data:
+            # Update existing profile
+            supabase.table("profiles").update({
+                **profile_data,
+                "updated_at": datetime.utcnow().isoformat()
+            }).eq("id", user_id).execute()
+        else:
+            # Create new profile
+            supabase.table("profiles").insert({
+                "id": user_id,
+                **profile_data,
+                "created_at": datetime.utcnow().isoformat()
+            }).execute()
+        
+        return {"status": "success", "message": "Profile updated successfully"}
+    except Exception as e:
+        logger.error(f"Failed to update profile: {e}")
+        raise HTTPException(500, "Failed to update profile")
+
+@app.get("/user/profile")
+async def get_profile(request: Request, response: Response):
+    """Get user profile information"""
+    user = await get_or_create_user(request, response)
+    user_id = user.id
+    
+    try:
+        profile_response = supabase.table("profiles").select("*").eq("id", user_id).execute()
+        
+        if profile_response.data:
+            return profile_response.data[0]
+        else:
+            # Return default profile if none exists
+            return {
+                "id": user_id,
+                "nickname": f"User{user_id[:8]}",
+                "preferences": {}
+            }
+    except Exception as e:
+        logger.error(f"Failed to get profile: {e}")
+        raise HTTPException(500, "Failed to get profile")
+
 @app.post("/message/{message_id}/edit")
 async def edit_message(
     message_id: str,
