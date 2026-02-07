@@ -3232,12 +3232,12 @@ async def translate_text(prompt: str, user_id: str, stream: bool = False):
 #    // Map common language names to language codes
         lang_map = {
     # 🌍 Global Major
-    "english": "en",
-    "spanish": "es",
-    "french": "fr",
-    "german": "de",
-    "italian": "it",
-    "portuguese": "pt",
+            "english": "en",
+            "spanish": "es",
+            "french": "fr",
+            "german": "de",
+            "italian": "it",
+            "portuguese": "pt",
     "russian": "ru",
     "chinese": "zh",
     "japanese": "ja",
@@ -3333,7 +3333,7 @@ async def translate_text(prompt: str, user_id: str, stream: bool = False):
     "samoan": "sm",
     "tongan": "to",
     "fijian": "fj"
-}
+  }
     
     target_lang_code = lang_map.get(target_lang.lower(), target_lang)
     
