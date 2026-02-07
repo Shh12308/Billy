@@ -3221,127 +3221,133 @@ async def document_analysis(prompt: str, user_id: str, stream: bool = False):
 
 async def translate_text(prompt: str, user_id: str, stream: bool = False):
     """Translate text between languages"""
- #   // Extract text and languages from prompt
-    text_match = re.search(r'translate[:\s]+(.*?)(?:\s+to\s+|\s+in\s+)(.*?)(?:\n\n|\n$|$)', prompt, re.DOTALL | re.IGNORECASE)
+
+    # Extract text and target language from prompt
+    text_match = re.search(
+        r'translate[:\s]+(.*?)(?:\s+to\s+|\s+in\s+)(.*?)(?:\n\n|\n$|$)',
+        prompt,
+        re.DOTALL | re.IGNORECASE
+    )
+
     if not text_match:
         raise HTTPException(400, "Could not extract text and target language from prompt")
-    
+
     text = text_match.group(1).strip()
     target_lang = text_match.group(2).strip()
-    
-#    // Map common language names to language codes
-        lang_map = {
-    # 🌍 Global Major
-            "english": "en",
-            "spanish": "es",
-            "french": "fr",
-            "german": "de",
-            "italian": "it",
-            "portuguese": "pt",
-    "russian": "ru",
-    "chinese": "zh",
-    "japanese": "ja",
-    "korean": "ko",
-    "arabic": "ar",
-    "hindi": "hi",
 
-    # 🌍 Africa
-    "swahili": "sw",
-    "zulu": "zu",
-    "xhosa": "xh",
-    "yoruba": "yo",
-    "igbo": "ig",
-    "hausa": "ha",
-    "amharic": "am",
-    "somali": "so",
-    "afrikaans": "af",
-    "tigrinya": "ti",
-    "wolof": "wo",
-    "shona": "sn",
-    "kinyarwanda": "rw",
-    "lingala": "ln",
-    "sesotho": "st",
-    "setswana": "tn",
-    "luganda": "lg",
-    "malagasy": "mg",
+    # Map common language names to language codes
+    lang_map = {
+        # Global Major
+        "english": "en",
+        "spanish": "es",
+        "french": "fr",
+        "german": "de",
+        "italian": "it",
+        "portuguese": "pt",
+        "russian": "ru",
+        "chinese": "zh",
+        "japanese": "ja",
+        "korean": "ko",
+        "arabic": "ar",
+        "hindi": "hi",
 
-    # 🌍 Europe
-    "dutch": "nl",
-    "swedish": "sv",
-    "norwegian": "no",
-    "danish": "da",
-    "finnish": "fi",
-    "polish": "pl",
-    "ukrainian": "uk",
-    "czech": "cs",
-    "hungarian": "hu",
-    "romanian": "ro",
-    "bulgarian": "bg",
-    "greek": "el",
-    "serbian": "sr",
-    "croatian": "hr",
-    "slovak": "sk",
-    "slovenian": "sl",
-    "estonian": "et",
-    "latvian": "lv",
-    "lithuanian": "lt",
-    "icelandic": "is",
-    "irish": "ga",
-    "welsh": "cy",
-    "basque": "eu",
-    "catalan": "ca",
-    "maltese": "mt",
+        # Africa
+        "swahili": "sw",
+        "zulu": "zu",
+        "xhosa": "xh",
+        "yoruba": "yo",
+        "igbo": "ig",
+        "hausa": "ha",
+        "amharic": "am",
+        "somali": "so",
+        "afrikaans": "af",
+        "tigrinya": "ti",
+        "wolof": "wo",
+        "shona": "sn",
+        "kinyarwanda": "rw",
+        "lingala": "ln",
+        "sesotho": "st",
+        "setswana": "tn",
+        "luganda": "lg",
+        "malagasy": "mg",
 
-    # 🌍 Americas
-    "haitian creole": "ht",
-    "guarani": "gn",
-    "quechua": "qu",
-    "aymara": "ay",
-    "navajo": "nv",
+        # Europe
+        "dutch": "nl",
+        "swedish": "sv",
+        "norwegian": "no",
+        "danish": "da",
+        "finnish": "fi",
+        "polish": "pl",
+        "ukrainian": "uk",
+        "czech": "cs",
+        "hungarian": "hu",
+        "romanian": "ro",
+        "bulgarian": "bg",
+        "greek": "el",
+        "serbian": "sr",
+        "croatian": "hr",
+        "slovak": "sk",
+        "slovenian": "sl",
+        "estonian": "et",
+        "latvian": "lv",
+        "lithuanian": "lt",
+        "icelandic": "is",
+        "irish": "ga",
+        "welsh": "cy",
+        "basque": "eu",
+        "catalan": "ca",
+        "maltese": "mt",
 
-    # 🌍 Asia
-    "urdu": "ur",
-    "bengali": "bn",
-    "punjabi": "pa",
-    "tamil": "ta",
-    "telugu": "te",
-    "malayalam": "ml",
-    "gujarati": "gu",
-    "marathi": "mr",
-    "nepali": "ne",
-    "sinhala": "si",
-    "burmese": "my",
-    "thai": "th",
-    "vietnamese": "vi",
-    "indonesian": "id",
-    "malay": "ms",
-    "filipino": "tl",
-    "khmer": "km",
-    "lao": "lo",
-    "mongolian": "mn",
-    "kazakh": "kk",
-    "uzbek": "uz",
-    "hebrew": "he",
-    "persian": "fa",
-    "turkish": "tr",
-    "georgian": "ka",
-    "armenian": "hy",
-    "azerbaijani": "az",
+        # Americas
+        "haitian creole": "ht",
+        "guarani": "gn",
+        "quechua": "qu",
+        "aymara": "ay",
+        "navajo": "nv",
 
-    # 🌍 Oceania
-    "maori": "mi",
-    "samoan": "sm",
-    "tongan": "to",
-    "fijian": "fj"
-  }
-    
+        # Asia
+        "urdu": "ur",
+        "bengali": "bn",
+        "punjabi": "pa",
+        "tamil": "ta",
+        "telugu": "te",
+        "malayalam": "ml",
+        "gujarati": "gu",
+        "marathi": "mr",
+        "nepali": "ne",
+        "sinhala": "si",
+        "burmese": "my",
+        "thai": "th",
+        "vietnamese": "vi",
+        "indonesian": "id",
+        "malay": "ms",
+        "filipino": "tl",
+        "khmer": "km",
+        "lao": "lo",
+        "mongolian": "mn",
+        "kazakh": "kk",
+        "uzbek": "uz",
+        "hebrew": "he",
+        "persian": "fa",
+        "turkish": "tr",
+        "georgian": "ka",
+        "armenian": "hy",
+        "azerbaijani": "az",
+
+        # Oceania
+        "maori": "mi",
+        "samoan": "sm",
+        "tongan": "to",
+        "fijian": "fj",
+    }
+
     target_lang_code = lang_map.get(target_lang.lower(), target_lang)
-    
+
     if stream:
         async def event_generator():
             yield sse({"type": "starting", "message": f"Translating to {target_lang}..."})
-            
-        #    // Use Groq for translation
+
+            # Prepare prompt for translation
             translation_prompt = f"Translate the following text to {target_lang}:\n\n{text}"
             payload = {
                 "model": CHAT_MODEL,
@@ -3349,7 +3355,7 @@ async def translate_text(prompt: str, user_id: str, stream: bool = False):
                 "max_tokens": 1000,
                 "stream": True
             }
-            
+
             async with httpx.AsyncClient(timeout=None) as client:
                 async with client.stream(
                     "POST",
@@ -3360,11 +3366,9 @@ async def translate_text(prompt: str, user_id: str, stream: bool = False):
                     async for line in resp.aiter_lines():
                         if not line or not line.startswith("data:"):
                             continue
-                        
                         data = line[5:].strip()
                         if data == "[DONE]":
                             break
-                        
                         try:
                             chunk = json.loads(data)
                             delta = chunk["choices"][0]["delta"].get("content")
@@ -3372,9 +3376,9 @@ async def translate_text(prompt: str, user_id: str, stream: bool = False):
                                 yield sse({"type": "token", "text": delta})
                         except Exception:
                             continue
-            
+
             yield sse({"type": "done"})
-        
+
         return StreamingResponse(
             event_generator(),
             media_type="text/event-stream",
@@ -3385,14 +3389,14 @@ async def translate_text(prompt: str, user_id: str, stream: bool = False):
             }
         )
     else:
-   #     // Non-streaming version
+        # Non-streaming version
         translation_prompt = f"Translate the following text to {target_lang}:\n\n{text}"
         payload = {
             "model": CHAT_MODEL,
             "messages": [{"role": "user", "content": translation_prompt}],
             "max_tokens": 1000
         }
-        
+
         async with httpx.AsyncClient(timeout=30) as client:
             r = await client.post(
                 "https://api.groq.com/openai/v1/chat/completions",
@@ -3401,11 +3405,12 @@ async def translate_text(prompt: str, user_id: str, stream: bool = False):
             )
             r.raise_for_status()
             translation = r.json()["choices"][0]["message"]["content"]
-        
+
         return {
             "original_text": text,
             "translated_text": translation,
-            "target_language": target_lang
+            "target_language": target_lang,
+            "target_language_code": target_lang_code
         }
 
 async def analyze_sentiment(prompt: str, user_id: str, stream: bool = False):
@@ -7741,24 +7746,25 @@ async def check():
     return conv_check
 
 # Update the video endpoint with real RunwayML Gen-2 implementation
-@app.post("/video")
-async def generate_video(request: Request):
+@app.post("/video/stream")
+async def generate_video_stream(req: Request, res: Response):
     """
-    Generate videos from text prompts using available video generation APIs.
-    Returns URLs to the generated videos.
+    Stream video generation progress to the client using only Replicate
     """
-    body = await request.json()
+    body = await req.json()
     prompt = body.get("prompt", "").strip()
-    user = await get_or_create_user(request, Response())
-    user_id = user.id
     
     try:
-        samples = max(1, int(body.get("samples", 1)))
+        samples = max(1, int(body.get("samples", 1))
     except Exception:
         samples = 1
     
     if not prompt:
         raise HTTPException(400, "prompt required")
+    
+    # Get user
+    user = await get_or_create_user(req, res)
+    user_id = user_id
     
     # Content moderation check
     is_flagged = await nsfw_check(prompt)
@@ -7768,34 +7774,199 @@ async def generate_video(request: Request):
             detail="Video generation prompt violates content policy."
         )
     
-    # Check for cached result
-    # Try different providers in order of preference
-    STABILITY_API_KEY = os.getenv("STABILITY_API_KEY")
-    HF_API_KEY = os.getenv("HF_API_KEY")
-    RUNWAYML_API_KEY = os.getenv("RUNWAYML_API_KEY")
+    # Check for Replicate API key
+    REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
+    if not REPLICATE_API_TOKEN:
+        # No API key, use placeholder
+        async def event_generator():
+            yield sse({
+                "status": "starting", 
+                "message": "No Replicate API key configured. Using placeholder.",
+                "watermark": {
+                    "enabled": WATERMARK_ENABLED,
+                    "text": WATERMARK_TEXT if WATERMARK_ENABLED else None
+                }
+            })
+            
+            # Generate placeholder video
+            try:
+                result = await generate_placeholder_video(prompt, samples, user_id)
+                yield sse({
+                    "status": "completed",
+                    "message": "Placeholder video generated",
+                    "videos": result["videos"],
+                    "watermark": {
+                        "enabled": WATERMARK_ENABLED,
+                        "text": WATERMARK_TEXT if WATERMARK_ENABLED else None
+                    }
+                })
+            except Exception as e:
+                logger.error(f"Placeholder video generation failed: {e}")
+                yield sse({"status": "error", "message": str(e)})
+        
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
     
-    provider = None
-    if STABILITY_API_KEY:
-        provider = "stability-ai"
-    elif HF_API_KEY:
-        provider = "huggingface-damo"
-    elif RUNWAYML_API_KEY:
-        provider = "runwayml-gen2"
+    # Set the API token
+    os.environ["REPLICATE_API_TOKEN"] = REPLICATE_API_TOKEN
     
-    if provider:
-        cached = get_cached_result(prompt, provider)
-        if cached:
-            return cached
+    async def event_generator():
+        yield sse({
+            "status": "starting", 
+            "message": "Initializing video generation with Replicate...",
+            "provider": "replicate",
+            "watermark": {
+                "enabled": WATERMARK_ENABLED,
+                "text": WATERMARK_TEXT if WATERMARK_ENABLED else None
+            }
+        })
+        
+        video_generated = False
+        
+        for i in range(samples):
+            video_generated = False
+            
+            try:
+                # Run the model in a thread to avoid blocking
+                output = await asyncio.to_thread(
+                    replicate.run(
+                        "stability-ai/stable-video-diffusion",
+                        input={
+                            "prompt": prompt,
+                            "num_frames": 25,
+                            "num_inference_steps": 25,
+                            "guidance_scale": 7.5,
+                            "seed": random.randint(0, 4294967295),
+                            "width": 1024,
+                            "height": 576  # 16:9 aspect ratio
+                        }
+                )
+                
+                # The output is typically a URL to the generated video
+                video_url = output
+                if not video_url:
+                    logger.error("No video URL in response")
+                    continue
+                
+                # Download the video
+                video_response = await httpx.AsyncClient(timeout=120.0).get(video_url)
+                video_response.raise_for_status()
+                video_bytes = video_response.content
+                
+                # Upload to Supabase
+                filename = f"{uuid.uuid4().hex[:8]}.mp4"
+                storage_path = f"anonymous/{filename}"
+                
+                supabase.storage.from_("ai-videos").upload(
+                    path=storage_path,
+                    file=video_bytes,
+                    file_options={"content-type": "video/mp4"
+                )
+                
+                # Save video record
+                try:
+                    supabase.table("videos").insert({
+                        "id": str(uuid.uuid4()),
+                        "user_id": user_id,
+                        "video_path": storage_path,
+                        "prompt": prompt,
+                        "provider": "replicate",
+                        "created_at": datetime.now().isoformat()
+                    }).execute()
+                except Exception as e:
+                    logger.error(f"Failed to save video record: {e}")
+                
+                # Get public URL
+                public_url = get_public_url("ai-videos", storage_path)
+                urls.append(public_url)
+                video_generated = True
+                
+            except Exception as e:
+                logger.error(f"Replicate video generation failed: {e}")
+                continue
+            
+            if video_generated:
+                yield sse({
+                    "status": "video_ready",
+                    "message": f"Video {i+1} ready",
+                    "video_url": public_url,
+                    "provider": "replicate",
+                    "model": model_to_use["name"],
+                    "video_index": i,
+                    "watermarked": WATERMARK_ENABLED
+                })
+                yield sse({"status": "done"})
+                
+            except Exception as e:
+                logger.error(f"Video generation failed: {e}")
+                yield sse({"status": "error", "message": str(e)})
+        
+        if not video_generated:
+            logger.warning(f"Failed to generate video {i+1}/{samples} with Replicate")
+            continue
+        
+        if not urls:
+            logger.warning(f"No videos were generated successfully with Replicate")
+            return await generate_placeholder_video(prompt, samples, user_id)
+        
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
+    
+    # If no videos were generated, use placeholder
+    if not urls:
+        yield sse({
+            "status": "error", 
+            "message": "No videos were generated successfully with Replicate",
+            "watermark": {
+                "enabled": WATERMARK_ENABLED,
+                "text": WATERMARK_TEXT if WATERMARK_ENABLED else None
+            }
+        )
+    
+    # Cleanup
+    finally:
+        # Cleanup logic here if needed
+        pass
+
+# Update the main video generation function
+@app.post("/video")
+async def generate_video(request: Request, response: BackgroundTasks, background_tasks: BackgroundTasks):
+    """
+    Generate videos using only Replicate API
+    """
+    body = await request.json()
+    prompt = body.get("prompt", "").strip()
     
     try:
-        result = await generate_video_internal(prompt, samples, user_id)
-        cache_result(prompt, result["provider"], result)
-        return result
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception("Video generation failed")
-        raise HTTPException(500, "Video generation failed")
+        samples = max(1, int(body.get("samples", 1))
+    except Exception:
+        samples = 1
+    
+    if not prompt:
+        raise HTTPException(400, "prompt required")
+    
+    # Get user
+    user = await get_or_create_user(request, response)
+    user_id = user_id
+    
+    # Generate video using only Replicate
+    result = await generate_video_replicate(prompt, samples, user_id)
+    
+    return result
 
 # Add a new endpoint for video-to-video generation
 @app.post("/video/img2vid")
@@ -7964,324 +8135,6 @@ async def test_video_replicate(prompt: str = "A cat walking on a leash in a gard
             "error": str(e),
             "message": "Replicate video generation test failed"
         }
-        
-# Add a video streaming endpoint for real-time progress updates
-@app.post("/video/stream")
-async def generate_video_stream(req: Request, res: Response):
-    """
-    Stream video generation progress to the client using Replicate
-    """
-    body = await req.json()
-    prompt = body.get("prompt", "").strip()
-    
-    try:
-        samples = max(1, int(body.get("samples", 1)))
-    except Exception:
-        samples = 1
-    
-    if not prompt:
-        raise HTTPException(400, "prompt required")
-    
-    # Get user
-    user = await get_or_create_user(req, res)
-    user_id = user.id
-    
-    # Content moderation check
-    is_flagged = await nsfw_check(prompt)
-    if is_flagged:
-        raise HTTPException(
-            status_code=400, 
-            detail="Video generation prompt violates content policy."
-        )
-    
-    # Check for Replicate API key
-    REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
-    if not REPLICATE_API_TOKEN:
-        # No API key configured, use placeholder
-        async def event_generator():
-            yield sse({
-                "status": "starting", 
-                "message": "No Replicate API key configured. Using placeholder.",
-                "watermark": {
-                    "enabled": WATERMARK_ENABLED,
-                    "text": WATERMARK_TEXT if WATERMARK_ENABLED else None
-                }
-            })
-            
-            # Generate placeholder video
-            try:
-                result = await generate_placeholder_video(prompt, samples, user_id)
-                yield sse({
-                    "status": "completed",
-                    "message": "Placeholder video generated",
-                    "videos": result["videos"],
-                    "watermark": {
-                        "enabled": WATERMARK_ENABLED,
-                        "text": WATERMARK_TEXT if WATERMARK_ENABLED else None
-                    }
-                })
-            except Exception as e:
-                logger.error(f"Placeholder video generation failed: {e}")
-                yield sse({"status": "error", "message": str(e)})
-        
-        return StreamingResponse(
-            event_generator(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no"
-            }
-        )
-    
-    # Set the API token
-    os.environ["REPLICATE_API_TOKEN"] = REPLICATE_API_TOKEN
-    
-    async def event_generator():
-        # Register stream task
-        task = asyncio.current_task()
-        active_streams[user_id] = task
-        
-        # Register in database
-        stream_id = str(uuid.uuid4())
-        try:
-            supabase.table("active_streams").insert({
-                "user_id": user_id,
-                "stream_id": stream_id,
-                "started_at": datetime.now().isoformat()
-            }).execute()
-        except Exception as e:
-            logger.error(f"Failed to register stream: {e}")
-        
-        try:
-            yield sse({
-                "status": "starting", 
-                "message": "Initializing video generation with Replicate...",
-                "provider": "replicate",
-                "watermark": {
-                    "enabled": WATERMARK_ENABLED,
-                    "text": WATERMARK_TEXT if WATERMARK_ENABLED else None,
-                    "position": WATERMARK_POSITION if WATERMARK_ENABLED else None,
-                    "opacity": WATERMARK_OPACITY if WATERMARK_ENABLED else None
-                }
-            })
-            
-            video_urls = []
-            
-            # Best video models on Replicate
-            models = [
-                {
-                    "name": "Stable Video Diffusion",
-                    "model": "stability-ai/stable-video-diffusion:3f0457e4619daac51203dedb1a16b0ac489259d0d48b07e0fa9d5d323f0f91b1",
-                    "params": {
-                        "prompt": prompt,
-                        "num_frames": 25,
-                        "num_inference_steps": 25,
-                        "guidance_scale": 7.5,
-                        "seed": random.randint(0, 4294967295),
-                        "width": 1024,
-                        "height": 576
-                    }
-                },
-                {
-                    "name": "Realistic Vision Video",
-                    "model": "lucataco/realistic-vision-video:9ca0f0d5d4a2f1f5b21b98f9557a0c873b99947bb2106f4e1a7545a5f7896f6",
-                    "params": {
-                        "prompt": prompt,
-                        "num_frames": 25,
-                        "num_inference_steps": 25,
-                        "guidance_scale": 7.5,
-                        "seed": random.randint(0, 4294967295),
-                        "width": 1024,
-                        "height": 576
-                    }
-                }
-            ]
-            
-            for i in range(samples):
-                yield sse({
-                    "status": "progress", 
-                    "message": f"Generating video {i+1}/{samples}...",
-                    "current": i + 1,
-                    "total": samples
-                })
-                
-                video_generated = False
-                
-                for model_info in models:
-                    if video_generated:
-                        break
-                    
-                    try:
-                        yield sse({
-                            "status": "progress",
-                            "message": f"Trying {model_info['name']}..."
-                        })
-                        
-                        # Run the model in a thread to not block
-                        output = await asyncio.to_thread(
-                            replicate.run,
-                            model_info["model"],
-                            input=model_info["params"]
-                        )
-                        
-                        # Process the output
-                        if isinstance(output, str):
-                            video_url = output
-                        elif isinstance(output, list) and len(output) > 0:
-                            video_url = output[0]
-                        elif isinstance(output, dict) and "video" in output:
-                            video_url = output["video"]
-                        else:
-                            continue
-                        
-                        if not video_url:
-                            continue
-                        
-                        # Download the video
-                        async with httpx.AsyncClient(timeout=120) as client:
-                            video_response = await client.get(video_url)
-                            video_response.raise_for_status()
-                            video_bytes = video_response.content
-                        
-                        # Apply watermark if enabled
-                        if WATERMARK_ENABLED:
-                            yield sse({
-                                "status": "progress", 
-                                "message": "Applying watermark...",
-                                "watermark": {
-                                    "enabled": True,
-                                    "text": WATERMARK_TEXT,
-                                    "position": WATERMARK_POSITION,
-                                    "opacity": WATERMARK_OPACITY
-                                }
-                            })
-                            video_bytes = add_watermark_to_video(
-                                video_bytes, 
-                                WATERMARK_TEXT, 
-                                WATERMARK_POSITION, 
-                                WATERMARK_OPACITY
-                            )
-                        
-                        # Upload to Supabase
-                        filename = f"{uuid.uuid4().hex[:8]}.mp4"
-                        storage_path = f"anonymous/{filename}"
-                        
-                        supabase.storage.from_("ai-videos").upload(
-                            path=storage_path,
-                            file=video_bytes,
-                            file_options={"content-type": "video/mp4"}
-                        )
-                        
-                        # Save video record
-                        try:
-                            supabase.table("videos").insert({
-                                "id": str(uuid.uuid4()),
-                                "user_id": user_id,
-                                "video_path": storage_path,
-                                "prompt": prompt,
-                                "provider": "replicate",
-                                "model": model_info["name"],
-                                "watermarked": WATERMARK_ENABLED,
-                                "created_at": datetime.now().isoformat()
-                            }).execute()
-                        except Exception as e:
-                            logger.error(f"Failed to save video record: {e}")
-                        
-                        # Get public URL
-                        public_url = get_public_url("ai-videos", storage_path)
-                        video_urls.append(public_url)
-                        
-                        yield sse({
-                            "status": "video_ready",
-                            "message": f"Video {i+1} ready",
-                            "video_url": public_url,
-                            "video_index": i,
-                            "model": model_info["name"],
-                            "watermarked": WATERMARK_ENABLED
-                        })
-                        
-                        video_generated = True
-                        break
-                        
-                    except Exception as e:
-                        logger.error(f"Replicate video generation failed: {e}")
-                        continue
-                
-                if not video_generated:
-                    yield sse({"status": "error", "message": f"Video {i+1} failed"})
-            
-            if video_urls:
-                yield sse({
-                    "status": "completed",
-                    "message": "Video generation completed",
-                    "videos": video_urls,
-                    "total_videos": len(video_urls),
-                    "provider": "replicate",
-                    "watermark": {
-                        "enabled": WATERMARK_ENABLED,
-                        "text": WATERMARK_TEXT if WATERMARK_ENABLED else None,
-                        "position": WATERMARK_POSITION if WATERMARK_ENABLED else None,
-                        "opacity": WATERMARK_OPACITY if WATERMARK_ENABLED else None
-                    }
-                })
-                
-                # Cache result
-                cache_result(prompt, "replicate", {
-                    "provider": "replicate",
-                    "videos": video_urls,
-                    "watermarked": WATERMARK_ENABLED
-                })
-            else:
-                yield sse({
-                    "status": "error", 
-                    "message": "No videos were generated successfully",
-                    "watermark": {
-                        "enabled": WATERMARK_ENABLED,
-                        "text": WATERMARK_TEXT if WATERMARK_ENABLED else None
-                    }
-                })
-        
-        except asyncio.CancelledError:
-            logger.info(f"Video stream cancelled for user {user_id}")
-            yield sse({
-                "status": "cancelled", 
-                "message": "Video generation cancelled",
-                "watermark": {
-                    "enabled": WATERMARK_ENABLED,
-                    "text": WATERMARK_TEXT if WATERMARK_ENABLED else None
-                }
-            })
-            raise
-        
-        except Exception as e:
-            logger.exception("Video stream exception")
-            yield sse({
-                "status": "error", 
-                "message": str(e),
-                "watermark": {
-                    "enabled": WATERMARK_ENABLED,
-                    "text": WATERMARK_TEXT if WATERMARK_ENABLED else None
-                }
-            })
-        
-        finally:
-            # Cleanup
-            active_streams.pop(user_id, None)
-            try:
-                supabase.table("active_streams").delete().eq("user_id", user_id).execute()
-            except Exception as e:
-                logger.error(f"Failed to cleanup active stream: {e}")
-    
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"
-        }
-    )
 
 @app.get("/debug/replicate")
 async def debug_replicate():
