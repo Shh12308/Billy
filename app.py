@@ -7748,6 +7748,8 @@ async def check():
 # Update the video endpoint with real RunwayML Gen-2 implementation
 # Find the generate_video_stream function and replace it with this corrected version:
 
+# Replace the entire generate_video_stream function with this fixed version:
+
 @app.post("/video/stream")
 async def generate_video_stream(req: Request, res: Response):
     """
@@ -7767,9 +7769,6 @@ async def generate_video_stream(req: Request, res: Response):
     # Get user
     user = await get_or_create_user(req, res)
     user_id = user.id
-    
-    # Initialize urls list
-    urls = []
     
     # Content moderation check
     is_flagged = await nsfw_check(prompt)
@@ -7823,105 +7822,113 @@ async def generate_video_stream(req: Request, res: Response):
     os.environ["REPLICATE_API_TOKEN"] = REPLICATE_API_TOKEN
     
     async def event_generator():
-        yield sse({
-            "status": "starting", 
-            "message": "Initializing video generation with Replicate...",
-            "provider": "replicate",
-            "watermark": {
-                "enabled": WATERMARK_ENABLED,
-                "text": WATERMARK_TEXT if WATERMARK_ENABLED else None
-            }
-        })
-        
-        video_generated = False
-        
-        for i in range(samples):
-            video_generated = False
-            
-            try:
-                # Run the model in a thread to avoid blocking
-                output = await asyncio.to_thread(
-                    replicate.run,
-                    "stability-ai/stable-video-diffusion",
-                    input={
-                        "prompt": prompt,
-                        "num_frames": 25,
-                        "num_inference_steps": 25,
-                        "guidance_scale": 7.5,
-                        "seed": random.randint(0, 4294967295),
-                        "width": 1024,
-                        "height": 576  # 16:9 aspect ratio
-                    }
-                )
-                
-                # The output is typically a URL to the generated video
-                video_url = output
-                if not video_url:
-                    logger.error("No video URL in response")
-                    continue
-                
-                # Download the video
-                video_response = await httpx.AsyncClient(timeout=120.0).get(video_url)
-                video_response.raise_for_status()
-                video_bytes = video_response.content
-                
-                # Upload to Supabase
-                filename = f"{uuid.uuid4().hex[:8]}.mp4"
-                storage_path = f"anonymous/{filename}"
-                
-                supabase.storage.from_("ai-videos").upload(
-                    path=storage_path,
-                    file=video_bytes,
-                    file_options={"content-type": "video/mp4"}
-                )
-                
-                # Save video record
-                try:
-                    supabase.table("videos").insert({
-                        "id": str(uuid.uuid4()),
-                        "user_id": user_id,
-                        "video_path": storage_path,
-                        "prompt": prompt,
-                        "provider": "replicate",
-                        "created_at": datetime.now().isoformat()
-                    }).execute()
-                except Exception as e:
-                    logger.error(f"Failed to save video record: {e}")
-                
-                # Get public URL
-                public_url = get_public_url("ai-videos", storage_path)
-                urls.append(public_url)
-                video_generated = True
-                
-                yield sse({
-                    "status": "video_ready",
-                    "message": f"Video {i+1} ready",
-                    "video_url": public_url,
-                    "provider": "replicate",
-                    "video_index": i,
-                    "watermarked": WATERMARK_ENABLED
-                })
-                
-            except Exception as e:
-                logger.error(f"Replicate video generation failed: {e}")
-                continue
-            
-            if not video_generated:
-                logger.warning(f"Failed to generate video {i+1}/{samples} with Replicate")
-                continue
-        
-        if urls:
-            yield sse({"status": "done"})
-        else:
-            logger.warning("No videos were generated successfully with Replicate")
+        try:
             yield sse({
-                "status": "error", 
-                "message": "No videos were generated successfully with Replicate",
+                "status": "starting", 
+                "message": "Initializing video generation with Replicate...",
+                "provider": "replicate",
                 "watermark": {
                     "enabled": WATERMARK_ENABLED,
                     "text": WATERMARK_TEXT if WATERMARK_ENABLED else None
                 }
             })
+            
+            urls = []
+            video_generated = False
+            
+            for i in range(samples):
+                try:
+                    # Run the model in a thread to avoid blocking
+                    output = await asyncio.to_thread(
+                        replicate.run,
+                        "stability-ai/stable-video-diffusion",
+                        input={
+                            "prompt": prompt,
+                            "num_frames": 25,
+                            "num_inference_steps": 25,
+                            "guidance_scale": 7.5,
+                            "seed": random.randint(0, 4294967295),
+                            "width": 1024,
+                            "height": 576  # 16:9 aspect ratio
+                        }
+                    )
+                    
+                    # The output is typically a URL to the generated video
+                    video_url = output
+                    if not video_url:
+                        logger.error("No video URL in response")
+                        continue
+                    
+                    # Download the video
+                    video_response = await httpx.AsyncClient(timeout=120.0).get(video_url)
+                    video_response.raise_for_status()
+                    video_bytes = video_response.content
+                    
+                    # Upload to Supabase
+                    filename = f"{uuid.uuid4().hex[:8]}.mp4"
+                    storage_path = f"anonymous/{filename}"
+                    
+                    supabase.storage.from_("ai-videos").upload(
+                        path=storage_path,
+                        file=video_bytes,
+                        file_options={"content-type": "video/mp4"}
+                    )
+                    
+                    # Save video record
+                    try:
+                        supabase.table("videos").insert({
+                            "id": str(uuid.uuid4()),
+                            "user_id": user_id,
+                            "video_path": storage_path,
+                            "prompt": prompt,
+                            "provider": "replicate",
+                            "created_at": datetime.now().isoformat()
+                        }).execute()
+                    except Exception as e:
+                        logger.error(f"Failed to save video record: {e}")
+                    
+                    # Get public URL
+                    public_url = get_public_url("ai-videos", storage_path)
+                    urls.append(public_url)
+                    video_generated = True
+                    
+                    yield sse({
+                        "status": "video_ready",
+                        "message": f"Video {i+1} ready",
+                        "video_url": public_url,
+                        "provider": "replicate",
+                        "video_index": i,
+                        "watermarked": WATERMARK_ENABLED
+                    })
+                    
+                except Exception as e:
+                    logger.error(f"Replicate video generation failed: {e}")
+                    continue
+                
+                if not video_generated:
+                    logger.warning(f"Failed to generate video {i+1}/{samples} with Replicate")
+                    continue
+            
+            if urls:
+                yield sse({"status": "done"})
+            else:
+                logger.warning("No videos were generated successfully with Replicate")
+                yield sse({
+                    "status": "error", 
+                    "message": "No videos were generated successfully with Replicate",
+                    "watermark": {
+                        "enabled": WATERMARK_ENABLED,
+                        "text": WATERMARK_TEXT if WATERMARK_ENABLED else None
+                    }
+                })
+        
+        except asyncio.CancelledError:
+            logger.info(f"Video generation cancelled for user {user_id}")
+            yield sse({"status": "cancelled"})
+            raise
+        except Exception as e:
+            logger.error(f"Video generation failed: {e}")
+            yield sse({"status": "error", "message": str(e)})
     
     return StreamingResponse(
         event_generator(),
