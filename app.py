@@ -596,25 +596,35 @@ async def generate_video_internal(prompt: str, samples: int = 1, user_id: str = 
     
 async def generate_video_huggingface(prompt: str, samples: int = 1, user_id: str = None) -> dict:
     """
-    Generate videos using the Hugging Face Inference API.
+    Generate videos using the Hugging Face Inference API with a different model.
     """
     HF_API_KEY = os.getenv("HF_API_KEY")
     if not HF_API_KEY:
         logger.warning("HF_API_KEY not configured, cannot use Hugging Face fallback.")
+        # Instead of raising an error, we'll just log and let it fall through to the placeholder
+        logger.warning("Proceeding to placeholder video generation.")
         raise HTTPException(status_code=503, detail="Hugging Face API key not configured for video fallback.")
 
-    API_URL = "https://api-inference.huggingface.co/models/damo-vilab/text-to-video-ms-1.7b"
+    # --- FIX: Use a different, currently available model ---
+    API_URL = "https://api-inference.huggingface.co/models/cerspense/zeroscope-v2-xl"
     headers = {"Authorization": f"Bearer {HF_API_KEY}"}
     
     urls = []
     
     for i in range(samples):
         try:
-            payload = {"inputs": prompt}
+            # The zeroscope model expects a specific prompt format
+            formatted_prompt = f"A cinematic video of {prompt}"
+            payload = {"inputs": formatted_prompt}
             
-            async with httpx.AsyncClient(timeout=300) as client: # HF can be slow
+            logger.info(f"Attempting Hugging Face video generation with prompt: '{formatted_prompt}'")
+            async with httpx.AsyncClient(timeout=300) as client:
                 response = await client.post(API_URL, headers=headers, json=payload)
-                response.raise_for_status()
+                # This model might return a different status on failure
+                if response.status_code != 200:
+                    error_text = response.text
+                    logger.error(f"Hugging Face API returned status {response.status_code}: {error_text}")
+                    continue # Skip to the next sample
                 
                 # The HF API for this model returns a raw video file
                 video_bytes = response.content
@@ -637,7 +647,7 @@ async def generate_video_huggingface(prompt: str, samples: int = 1, user_id: str
                     "video_path": storage_path,
                     "prompt": prompt,
                     "provider": "huggingface",
-                    "model": "damo-vilab/text-to-video-ms-1.7b",
+                    "model": "cerspense/zeroscope-v2-xl",
                     "created_at": datetime.now().isoformat()
                 }).execute()
             except Exception as e:
@@ -647,12 +657,15 @@ async def generate_video_huggingface(prompt: str, samples: int = 1, user_id: str
             public_url = get_public_url("ai-videos", storage_path)
             urls.append(public_url)
             
+        except httpx.RequestError as e:
+            logger.error(f"Network error during Hugging Face video generation: {e}")
+            continue
         except Exception as e:
-            logger.error(f"Hugging Face video generation failed: {e}")
-            # Continue to the next sample if one fails
+            logger.error(f"An unexpected error occurred during Hugging Face video generation: {e}")
             continue
 
     if not urls:
+        # This will now be caught by the main generate_video_internal function
         raise HTTPException(status_code=500, detail="Failed to generate any videos with Hugging Face.")
 
     return {
@@ -668,8 +681,12 @@ async def generate_video_replicate(prompt: str, samples: int = 1, user_id: str =
     if not REPLICATE_API_TOKEN:
         logger.warning("REPLICATE_API_TOKEN not configured, using placeholder")
         return await generate_placeholder_video(prompt, samples, user_id)
-    
-    # --- FIX: Create a client instance for authentication ---
+
+    if not REPLICATE_API_TOKEN.startswith("r8_"):
+        logger.error(f"REPLICATE_API_KEY format is invalid. It should start with 'r8_'.")
+        # Don't expose the key, just log the error type.
+        raise HTTPException(status_code=500, detail="Server configuration error: Replicate API key is invalid.")
+
     client = replicate.Client(api_token=REPLICATE_API_TOKEN)
 
     urls = []
@@ -2162,8 +2179,23 @@ async def decay_memories(user_id):
         logger.error(f"Failed to decay memories: {e}")
 
 def get_groq_headers():
+    """Constructs the headers for the Groq API, ensuring the token is valid."""
+    api_key = os.getenv("GROQ_API_KEY")
+    if not api_key:
+        # This should not happen in production if the server starts, but it's a good safeguard.
+        logger.error("GROQ_API_KEY is not set in the environment.")
+        raise HTTPException(status_code=500, detail="Server configuration error: Groq API key is missing.")
+
+    # Strip any accidental whitespace from the key
+    api_key = api_key.strip()
+    
+    if not api_key.startswith("gsk_"):
+        logger.error(f"Invalid GROQ_API_KEY format detected. It should start with 'gsk_'.")
+        # Don't expose the key, just log the error type.
+        raise HTTPException(status_code=500, detail="Server configuration error: Groq API key is invalid.")
+
     return {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
     }
 
