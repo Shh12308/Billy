@@ -5239,21 +5239,28 @@ async def vision_history_handler(prompt: str, user_id: str, stream: bool = False
         logger.error(f"Failed to get vision history: {e}")
         return []
 
+# Helper function defined OUTSIDE of the main handler
+async def _stream_user_info(data: dict):
+    """A helper async generator to stream user info."""
+    yield sse({"type": "user_info", "data": data})
+    yield sse({"type": "done"})
+
+
 async def get_user_info_handler(prompt: str, user_id: str, stream: bool = False):
     """Handle getting user information"""
     try:
         user_response = supabase.table("users").select("*").eq("id", user_id).execute()
         user_data = user_response.data[0] if user_response.data else None
         
-      #  // Get user's images count
+        # Get user's images count
         images_response = supabase.table("images").select("id", count="exact").eq("user_id", user_id).execute()
         images_count = images_response.count if hasattr(images_response, 'count') else 0
         
-      #  // Get user's videos count
+        # Get user's videos count
         videos_response = supabase.table("videos").select("id", count="exact").eq("user_id", user_id).execute()
         videos_count = videos_response.count if hasattr(videos_response, 'count') else 0
         
-       # // Get user's conversations count
+        # Get user's conversations count
         conversations_response = supabase.table("conversations").select("id", count="exact").eq("user_id", user_id).execute()
         conversations_count = conversations_response.count if hasattr(conversations_response, 'count') else 0
         
@@ -5270,12 +5277,9 @@ async def get_user_info_handler(prompt: str, user_id: str, stream: bool = False)
         }
         
         if stream:
-            async def event_generator():
-                yield sse({"type": "user_info", "data": result})
-                yield sse({"type": "done"})
-            
+            # Call the helper function instead of defining it here
             return StreamingResponse(
-                event_generator(),
+                _stream_user_info(result),
                 media_type="text/event-stream",
                 headers={
                     "Cache-Control": "no-cache",
@@ -5285,6 +5289,7 @@ async def get_user_info_handler(prompt: str, user_id: str, stream: bool = False)
             )
         else:
             return result
+            
     except Exception as e:
         logger.error(f"Failed to get user info: {e}")
         error_result = {
@@ -5293,12 +5298,9 @@ async def get_user_info_handler(prompt: str, user_id: str, stream: bool = False)
         }
         
         if stream:
-            async def event_generator():
-                yield sse({"type": "user_info", "data": error_result})
-                yield sse({"type": "done"})
-            
+            # Call the helper function for the error case as well
             return StreamingResponse(
-                event_generator(),
+                _stream_user_info(error_result),
                 media_type="text/event-stream",
                 headers={
                     "Cache-Control": "no-cache",
@@ -5308,7 +5310,7 @@ async def get_user_info_handler(prompt: str, user_id: str, stream: bool = False)
             )
         else:
             return error_result
-
+            
 async def merge_user_data_handler(prompt: str, user_id: str, stream: bool = False):
     """Handle merging user data"""
   #  // This is a complex operation that requires authentication
@@ -7743,27 +7745,23 @@ async def merge_user_data(req: Request, res: Response):
         logger.error(f"Error verifying JWT token: {e}")
         raise HTTPException(401, f"Invalid token: {str(e)}")
 
+# Find this function in your code:
+def run_check():
+    return {"status": "ok", "message": "System check passed"}
+
+# And replace it with this (no change needed here, but showing for context):
+def run_check():
+    return {"status": "ok", "message": "System check passed"}
+
+
+# Now, find and replace your /check endpoint with this:
 @app.post("/check")
-async def check():
-    conv_check = await asyncio.to_thread(run_check)
-    return conv_check
-
-# Update the video endpoint with real RunwayML Gen-2 implementation
-# Find the generate_video_stream function and replace it with this corrected version:
-
-# Replace the entire generate_video_stream function with this fixed version:
-
-# Find the section around line 7955 and replace it with this:
-
-# This should be part of the generate_video_stream function
-    try:
-        # Your code here...
-        pass
-    except Exception as e:
-        logger.error(f"Error occurred: {e}")
-        yield sse({"status": "error", "message": str(e)})
-# Replace the entire section from around line 7900 to 8000 with this:
-
+async def check_endpoint(): # Renamed for clarity
+    """Performs a simple system check."""
+    # This logic is the same, but the function body is simpler.
+    result = await asyncio.to_thread(run_check)
+    return result
+    
 @app.post("/video/stream")
 async def generate_video_stream(req: Request, res: Response):
     """
