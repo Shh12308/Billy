@@ -12,6 +12,7 @@ import tempfile
 import cv2
 import requests
 import random
+import asyncio
 import jwt
 import hashlib
 from typing import Optional, Dict, Any, List, Union
@@ -594,254 +595,50 @@ async def generate_video_internal(prompt: str, samples: int = 1, user_id: str = 
     # If all APIs fail, use placeholder
     return await generate_placeholder_video(prompt, samples, user_id)
     
-async def generate_video_huggingface(prompt: str, samples: int = 1, user_id: str = None) -> dict:
+# Add this new helper function to your app.py file
+async def _generate_video_with_pixverse_replicate(prompt: str, num_samples: int):
     """
-    Generate videos using the Hugging Face Inference API with a different model.
+    Generates a video using the pixverse/pixverse-v5.6 model on Replicate.
     """
-    HF_API_KEY = os.getenv("HF_API_KEY")
-    if not HF_API_KEY:
-        logger.warning("HF_API_KEY not configured, cannot use Hugging Face fallback.")
-        # Instead of raising an error, we'll just log and let it fall through to the placeholder
-        logger.warning("Proceeding to placeholder video generation.")
-        raise HTTPException(status_code=503, detail="Hugging Face API key not configured for video fallback.")
-
-    # --- FIX: Use a different, currently available model ---
-    API_URL = "https://router.huggingface.co/hf-inference/models/cerspense/zeroscope-v2-xl"
-    headers = {"Authorization": f"Bearer {HF_API_KEY}"}
+    # The model identifier from your example
+    model_id = "pixverse/pixverse-v5.6"
     
-    urls = []
+    generated_videos = []
     
-    for i in range(samples):
+    # The model generates one video at a time, so we loop for the requested number of samples
+    for i in range(num_samples):
         try:
-            # The zeroscope model expects a specific prompt format
-            formatted_prompt = f"A cinematic video of {prompt}"
-            payload = {"inputs": formatted_prompt}
-            
-            logger.info(f"Attempting Hugging Face video generation with prompt: '{formatted_prompt}'")
-            async with httpx.AsyncClient(timeout=300) as client:
-                response = await client.post(API_URL, headers=headers, json=payload)
-                # This model might return a different status on failure
-                if response.status_code != 200:
-                    error_text = response.text
-                    logger.error(f"Hugging Face API returned status {response.status_code}: {error_text}")
-                    continue # Skip to the next sample
-                
-                # The HF API for this model returns a raw video file
-                video_bytes = response.content
-            
-            # Upload to Supabase
-            filename = f"{uuid.uuid4().hex[:8]}.mp4"
-            storage_path = f"anonymous/{filename}"
-            
-            supabase.storage.from_("ai-videos").upload(
-                path=storage_path,
-                file=video_bytes,
-                file_options={"content-type": "video/mp4"}
+            # The input for the model
+            input_data = {
+                "prompt": prompt,
+                "quality": "1080p"  # As per your example
+            }
+
+            # Since replicate.run is synchronous, we run it in a separate thread
+            # to avoid blocking the async event loop.
+            output = await asyncio.to_thread(
+                replicate.run,
+                model_id,
+                input=input_data
             )
             
-            # Save video record
-            try:
-                supabase.table("videos").insert({
-                    "id": str(uuid.uuid4()),
-                    "user_id": user_id,
-                    "video_path": storage_path,
-                    "prompt": prompt,
-                    "provider": "huggingface",
-                    "model": "cerspense/zeroscope-v2-xl",
-                    "created_at": datetime.now().isoformat()
-                }).execute()
-            except Exception as e:
-                logger.error(f"Failed to save video record: {e}")
-            
-            # Get public URL
-            public_url = get_public_url("ai-videos", storage_path)
-            urls.append(public_url)
-            
-        except httpx.RequestError as e:
-            logger.error(f"Network error during Hugging Face video generation: {e}")
-            continue
+            # The output is a file-like object. We need its URL.
+            video_url = output.url
+            generated_videos.append({"url": video_url, "id": f"pixverse-{i+1}"})
+            logger.info(f"Successfully generated Pixverse video {i+1}/{num_samples}: {video_url}")
+
         except Exception as e:
-            logger.error(f"An unexpected error occurred during Hugging Face video generation: {e}")
-            continue
+            logger.error(f"Failed to generate video {i+1} with Pixverse: {e}")
+            # If one generation fails, we can choose to stop or continue.
+            # For now, we'll re-raise the exception to stop the whole process.
+            raise
 
-    if not urls:
-        # This will now be caught by the main generate_video_internal function
-        raise HTTPException(status_code=500, detail="Failed to generate any videos with Hugging Face.")
+    if not generated_videos:
+        raise ValueError("Pixverse failed to generate any videos.")
 
     return {
-        "provider": "huggingface",
-        "videos": [{"url": url, "type": "video/mp4"} for url in urls]
-    }
-
-async def generate_video_replicate(prompt: str, samples: int = 1, user_id: str = None) -> dict:
-    """
-    Generate videos using Replicate API with robust authentication.
-    """
-    REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
-    if not REPLICATE_API_TOKEN:
-        logger.warning("REPLICATE_API_TOKEN is not set in the environment. Skipping Replicate.")
-        # Don't raise an error, just go straight to the next fallback.
-        return await generate_video_huggingface(prompt, samples, user_id)
-
-    logger.info("Replicate token found. Attempting to create client.")
-    try:
-        client = replicate.Client(api_token=REPLICATE_API_TOKEN)
-    except Exception as e:
-        logger.error(f"Failed to create Replicate client: {e}")
-        # Don't raise an error, just go straight to the next fallback.
-        return await generate_video_huggingface(prompt, samples, user_id)
-
-    urls = []
-    
-    models = [
-        {
-            "name": "Stable Video Diffusion",
-            "model": "stability-ai/stable-video-diffusion:3f0457e4619daac51203dedb1a16b0ac489259d0d48b07e0fa9d5d323f0f91b1",
-            "params": {
-                "prompt": prompt,
-                "num_frames": 25,
-                "num_inference_steps": 25,
-                "guidance_scale": 7.5,
-                "seed": random.randint(0, 4294967295),
-                "width": 1024,
-                "height": 576
-            }
-        },
-        # ... your other models remain the same
-        {
-            "name": "Realistic Vision Video",
-            "model": "lucataco/realistic-vision-video:9ca0f0d5d4a2f1f5b21b98f9557a0c873b99947bb2106f4e1a7545a5f7896f6",
-            "params": {
-                "prompt": prompt,
-                "num_frames": 25,
-                "num_inference_steps": 25,
-                "guidance_scale": 7.5,
-                "seed": random.randint(0, 4294967295),
-                "width": 1024,
-                "height": 576
-            }
-        },
-        {
-            "name": "Zeroscope V2",
-            "model": "cjwbw/zeroscope-v2-xl:9c4b7cf5b5c8fdcc8d8a5d5c9e4e5f5e5f5e5f5e5f5e5f5e5f5e5f5e5f5e",
-            "params": {
-                "prompt": prompt,
-                "num_frames": 24,
-                "num_inference_steps": 30,
-                "guidance_scale": 7.0,
-                "seed": random.randint(0, 4294967295),
-                "width": 1024,
-                "height": 576
-            }
-        },
-        {
-            "name": "SVD XT Image-to-Video",
-            "model": "stability-ai/stable-video-diffusion-img2vid-xt:042b5b6d9b634b5649774c2e8c6420dc1b5c20f2e5b6d5b5c8fdcc8d8a5d5c",
-            "params": {
-                "image": None,  # Will be set if using image-to-video
-                "prompt": prompt,
-                "num_frames": 25,
-                "num_inference_steps": 25,
-                "guidance_scale": 7.5,
-                "seed": random.randint(0, 4294967295),
-                "width": 1024,
-                "height": 576
-            }
-        }
-    ]
-    
-    for i in range(samples):
-        video_generated = False
-        
-        for model_info in models:
-            if video_generated:
-                break
-                
-            try:
-                logger.info(f"Trying Replicate model: {model_info['name']}")
-                
-                # --- FIX: Use the authenticated client to run the model ---
-                output = await asyncio.to_thread(
-                    client.run,
-                    model_info["model"],
-                    input=model_info["params"]
-                )
-                
-                # The output is typically a URL to the video
-                if isinstance(output, str):
-                    video_url = output
-                elif isinstance(output, list) and len(output) > 0:
-                    video_url = output[0]
-                elif isinstance(output, dict) and "video" in output:
-                    video_url = output["video"]
-                else:
-                    logger.error(f"Unexpected output format from {model_info['name']}: {output}")
-                    continue
-                
-                if not video_url:
-                    logger.error(f"No video URL in output from {model_info['name']}")
-                    continue
-                
-                # Download the video
-                async with httpx.AsyncClient(timeout=120) as client:
-                    video_response = await client.get(video_url)
-                    video_response.raise_for_status()
-                    video_bytes = video_response.content
-                
-                # Upload to Supabase
-                filename = f"{uuid.uuid4().hex[:8]}.mp4"
-                storage_path = f"anonymous/{filename}"
-                
-                supabase.storage.from_("ai-videos").upload(
-                    path=storage_path,
-                    file=video_bytes,
-                    file_options={"content-type": "video/mp4"}
-                )
-                
-                # Save video record
-                try:
-                    supabase.table("videos").insert({
-                        "id": str(uuid.uuid4()),
-                        "user_id": user_id,
-                        "video_path": storage_path,
-                        "prompt": prompt,
-                        "provider": "replicate",
-                        "model": model_info["name"],
-                        "created_at": datetime.now().isoformat()
-                    }).execute()
-                except Exception as e:
-                    logger.error(f"Failed to save video record: {e}")
-                
-                # Get public URL
-                public_url = get_public_url("ai-videos", storage_path)
-                urls.append(public_url)
-                video_generated = True
-                logger.info(f"Successfully generated video using {model_info['name']}")
-                break
-                
-            except Exception as e:
-                logger.error(f"Replicate video generation failed with {model_info['name']}: {e}")
-                # Try next model
-                continue
-        
-        if not video_generated:
-            logger.warning(f"Failed to generate video {i+1} with all Replicate models")
-    
-    if not urls:
-        logger.warning("No videos were generated successfully with Replicate, trying fallback")
-        # Try Hugging Face as fallback
-        HF_API_KEY = os.getenv("HF_API_KEY")
-        if HF_API_KEY:
-            try:
-                return await generate_video_huggingface(prompt, samples, user_id)
-            except Exception as e:
-                logger.error(f"Hugging Face fallback also failed: {e}")
-        
-        return await generate_placeholder_video(prompt, samples, user_id)
-    
-    return {
-        "provider": "replicate",
-        "videos": [{"url": url, "type": "video/mp4"} for url in urls]
+        "provider": "replicate-pixverse",
+        "videos": generated_videos
     }
     
 async def generate_placeholder_video(prompt: str, samples: int = 1, user_id: str = None) -> dict:
@@ -6628,41 +6425,46 @@ async def ask_universal(request: Request, response: Response):
         # -------------------------
         # VIDEO GENERATION
         # -------------------------
-        elif intent == "video":
-            # Extract sample count from prompt
-            sample_match = re.search(r'(\d+)\s+(video|videos)', prompt.lower())
-            if sample_match:
-                num_samples = min(int(sample_match.group(1)), 2)  # Cap at 2 videos
-            else:
-                num_samples = 1  # Default to 1 video
-            
-            if stream:
-                async def event_generator():
-                    yield sse({"type": "starting", "message": "Generating video..."})
-                    try:
-                        result = await generate_video_internal(prompt, num_samples, user_id)
-                        yield sse({
-                            "type": "videos",
-                            "provider": result["provider"],
-                            "videos": result["videos"]
-                        })
-                        yield sse({"type": "done"})
-                    except Exception as e:
-                        logger.error(f"Video generation failed: {e}")
-                        yield sse({"type": "error", "message": str(e)})
+# -------------------------
+# VIDEO GENERATION
+# -------------------------
+elif intent == "video":
+    # Extract sample count from prompt
+    sample_match = re.search(r'(\d+)\s+(video|videos)', prompt.lower())
+    if sample_match:
+        num_samples = min(int(sample_match.group(1)), 2)  # Cap at 2 videos to manage cost/time
+    else:
+        num_samples = 1  # Default to 1 video
+    
+    if stream:
+        async def event_generator():
+            yield sse({"type": "starting", "message": "Generating video with Pixverse..."})
+            try:
+                # Call our new helper function
+                result = await _generate_video_with_pixverse_replicate(prompt, num_samples)
                 
-                return StreamingResponse(
-                    event_generator(),
-                    media_type="text/event-stream",
-                    headers={
-                        "Cache-Control": "no-cache",
-                        "Connection": "keep-alive",
-                        "X-Accel-Buffering": "no"
-                    }
-                )
-            else:
-                # Non-streaming version
-                return await generate_video_internal(prompt, num_samples, user_id)
+                yield sse({
+                    "type": "videos",
+                    "provider": result["provider"],
+                    "videos": result["videos"]
+                })
+                yield sse({"type": "done"})
+            except Exception as e:
+                logger.error(f"Video generation with Pixverse failed: {e}")
+                yield sse({"type": "error", "message": str(e)})
+        
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
+    else:
+        # Non-streaming version
+        return await _generate_video_with_pixverse_replicate(prompt, num_samples)
 
         # -------------------------
         # VISION ANALYSIS
