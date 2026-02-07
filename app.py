@@ -1903,6 +1903,8 @@ async def generate_ai_response(conversation_id: str, user_id: str, messages: lis
         print(f"Error generating AI response: {e}")
         return "Sorry, I couldn't generate a response at this time."
 
+# Replace the problematic stream_llm function with this corrected version
+
 async def stream_llm(user_id, conversation_id, messages):
     assistant_reply = ""
     tool_calls = []
@@ -1943,11 +1945,11 @@ async def stream_llm(user_id, conversation_id, messages):
                     chunk = json.loads(data)
                     delta = chunk["choices"][0]["delta"]
 
-                  #  // -------------------------
-                 #   // TOOL CALLS
-                #    // -------------------------
+                    # -------------------------
+                    # TOOL CALLS
+                    # -------------------------
                     if "tool_calls" in delta:
-                    #    // Collect tool calls
+                        # Collect tool calls
                         for tool_call in delta.get("tool_calls", []):
                             if "id" in tool_call:
                                 tool_calls.append({
@@ -1956,7 +1958,7 @@ async def stream_llm(user_id, conversation_id, messages):
                                     "function": tool_call.get("function", {})
                                 })
                             elif "function" in tool_call:
-                           #     // Update the last tool call with function details
+                                # Update the last tool call with function details
                                 if tool_calls:
                                     last_call = tool_calls[-1]
                                     if "name" in tool_call["function"]:
@@ -1965,12 +1967,12 @@ async def stream_llm(user_id, conversation_id, messages):
                                         last_call["function"]["arguments"] = tool_call["function"]["arguments"]
                         continue
 
-                  #  // -------------------------
-                   # // NORMAL TEXT STREAMING
-               #     // -------------------------
+                    # -------------------------
+                    # NORMAL TEXT STREAMING
+                    # -------------------------
                     content = delta.get("content")
                     if content:
-                       # // 🚫 Prevent tool leakage
+                        # 🚫 Prevent tool leakage
                         if "<function=" in content:
                             pass
                         else:
@@ -1983,9 +1985,9 @@ async def stream_llm(user_id, conversation_id, messages):
                     logger.error(f"Error processing stream chunk: {e}")
                     continue
 
- #   // -------------------------
-   # // EXECUTE TOOL CALLS
-  #  // -------------------------
+    # -------------------------
+    # EXECUTE TOOL CALLS
+    # -------------------------
     if tool_calls:
         yield sse({"type": "tool_calls_start", "count": len(tool_calls)})
         
@@ -2006,7 +2008,7 @@ async def stream_llm(user_id, conversation_id, messages):
                 "result": result
             })
 
-         #   // Add tool result to messages for context
+            # Add tool result to messages for context
             messages.append({
                 "role": "tool",
                 "tool_call_id": call["id"],
@@ -2014,10 +2016,10 @@ async def stream_llm(user_id, conversation_id, messages):
                 "content": json.dumps(result)
             })
 
-      #  // Continue conversation with tool results
+        # Continue conversation with tool results
         yield sse({"type": "continuing_with_tools"})
         
-       # // Get final response with tool results
+        # Get final response with tool results
         final_payload = {
             "model": CHAT_MODEL,
             "messages": messages,
@@ -2056,9 +2058,10 @@ async def stream_llm(user_id, conversation_id, messages):
                         logger.error(f"Error processing final stream chunk: {e}")
                         continue
 
-#    // Save the complete response
+    # Save the complete response
     if assistant_reply.strip():
         await persist_reply(user_id, conversation_id, assistant_reply)
+        
 
 async def persist_reply(user_id, conversation_id, text):
     try:
