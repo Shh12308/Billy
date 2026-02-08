@@ -10,6 +10,7 @@ requests==2.32.3
 httpx==0.27.2
 APScheduler>=3.10
 replicate
+uvloop[standard]
 
 # ---------------------- SUPABASE / DATABASE ----------------------
 supabase==2.9.0
