@@ -8126,11 +8126,12 @@ async def merge_user_data(req: Request, response: Response):
         
         user_resp = await asyncio.to_thread(
             lambda: frontend_supabase.auth.get_user(token)
+        )
         if not user_resp.user:
             raise HTTPException(401, "Invalid or expired token.")
         
         logged_in_id = user_resp.user.id
-
+                                              
     # 3️⃣ Perform the merge
     try:
         # Move all conversations from the anonymous user to the logged-in user
