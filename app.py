@@ -2255,7 +2255,7 @@ Current message: {message}"""
         logger.error(f"Failed to build contextual prompt: {e}")
         return f"You are a helpful AI assistant. User message: {message}"
 
-def persist_message(user_id: str, conversation_id: str, role: str, content: str):
+async def persist_message(user_id: str, conversation_id: str, role: str, content: str, request: Request):
     """Store message in database and associate it with the current device."""
     try:
         # Get the device fingerprint for this request
