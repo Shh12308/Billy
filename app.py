@@ -8087,15 +8087,14 @@ async def get_user_info(req: Request, res: Response):
 async def merge_user_data(req: Request, response: Response):
     """
     Merges an anonymous user's data into a logged-in user's account.
-    This is typically called after a user logs in on the frontend.
     """
+
     session_token = req.cookies.get("session_token")
     if not session_token:
         raise HTTPException(400, "No session token found.")
 
-    # 1️⃣ Decode the anonymous user's session token
+    # 1️⃣ Find anonymous user
     try:
-        # This assumes your session token is a simple UUID. If you used JWT, you would decode it here.
         anonymous_user_id = session_token
 
         user_resp = await asyncio.to_thread(
@@ -8110,50 +8109,52 @@ async def merge_user_data(req: Request, response: Response):
             raise HTTPException(404, "Anonymous user not found.")
 
     except Exception as e:
-        logger.error(f"Error finding anonymous user for merge: {e}")
-        raise HTTPException(404, f"Anonymous user not found: {e}")
+        logger.error(f"Error finding anonymous user: {e}")
+        raise HTTPException(404, "Anonymous user not found.")
 
-    # 2️⃣ Get the logged-in user from the JWT token
+    # 2️⃣ Get logged-in user from JWT
     auth_header = req.headers.get("authorization")
-    if not auth_header or not auth_header.startswith(" Bearer "):
+    if not auth_header or not auth_header.startswith("Bearer "):
         raise HTTPException(401, "No authorization token found.")
 
-    token = auth_header.split("")[1]
+    token = auth_header.split("Bearer ")[1]
 
     try:
         if not frontend_supabase:
-            raise HTTPException(500, "Frontend Supabase is not configured for merging.")
-        
+            raise HTTPException(500, "Frontend Supabase not configured.")
+
         user_resp = await asyncio.to_thread(
             lambda: frontend_supabase.auth.get_user(token)
         )
+
         if not user_resp.user:
             raise HTTPException(401, "Invalid or expired token.")
-        
+
         logged_in_id = user_resp.user.id
-                                              
+
+    except Exception as e:
+        logger.error(f"Auth validation failed: {e}")
+        raise HTTPException(401, "Invalid or expired token.")
+
     # 3️⃣ Perform the merge
     try:
-    # Move all conversations from the anonymous user to the logged-in user
-    await asyncio.to_thread(
-        lambda: supabase.table("conversations")
-        .update({"user_id": logged_in_id})
-        .eq("user_id", anonymous_user_id)
-        .execute()
-    )
-
-except Exception as e:
-    logger.error(f"Failed to migrate conversations: {e}")
-
-        # Move all messages from the anonymous user to the logged-in user
+        # Move conversations
         await asyncio.to_thread(
-            lambda: supabase.table("messages")
-            .update({"user_id": "user_id"})
+            lambda: supabase.table("conversations")
+            .update({"user_id": logged_in_id})
             .eq("user_id", anonymous_user_id)
             .execute()
         )
 
-        # Delete the anonymous user record
+        # Move messages
+        await asyncio.to_thread(
+            lambda: supabase.table("messages")
+            .update({"user_id": logged_in_id})
+            .eq("user_id", anonymous_user_id)
+            .execute()
+        )
+
+        # Delete anonymous user
         await asyncio.to_thread(
             lambda: supabase.table("users")
             .delete()
@@ -8161,25 +8162,26 @@ except Exception as e:
             .execute()
         )
 
-        logger.info(f"Successfully merged anonymous user {anonymous_user_id} into user {logged_in_id}.")
+        logger.info(
+            f"Merged anonymous user {anonymous_user_id} into {logged_in_id}"
+        )
 
     except Exception as e:
-        logger.error(f"Failed to merge user data: {e}")
+        logger.error(f"Merge failed: {e}")
         raise HTTPException(500, "Failed to merge user data.")
 
-    # 4️⃨ Respond to the user
+    # 4️⃣ Update cookie
     response.set_cookie(
         key="session_token",
-        value=logged_in_id, # Set the cookie to the new user's ID
-        max_age=60 * 60 * 24 * 30, # 30 days
+        value=logged_in_id,
+        max_age=60 * 60 * 24 * 30,
         path="/",
-        secure=True, # Use True in production
+        secure=True,
         httponly=True,
-        samesite="lax"
+        samesite="lax",
     )
 
     return {"status": "success", "message": "User data merged successfully."}
-
 
 # Find this function in your code:
 def run_check():
