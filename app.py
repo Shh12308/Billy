@@ -338,11 +338,11 @@ async def get_or_create_user(request: Request, response: Response) -> User:
                         .eq("id", user_resp.user.id)
                         .execute()
                     return User(
-                        id=user_resp.user.id,
-                        anonymous=False,
-                        session_token=None,
-                        device_fingerprint=None,
-                    )
+                         id=user_resp.user.id,
+                         anonymous=False,
+                         session_token=None,
+                         device_fingerprint=None,
+                     )
             except Exception as e:
                 logger.warning(f"Supabase auth check failed: {e}")
 
