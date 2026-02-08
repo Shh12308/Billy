@@ -8134,13 +8134,16 @@ async def merge_user_data(req: Request, response: Response):
                                               
     # 3️⃣ Perform the merge
     try:
-        # Move all conversations from the anonymous user to the logged-in user
-        await asyncio.to_thread(
-            lambda: supabase.table("conversations")
-            .update({"user_id": logged_in_id})
-            .eq("user_id", anonymous_user_id)
-            .execute()
-        )
+    # Move all conversations from the anonymous user to the logged-in user
+    await asyncio.to_thread(
+        lambda: supabase.table("conversations")
+        .update({"user_id": logged_in_id})
+        .eq("user_id", anonymous_user_id)
+        .execute()
+    )
+
+except Exception as e:
+    logger.error(f"Failed to migrate conversations: {e}")
 
         # Move all messages from the anonymous user to the logged-in user
         await asyncio.to_thread(
