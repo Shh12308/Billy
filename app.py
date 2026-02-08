@@ -337,6 +337,7 @@ async def get_or_create_user(request: Request, response: Response) -> User:
                         .update({"last_seen": datetime.utcnow().isoformat()})
                         .eq("id", user_resp.user.id)
                         .execute()
+                    )
                     return User(
                          id=user_resp.user.id,
                          anonymous=False,
@@ -345,9 +346,6 @@ async def get_or_create_user(request: Request, response: Response) -> User:
                      )
             except Exception as e:
                 logger.warning(f"Supabase auth check failed: {e}")
-
-    except Exception as e:
-        logger.warning(f"Supabase auth check failed: {e}")
 
     # 2️⃣ Fallback to Anonymous User with Device Fingerprinting
     device_fingerprint = generate_device_fingerprint(request)
