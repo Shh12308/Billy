@@ -323,66 +323,62 @@ async def get_or_create_user(request: Request, response: Response) -> User:
     try:
         # 1️⃣ Check for Supabase Auth user (logged-in users)
         auth_header = request.headers.get("Authorization")
-
         if auth_header:
             token = auth_header.replace("Bearer ", "")
-
-            user_resp = await asyncio.to_thread(
-                lambda: supabase.auth.get_user(token)
-            )
-
-            if user_resp.user:
-                return User(
-                    id=user_resp.user.id,
-                    anonymous=False,
-                    session_token=None,
-                    device_fingerprint=None,
+            try:
+                user_resp = await asyncio.to_thread(
+                    lambda: supabase.auth.get_user(token)
                 )
+                if user_resp.user:
+                    # Found a logged-in user, return it.
+                    # If the user exists in your database, update their last seen timestamp
+                    await asyncio.to_thread(
+                        lambda: supabase.table("users")
+                        .update({"last_seen": datetime.utcnow().isoformat()})
+                        .eq("id", user_resp.user.id)
+                        .execute()
+                    return User(
+                        id=user_resp.user.id,
+                        anonymous=False,
+                        session_token=None,
+                        device_fingerprint=None,
+                    )
+            except Exception as e:
+                logger.warning(f"Supabase auth check failed: {e}")
 
     except Exception as e:
         logger.warning(f"Supabase auth check failed: {e}")
 
-    # 2️⃣ Fallback to anonymous session
-    session_token = request.cookies.get("session_token")
+    # 2️⃣ Fallback to Anonymous User with Device Fingerprinting
+    device_fingerprint = generate_device_fingerprint(request)
 
-    if session_token:
-        try:
-            user_resp = await asyncio.to_thread(
-                lambda: supabase.table("users")
-                .select("*")
-                .eq("session_token", session_token)
-                .limit(1)
-                .execute()
+    # 3️⃣�� Look for existing user by device fingerprint
+    try:
+        user_resp = await asyncio.to_thread(
+            lambda: supabase.table("users")
+            .select("*")
+            .eq("device_fingerprint", device_fingerprint)
+            .limit(1)
+            .execute()
+    )
+
+        if user_resp.data:
+            user_data = user_resp.data[0]
+            # Return the existing user associated with this device
+            return User(
+                id=user_data["id"],
+                anonymous=True,
+                session_token=user_data.get("session_token"),
+                device_fingerprint=device_fingerprint,
             )
 
-            if user_resp.data:
-                user_data = user_resp.data[0]
-
-                await asyncio.to_thread(
-                    lambda: supabase.table("users")
-                    .update({"last_seen": datetime.utcnow().isoformat()})
-                    .eq("id", user_data["id"])
-                    .execute()
-                )
-
-                return User(
-                    id=user_data["id"],
-                    anonymous=True,
-                    session_token=session_token,
-                    device_fingerprint=user_data.get("device_fingerprint"),
-                )
-
-        except Exception as e:
-            logger.warning(f"Anonymous lookup failed: {e}")
-
-    # 3️⃣ Create new anonymous user
-    device_fingerprint = generate_device_fingerprint(request)
+    # 4️⃣ Create a new anonymous user if no existing one is found
     new_session_token = str(uuid.uuid4())
-    user_id = str(uuid.uuid4())
+    new_user_id = str(uuid.uuid4())
 
     await asyncio.to_thread(
         lambda: supabase.table("users").insert({
-            "id": user_id,
+            "id": new_user_id,
             "session_token": new_session_token,
             "device_fingerprint": device_fingerprint,
             "created_at": datetime.utcnow().isoformat(),
@@ -390,18 +386,19 @@ async def get_or_create_user(request: Request, response: Response) -> User:
         }).execute()
     )
 
+    # 5️⃣ Set the cookie for the new user
     response.set_cookie(
         key="session_token",
         value=new_session_token,
-        max_age=60 * 60 * 24 * 30,
+        max_age=60 * 60 * 24 * 30, # 30 days
         path="/",
-        secure=True,  # ✅ Use True in production
+        secure=True,  # Use True in production
         httponly=True,
         samesite="lax"
     )
 
     return User(
-        id=user_id,
+        id=new_user_id,
         anonymous=True,
         session_token=new_session_token,
         device_fingerprint=device_fingerprint,
@@ -2264,23 +2261,22 @@ Current message: {message}"""
         return f"You are a helpful AI assistant. User message: {message}"
 
 def persist_message(user_id: str, conversation_id: str, role: str, content: str):
-    """Store message in database"""
+    """Store message in database and associate it with the current device."""
     try:
-        supabase.table("messages").insert({
-            "id": str(uuid.uuid4()),
-            "conversation_id": conversation_id,
-            "user_id": user_id,
-            "role": role,
-            "content": content,
-            "created_at": datetime.utcnow().isoformat()
-        }).execute()
+        # Get the device fingerprint for this request
+        device_fingerprint = generate_device_fingerprint(request)
         
-      #  // Update conversation timestamp
-        supabase.table("conversations").update({
-            "updated_at": datetime.utcnow().isoformat()
-        }).eq("id", conversation_id).execute()
+        # Update the message with the device fingerprint
+        await asyncio.to_thread(
+            lambda: supabase.table("messages")
+            .update({
+                "device_fingerprint": device_fingerprint
+            })
+            .eq("id", conversation_id)
+            .execute()
+        )
     except Exception as e:
-        logger.error(f"Failed to persist message: {e}")
+        logger.error(f"Failed to update message with device fingerprint: {e}")
 
 async def get_or_create_conversation(user_id: str) -> str:
     """Get existing conversation or create new one with proper UUID"""
@@ -8092,80 +8088,99 @@ async def get_user_info(req: Request, res: Response):
             "error": "Failed to get additional user data"
         }
 
-#// Add a new endpoint to merge anonymous user data with logged-in user
-@app.post("/user/merge")
-async def merge_user_data(req: Request, res: Response):
-    
+#// Add a new endpoint to merge anonymous user data with logged-in user@app.post("/user/merge")
+async def merge_user_data(req: Request, response: Response):
+    """
+    Merges an anonymous user's data into a logged-in user's account.
+    This is typically called after a user logs in on the frontend.
+    """
     session_token = req.cookies.get("session_token")
     if not session_token:
-        raise HTTPException(400, "No session token found")
-    
-#    // Get the logged-in user from JWT token
-    auth_header = req.headers.get("authorization")
-    if not auth_header or not auth_header.startswith("Bearer "):
-        raise HTTPException(400, "No authorization token found")
-    
-    token = auth_header.split(" ")[1]
+        raise HTTPException(400, "No session token found.")
+
+    # 1️⃣ Decode the anonymous user's session token
     try:
-   #     // Verify JWT token with frontend Supabase
-        if not frontend_supabase:
-            raise HTTPException(500, "Frontend Supabase not configured")
-        
-        user_response = frontend_supabase.auth.get_user(token)
-        if not user_response.user:
-            raise HTTPException(401, "Invalid token")
-        
-        logged_in_id = user_response.user.id
-        
-    #    // Get the anonymous user ID from session token
-        try:
-            visitor_response = supabase.table("users").select("id").eq("session_token", session_token).execute()
-            if not visitor_response.data:
-                raise HTTPException(404, "Anonymous user not found")
-            
-            anonymous_id = visitor_response.data[0]["id"]
-            
-         #   // Merge data in the backend
-            try:
-              #  // Update all records from anonymous user to logged-in user
-                tables_to_merge = ["images", "videos", "conversations", "messages", "memory", "vision_history", "code_generations"]
-                
-                for table in tables_to_merge:
-                    supabase.table(table).update({"user_id": logged_in_id}).eq("user_id", anonymous_id).execute()
-                
-             #   // Create or update the logged-in user in the backend
-                existing_user = supabase.table("users").select("*").eq("id", logged_in_id).execute()
-                if not existing_user.data:
-                    supabase.table("users").insert({
-                        "id": logged_in_id,
-                        "email": user_response.user.email,
-                        "created_at": datetime.now().isoformat(),
-                        "last_seen": datetime.now().isoformat()
-                    }).execute()
-                else:
-                    supabase.table("users").update({
-                        "last_seen": datetime.now().isoformat()
-                    }).eq("id", logged_in_id).execute()
-                
-             #   // Update the cookie to the logged-in user ID
-                res.set_cookie(
-                    key="session_token",
-                    value=logged_in_id,
-                    httponly=True,
-                    samesite="lax",
-                    max_age=60 * 60 * 24 * 30  #// 30 days
-                )
-                
-                return {"status": "success", "message": "User data merged successfully"}
-            except Exception as e:
-                logger.error(f"Failed to merge user data: {e}")
-                raise HTTPException(500, f"Failed to merge user data: {str(e)}")
-        except Exception as e:
-            logger.error(f"Error finding anonymous user: {e}")
-            raise HTTPException(404, f"Anonymous user not found: {str(e)}")
+        # This assumes your session token is a simple UUID. If you used JWT, you would decode it here.
+        anonymous_user_id = session_token
+
+        user_resp = await asyncio.to_thread(
+            lambda: supabase.table("users")
+            .select("*")
+            .eq("session_token", session_token)
+            .limit(1)
+            .execute()
+        )
+
+        if not user_resp.data:
+            raise HTTPException(404, "Anonymous user not found.")
+
     except Exception as e:
-        logger.error(f"Error verifying JWT token: {e}")
-        raise HTTPException(401, f"Invalid token: {str(e)}")
+        logger.error(f"Error finding anonymous user for merge: {e}")
+        raise HTTPException(404, f"Anonymous user not found: {e}")
+
+    # 2️⃣ Get the logged-in user from the JWT token
+    auth_header = req.headers.get("authorization")
+    if not auth_header or not auth_header.startswith(" Bearer "):
+        raise HTTPException(401, "No authorization token found.")
+
+    token = auth_header.split("")[1]
+
+    try:
+        if not frontend_supabase:
+            raise HTTPException(500, "Frontend Supabase is not configured for merging.")
+        
+        user_resp = await asyncio.to_thread(
+            lambda: frontend_supabase.auth.get_user(token)
+        if not user_resp.user:
+            raise HTTPException(401, "Invalid or expired token.")
+        
+        logged_in_id = user_resp.user.id
+
+    # 3️⃣ Perform the merge
+    try:
+        # Move all conversations from the anonymous user to the logged-in user
+        await asyncio.to_thread(
+            lambda: supabase.table("conversations")
+            .update({"user_id": logged_in_id})
+            .eq("user_id", anonymous_user_id)
+            .execute()
+        )
+
+        # Move all messages from the anonymous user to the logged-in user
+        await asyncio.to_thread(
+            lambda: supabase.table("messages")
+            .update({"user_id": "user_id"})
+            .eq("user_id", anonymous_user_id)
+            .execute()
+        )
+
+        # Delete the anonymous user record
+        await asyncio.to_thread(
+            lambda: supabase.table("users")
+            .delete()
+            .eq("id", anonymous_user_id)
+            .execute()
+        )
+
+        logger.info(f"Successfully merged anonymous user {anonymous_user_id} into user {logged_in_id}.")
+
+    except Exception as e:
+        logger.error(f"Failed to merge user data: {e}")
+        raise HTTPException(500, "Failed to merge user data.")
+
+    # 4️⃨ Respond to the user
+    response.set_cookie(
+        key="session_token",
+        value=logged_in_id, # Set the cookie to the new user's ID
+        max_age=60 * 60 * 24 * 30, # 30 days
+        path="/",
+        secure=True, # Use True in production
+        httponly=True,
+        samesite="lax"
+    )
+
+    return {"status": "success", "message": "User data merged successfully."}
+
 
 # Find this function in your code:
 def run_check():
