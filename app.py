@@ -8191,6 +8191,161 @@ def run_check():
 def run_check():
     return {"status": "ok", "message": "System check passed"}
 
+@app.get("/core-skills")
+async def get_core_skills():
+    """Get a comprehensive list of the AI's core skills and capabilities"""
+    return {
+        "core_skills": {
+            "natural_language_understanding": {
+                "title": "Natural Language Understanding",
+                "capabilities": [
+                    "Read and understand your messages",
+                    "Follow multi-step instructions",
+                    "Ask clarification questions if needed",
+                    "Recognize intent and context",
+                    "Extract entities and relationships from text"
+                ]
+            },
+            "text_generation": {
+                "title": "Text Generation",
+                "capabilities": [
+                    "Generate answers to questions",
+                    "Create explanations for complex topics",
+                    "Write stories and creative content",
+                    "Compose professional emails",
+                    "Generate essays and articles",
+                    "Write code in multiple languages",
+                    "Create business plans",
+                    "Provide personalized advice",
+                    "Generate concise summaries"
+                ]
+            },
+            "information_knowledge": {
+                "title": "Information & Knowledge",
+                "capabilities": [
+                    "Explain science, technology, history, and culture",
+                    "Teach mathematical concepts",
+                    "Provide guidance on coding languages",
+                    "Assist with product development",
+                    "Access up-to-date information through web search",
+                    "Integrate with weather, sports, finance, and maps APIs"
+                ]
+            },
+            "coding_technical": {
+                "title": "Coding & Technical Help",
+                "capabilities": [
+                    "Write code in JavaScript (Node, React, etc.)",
+                    "Develop Python applications",
+                    "Create SQL queries and database designs",
+                    "Build HTML/CSS web pages",
+                    "Program in Java, C++, Swift, Kotlin",
+                    "Write Bash/terminal scripts",
+                    "Support less common programming languages",
+                    "Debug and troubleshoot code issues",
+                    "Design software architecture",
+                    "Work with APIs and databases",
+                    "Assist with deployment strategies",
+                    "Provide DevOps guidance"
+                ]
+            },
+            "tool_integrations": {
+                "title": "Tool Integrations",
+                "capabilities": [
+                    "Perform web searches for current information",
+                    "Access real-time finance and stock data",
+                    "Integrate with weather APIs",
+                    "Connect to sports data services",
+                    "Utilize mapping and location services",
+                    "Execute code in sandboxed environments"
+                ]
+            },
+            "media_inputs_outputs": {
+                "title": "Media Inputs & Outputs",
+                "capabilities": [
+                    "Analyze uploaded images and extract information",
+                    "Describe visual content in detail",
+                    "Extract text from images (OCR)",
+                    "Assist with diagrams, designs, and UI mockups",
+                    "Generate images from text descriptions",
+                    "Create and edit videos",
+                    "Convert text to speech",
+                    "Transcribe audio to text"
+                ]
+            },
+            "writing_creativity": {
+                "title": "Writing and Creativity",
+                "capabilities": [
+                    "Write engaging articles and blog posts",
+                    "Create compelling social media content",
+                    "Develop scripts for videos and presentations",
+                    "Compose fiction and poetry",
+                    "Generate branding ideas and concepts",
+                    "Provide logo concept descriptions",
+                    "Give constructive design feedback"
+                ]
+            },
+            "productivity_planning": {
+                "title": "Productivity & Planning",
+                "capabilities": [
+                    "Create and organize to-do lists",
+                    "Develop comprehensive project plans",
+                    "Generate realistic timelines",
+                    "Facilitate brainstorming sessions",
+                    "Create persuasive pitch decks",
+                    "Perform SWOT analysis and strategic planning"
+                ]
+            },
+            "communication_help": {
+                "title": "Communication Help",
+                "capabilities": [
+                    "Draft professional pitch emails",
+                    "Write effective job applications",
+                    "Create compelling cold outreach messages",
+                    "Formulate professional feedback responses",
+                    "Translate between multiple languages"
+                ]
+            },
+            "learning_teaching": {
+                "title": "Learning & Teaching",
+                "capabilities": [
+                    "Explain complex concepts simply",
+                    "Create practice questions and quizzes",
+                    "Provide step-by-step tutorials",
+                    "Adapt explanations to different learning styles",
+                    "Generate educational content on various subjects"
+                ]
+            }
+        }
+    }
+
+# Add this endpoint to your API documentation
+@app.get("/docs")
+async def custom_docs():
+    """Custom API documentation with core skills"""
+    return {
+        "title": "ZyNaraAI API Documentation",
+        "version": "1.0.0",
+        "description": "A comprehensive multimodal AI system with advanced capabilities",
+        "core_skills_url": "/core-skills",
+        "endpoints": {
+            "chat": "/chat",
+            "universal": "/ask/universal",
+            "image_generation": "/image",
+            "video_generation": "/video",
+            "code_execution": "/code",
+            "web_search": "/search",
+            "speech_to_text": "/stt",
+            "text_to_speech": "/tts",
+            "vision_analysis": "/vision/analyze",
+            "document_analysis": "/document/analyze",
+            "translation": "/translation",
+            "sentiment_analysis": "/sentiment/analyze",
+            "knowledge_graph": "/knowledge/graph",
+            "data_visualization": "/data/visualize",
+            "code_review": "/code/review",
+            "user_profile": "/user/profile"
+        }
+    }
 
 # Now, find and replace your /check endpoint with this:
 @app.post("/check")
