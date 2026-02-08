@@ -326,29 +326,26 @@ async def get_or_create_user(request: Request, response: Response) -> User:
         if auth_header:
             token = auth_header.replace("Bearer ", "")
             try:
-                user_resp = await asyncio.to_thread(
-                    lambda: supabase.auth.get_user(token)
-                )
-                if user_resp.user:
-                    # Found a logged-in user, return it.
-                    # If the user exists in your database, update their last seen timestamp
-                    await asyncio.to_thread(
-                        lambda: supabase.table("users")
-                        .update({"last_seen": datetime.utcnow().isoformat()})
-                        .eq("id", user_resp.user.id)
-                        .execute()
-                    )
-                    return User(
-                         id=user_resp.user.id,
-                         anonymous=False,
-                         session_token=None,
-                         device_fingerprint=None,
-                     )
-            except Exception as e:
-                logger.warning(f"Supabase auth check failed: {e}")
+    if user_resp.user:
+        await asyncio.to_thread(
+            lambda: supabase.table("users")
+            .update({"last_seen": datetime.utcnow().isoformat()})
+            .eq("id", user_resp.user.id)
+            .execute()
+        )
 
-    # 2️⃣ Fallback to Anonymous User with Device Fingerprinting
-    device_fingerprint = generate_device_fingerprint(request)
+        return User(
+            id=user_resp.user.id,
+            anonymous=False,
+            session_token=None,
+            device_fingerprint=None,
+        )
+
+except Exception as e:
+    logger.warning(f"Supabase auth check failed: {e}")
+
+# Now we're OUTSIDE the try block
+device_fingerprint = generate_device_fingerprint(request)
 
     # 3️⃣�� Look for existing user by device fingerprint
     try:
