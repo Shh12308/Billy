@@ -316,33 +316,37 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
-# -----------------------------
-# Get or create anonymous user
-# -----------------------------
 async def get_or_create_user(request: Request, response: Response) -> User:
+    # 1️⃣ Generate device fingerprint for the request
+    device_fingerprint = generate_device_fingerprint(request)
+
+    # 2️⃣ Try to find a logged-in user via Supabase session (if available)
     try:
-    if user_resp.user:
-        await asyncio.to_thread(
-            lambda: supabase.table("users")
-            .update({"last_seen": datetime.utcnow().isoformat()})
-            .eq("id", user_resp.user.id)
-            .execute()
+        # This assumes you have some way to get `user_resp` from Supabase auth
+        user_resp = await asyncio.to_thread(
+            lambda: supabase.auth.get_user()  # adjust this to your auth call
         )
 
-        return User(
-            id=user_resp.user.id,
-            anonymous=False,
-            session_token=None,
-            device_fingerprint=None,
-        )
+        if user_resp.user:
+            # Update last_seen
+            await asyncio.to_thread(
+                lambda: supabase.table("users")
+                .update({"last_seen": datetime.utcnow().isoformat()})
+                .eq("id", user_resp.user.id)
+                .execute()
+            )
 
-except Exception as e:
-    logger.warning(f"Supabase auth check failed: {e}")
+            return User(
+                id=user_resp.user.id,
+                anonymous=False,
+                session_token=None,
+                device_fingerprint=None,
+            )
 
-# Now we're OUTSIDE the try block
-device_fingerprint = generate_device_fingerprint(request)
+    except Exception as e:
+        logger.warning(f"Supabase auth check failed: {e}")
 
-    # 3️⃣�� Look for existing user by device fingerprint
+    # 3️⃣ Look for existing anonymous user by device fingerprint
     try:
         user_resp = await asyncio.to_thread(
             lambda: supabase.table("users")
@@ -350,19 +354,20 @@ device_fingerprint = generate_device_fingerprint(request)
             .eq("device_fingerprint", device_fingerprint)
             .limit(1)
             .execute()
-    )
+        )
 
         if user_resp.data:
             user_data = user_resp.data[0]
-            # Return the existing user associated with this device
             return User(
                 id=user_data["id"],
                 anonymous=True,
                 session_token=user_data.get("session_token"),
                 device_fingerprint=device_fingerprint,
             )
+    except Exception as e:
+        logger.warning(f"Device fingerprint lookup failed: {e}")
 
-    # 4️⃣ Create a new anonymous user if no existing one is found
+    # 4️⃣ No user found → create a new anonymous user
     new_session_token = str(uuid.uuid4())
     new_user_id = str(uuid.uuid4())
 
@@ -376,13 +381,13 @@ device_fingerprint = generate_device_fingerprint(request)
         }).execute()
     )
 
-    # 5️⃣ Set the cookie for the new user
+    # 5️⃣ Set session cookie for the new user
     response.set_cookie(
         key="session_token",
         value=new_session_token,
-        max_age=60 * 60 * 24 * 30, # 30 days
+        max_age=60 * 60 * 24 * 30,  # 30 days
         path="/",
-        secure=True,  # Use True in production
+        secure=True,  # True in production
         httponly=True,
         samesite="lax"
     )
