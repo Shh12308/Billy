@@ -321,11 +321,6 @@ manager = ConnectionManager()
 # -----------------------------
 async def get_or_create_user(request: Request, response: Response) -> User:
     try:
-        # 1️⃣ Check for Supabase Auth user (logged-in users)
-        auth_header = request.headers.get("Authorization")
-        if auth_header:
-            token = auth_header.replace("Bearer ", "")
-            try:
     if user_resp.user:
         await asyncio.to_thread(
             lambda: supabase.table("users")
