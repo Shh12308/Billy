@@ -47,7 +47,6 @@ from sklearn.metrics.pairwise import cosine_similarity
 import networkx as nx
 import plotly.graph_objects as go
 import plotly.express as px
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.schedulers.base import STATE_RUNNING
@@ -55,8 +54,6 @@ import json
 from fastapi.responses import StreamingResponse
 
 scheduler = AsyncIOScheduler()
-scheduler.add_job(cleanup_old_tasks, "interval", minutes=10)
-scheduler.start()
 
 async def cleanup_old_tasks():
     logger.info("Running cleanup job...")
