@@ -26,6 +26,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 import httpx
 import aiohttp
+from fastapi.responses import PlainTextResponse
 import torch
 from PIL import Image
 from fastapi import BackgroundTasks, FastAPI, Request, Header, UploadFile, File, HTTPException, Query, Form, Depends, Response, WebSocket, WebSocketDisconnect
@@ -53,6 +54,10 @@ from apscheduler.schedulers.base import STATE_RUNNING
 import json
 from fastapi.responses import StreamingResponse
 
+scheduler = AsyncIOScheduler()
+scheduler.add_job(cleanup_old_tasks, "interval", minutes=10)
+scheduler.start()
+
 async def stream():
     data = {"message": "hello"}
     yield json.dumps(data)  # ✅ convert to string
@@ -71,7 +76,7 @@ app.add_middleware(
 )
 
 # 1️⃣ Create scheduler (do NOT start here)
-scheduler = AsyncIOScheduler()
+
 
 # Example job (optional)
 async def example_job():
@@ -6162,8 +6167,13 @@ async def ask_universal(request: Request, response: Response):
         # -------------------------
         # USER & CONVERSATION
         # -------------------------
-        user = await get_or_create_user(request, response)
-        user_id = user.id
+        user_response = supabase.auth.get_user()
+
+if not user_response or not user_response.user:
+    logger.warning("Supabase auth failed")
+    return None
+
+user_id = user_response.user.id
 
         # Validate and potentially fix the conversation_id
         if conversation_id:
@@ -6946,6 +6956,11 @@ async def ask_universal(request: Request, response: Response):
         logger.error(f"/ask/universal failed: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
+
+@app.get("/robots.txt", response_class=PlainTextResponse)
+async def robots():
+    return "User-agent: *\nDisallow:"
+    
 @app.post("/user/profile")
 async def update_profile(request: Request, response: Response):
     """Update user profile information"""
