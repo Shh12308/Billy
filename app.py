@@ -58,6 +58,10 @@ scheduler = AsyncIOScheduler()
 scheduler.add_job(cleanup_old_tasks, "interval", minutes=10)
 scheduler.start()
 
+async def cleanup_old_tasks():
+    logger.info("Running cleanup job...")
+    # your cleanup logic here
+
 async def stream():
     data = {"message": "hello"}
     yield json.dumps(data)  # ✅ convert to string
@@ -95,9 +99,9 @@ def sse(data: dict) -> str:
 @app.on_event("startup")
 async def start_scheduler():
     if scheduler.state != STATE_RUNNING:
+        scheduler.add_job(cleanup_old_tasks, "interval", minutes=10)
         scheduler.start()
         logger.info("Scheduler started.")
-
 # 3️⃣ Shutdown event
 @app.on_event("shutdown")
 async def stop_scheduler():
