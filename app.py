@@ -6147,7 +6147,8 @@ def load_conversation_history(user_id: str, limit: int = 20):
 #// =========================================================
 #// 🚀 HELPER FUNCTION FOR TOOL-ENABLED CHAT
 #// =========================================================
-@app.post("/ask/universal")async def ask_universal(request: Request, response: Response):
+@app.post("/ask/universal")
+async def ask_universal(request: Request, response: Response):
     try:
         # -------------------------
         # BODY & STREAM FLAG
