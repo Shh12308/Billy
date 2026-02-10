@@ -6147,8 +6147,7 @@ def load_conversation_history(user_id: str, limit: int = 20):
 #// =========================================================
 #// 🚀 HELPER FUNCTION FOR TOOL-ENABLED CHAT
 #// =========================================================
-@app.post("/ask/universal")
-async def ask_universal(request: Request, response: Response):
+@app.post("/ask/universal")async def ask_universal(request: Request, response: Response):
     try:
         # -------------------------
         # BODY & STREAM FLAG
@@ -6157,9 +6156,9 @@ async def ask_universal(request: Request, response: Response):
         prompt = body.get("prompt", "").strip()
         conversation_id = body.get("conversation_id")
         stream = body.get("stream", False)
-        files = body.get("files", [])  # Handle uploaded files
-        tts = body.get("tts", False)  # Text-to-speech flag
-        samples = max(1, int(body.get("samples", 1)))  # Number of samples for generation
+        files = body.get("files", [])
+        tts = body.get("tts", False)
+        samples = max(1, int(body.get("samples", 1)))
 
         if not prompt and not files:
             raise HTTPException(status_code=400, detail="prompt or files required")
@@ -6167,23 +6166,32 @@ async def ask_universal(request: Request, response: Response):
         # -------------------------
         # USER & CONVERSATION
         # -------------------------
-        user_response = supabase.auth.get_user()
+        auth_header = request.headers.get("Authorization")
 
-if not user_response or not user_response.user:
-    logger.warning("Supabase auth failed")
-    return None
+        if not auth_header:
+            raise HTTPException(status_code=401, detail="Missing auth header")
 
-user_id = user_response.user.id
+        token = auth_header.replace("Bearer ", "")
 
-        # Validate and potentially fix the conversation_id
+        user_response = supabase.auth.get_user(token)
+
+        if not user_response or not user_response.user:
+            logger.warning("Supabase auth failed")
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+        user_id = user_response.user.id
+
+        # -------------------------
+        # CONVERSATION ID FIX
+        # -------------------------
         if conversation_id:
-            # Check if it's a valid UUID
-            uuid_pattern = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$', re.IGNORECASE)
+            uuid_pattern = re.compile(
+                r'^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$',
+                re.IGNORECASE
+            )
             if not uuid_pattern.match(conversation_id):
-                # Invalid UUID, generate a new one
                 conversation_id = str(uuid.uuid4())
         else:
-            # No conversation_id provided, create a new one
             conversation_id = str(uuid.uuid4())
 
         # -------------------------
