@@ -6458,8 +6458,8 @@ async def ask_universal(request: Request, response: Response):
                     "type": "personal"
                 }
                 
-         # -------------------------
-        # VIDEO GENERATION
+        # -------------------------
+        # VIDEO GENERATION (Fixed indentation)
         # -------------------------
         elif intent == "video":
             # Extract sample count from prompt
@@ -6500,7 +6500,7 @@ async def ask_universal(request: Request, response: Response):
                 return await _generate_video_with_pixverse_replicate(prompt, num_samples)
                 
         # -------------------------
-        # VISION ANALYSIS
+        # VISION ANALYSIS (Fixed file handling)
         # -------------------------
         elif intent == "vision" and files:
             if not files or len(files) == 0:
@@ -6516,6 +6516,7 @@ async def ask_universal(request: Request, response: Response):
             if stream:
                 async def event_generator():
                     yield sse({"type": "starting", "message": "Analyzing image..."})
+                    temp_path = None
                     try:
                         # Download the image from the URL
                         async with httpx.AsyncClient(timeout=30) as client:
@@ -6535,8 +6536,8 @@ async def ask_universal(request: Request, response: Response):
                         # Analyze the image
                         result = await vision_analyze(request, image_upload)
                         
-                        # Clean up the temporary file
-                        os.unlink(temp_path)
+                        # Close the file before cleanup
+                        image_upload.file.close()
                         
                         yield sse({
                             "type": "vision_result",
@@ -6550,6 +6551,10 @@ async def ask_universal(request: Request, response: Response):
                     except Exception as e:
                         logger.error(f"Vision analysis failed: {e}")
                         yield sse({"type": "error", "message": str(e)})
+                    finally:
+                        # Clean up the temporary file
+                        if temp_path and os.path.exists(temp_path):
+                            os.unlink(temp_path)
                 
                 return StreamingResponse(
                     event_generator(),
@@ -6562,31 +6567,37 @@ async def ask_universal(request: Request, response: Response):
                 )
             else:
                 # Non-streaming version
-                # Download the image from the URL
-                async with httpx.AsyncClient(timeout=30) as client:
-                    response = await client.get(image_url)
-                    response.raise_for_status()
-                    image_bytes = response.content
-                
-                # Create a temporary file
-                with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as temp_file:
-                    temp_file.write(image_bytes)
-                    temp_path = temp_file.name
-                
-                # Create a mock UploadFile object
-                from fastapi import UploadFile
-                image_upload = UploadFile(filename="image.png", file=open(temp_path, "rb"))
-                
-                # Analyze the image
-                result = await vision_analyze(request, image_upload)
-                
-                # Clean up the temporary file
-                os.unlink(temp_path)
-                
-                return result
+                temp_path = None
+                try:
+                    # Download the image from the URL
+                    async with httpx.AsyncClient(timeout=30) as client:
+                        response = await client.get(image_url)
+                        response.raise_for_status()
+                        image_bytes = response.content
+                    
+                    # Create a temporary file
+                    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as temp_file:
+                        temp_file.write(image_bytes)
+                        temp_path = temp_file.name
+                    
+                    # Create a mock UploadFile object
+                    from fastapi import UploadFile
+                    image_upload = UploadFile(filename="image.png", file=open(temp_path, "rb"))
+                    
+                    # Analyze the image
+                    result = await vision_analyze(request, image_upload)
+                    
+                    # Close the file before cleanup
+                    image_upload.file.close()
+                    
+                    return result
+                finally:
+                    # Clean up the temporary file
+                    if temp_path and os.path.exists(temp_path):
+                        os.unlink(temp_path)
 
         # -------------------------
-        # IMG2VID (IMAGE TO VIDEO)
+        # IMG2VID (IMAGE TO VIDEO) (Fixed file handling)
         # -------------------------
         elif intent == "img2vid" and files:
             if not files or len(files) == 0:
@@ -6608,6 +6619,7 @@ async def ask_universal(request: Request, response: Response):
             if stream:
                 async def event_generator():
                     yield sse({"type": "starting", "message": "Creating video from image..."})
+                    temp_path = None
                     try:
                         # Download the image from the URL
                         async with httpx.AsyncClient(timeout=30) as client:
@@ -6627,8 +6639,8 @@ async def ask_universal(request: Request, response: Response):
                         # Generate video from image
                         result = await img2vid(request, image_upload, prompt, duration)
                         
-                        # Clean up the temporary file
-                        os.unlink(temp_path)
+                        # Close the file before cleanup
+                        image_upload.file.close()
                         
                         yield sse({
                             "type": "video_result",
@@ -6639,6 +6651,10 @@ async def ask_universal(request: Request, response: Response):
                     except Exception as e:
                         logger.error(f"Img2vid failed: {e}")
                         yield sse({"type": "error", "message": str(e)})
+                    finally:
+                        # Clean up the temporary file
+                        if temp_path and os.path.exists(temp_path):
+                            os.unlink(temp_path)
                 
                 return StreamingResponse(
                     event_generator(),
@@ -6651,28 +6667,34 @@ async def ask_universal(request: Request, response: Response):
                 )
             else:
                 # Non-streaming version
-                # Download the image from the URL
-                async with httpx.AsyncClient(timeout=30) as client:
-                    response = await client.get(image_url)
-                    response.raise_for_status()
-                    image_bytes = response.content
-                
-                # Create a temporary file
-                with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as temp_file:
-                    temp_file.write(image_bytes)
-                    temp_path = temp_file.name
-                
-                # Create a mock UploadFile object
-                from fastapi import UploadFile
-                image_upload = UploadFile(filename="image.png", file=open(temp_path, "rb"))
-                
-                # Generate video from image
-                result = await img2vid(request, image_upload, prompt, duration)
-                
-                # Clean up the temporary file
-                os.unlink(temp_path)
-                
-                return result
+                temp_path = None
+                try:
+                    # Download the image from the URL
+                    async with httpx.AsyncClient(timeout=30) as client:
+                        response = await client.get(image_url)
+                        response.raise_for_status()
+                        image_bytes = response.content
+                    
+                    # Create a temporary file
+                    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as temp_file:
+                        temp_file.write(image_bytes)
+                        temp_path = temp_file.name
+                    
+                    # Create a mock UploadFile object
+                    from fastapi import UploadFile
+                    image_upload = UploadFile(filename="image.png", file=open(temp_path, "rb"))
+                    
+                    # Generate video from image
+                    result = await img2vid(request, image_upload, prompt, duration)
+                    
+                    # Close the file before cleanup
+                    image_upload.file.close()
+                    
+                    return result
+                finally:
+                    # Clean up the temporary file
+                    if temp_path and os.path.exists(temp_path):
+                        os.unlink(temp_path)
 
         # -------------------------
         # CODE GENERATION
@@ -6965,7 +6987,7 @@ async def ask_universal(request: Request, response: Response):
     except Exception as e:
         logger.error(f"/ask/universal failed: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
-
+        
 
 @app.get("/robots.txt", response_class=PlainTextResponse)
 async def robots():
