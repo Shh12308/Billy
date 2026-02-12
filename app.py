@@ -5908,9 +5908,21 @@ async def cleanup_old_tasks():
 def health():
     return {"status": "ok"}
     
+# Keep your existing GET handler
 @app.get("/")
 async def root():
     return {"message": "Billy AI Backend is Running ✔"}
+
+# --- ADD THIS NEW POST HANDLER ---
+@app.post("/")
+async def root_post():
+    """
+    Handles POST requests to the root path and provides a helpful error.
+    """
+    raise HTTPException(
+        status_code=405,
+        detail="Method not allowed. For chat requests, please use the POST /ask/universal endpoint."
+    )
     
 @app.post("/chat/stream")
 async def chat_stream(req: Request, res: Response, tts: bool = False, samples: int = 1):
