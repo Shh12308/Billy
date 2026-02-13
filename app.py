@@ -6161,7 +6161,11 @@ def load_conversation_history(user_id: str, limit: int = 20):
 #// 🚀 HELPER FUNCTION FOR TOOL-ENABLED CHAT
 #// =========================================================
 @app.post("/ask/universal")
-async def ask_universal(request: Request, response: Response):
+async def ask_universal(
+    request: Request,
+    response: Response,
+    identity: dict = Depends(get_current_identity)
+):
     try:
         # -------------------------
         # BODY & STREAM FLAG
@@ -6180,21 +6184,19 @@ async def ask_universal(request: Request, response: Response):
         # -------------------------
         # USER & CONVERSATION
         # -------------------------
-        auth_header = request.headers.get("Authorization")
+       user_id = identity["user_id"]
+is_guest = identity["is_guest"]
+is_authenticated = identity["is_authenticated"]
 
-        if not auth_header:
-            raise HTTPException(status_code=401, detail="Missing auth header")
-
-        token = auth_header.replace("Bearer ", "")
-
-        user_response = supabase.auth.get_user(token)
-
-        if not user_response or not user_response.user:
-            logger.warning("Supabase auth failed")
-            raise HTTPException(status_code=401, detail="Unauthorized")
-
-        user_id = user_response.user.id
-
+if identity["is_guest"]:
+    response.set_cookie(
+        key="guest_id",
+        value=identity["guest_id"],
+        httponly=True,
+        secure=True,       # True in production (HTTPS)
+        samesite="Lax",
+        max_age=60 * 60 * 24 * 7  # 7 days
+    )
         # -------------------------
         # CONVERSATION ID FIX
         # -------------------------
@@ -7000,6 +7002,39 @@ async def ask_universal(request: Request, response: Response):
         logger.error(f"/ask/universal failed: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
         
+@app.post("/migrate-guest")
+async def migrate_guest(
+    request: Request,
+    identity: dict = Depends(get_current_identity)
+):
+    if not identity["is_authenticated"]:
+        raise HTTPException(401, "Must be logged in")
+
+    guest_id = request.cookies.get("guest_id")
+    if not guest_id:
+        return {"status": "no_guest_data"}
+
+    real_user_id = identity["user_id"]
+
+    # Update conversations
+    supabase.table("conversations") \
+        .update({
+            "user_id": real_user_id,
+            "is_guest": False
+        }) \
+        .eq("user_id", guest_id) \
+        .execute()
+
+    # Update messages
+    supabase.table("messages") \
+        .update({
+            "user_id": real_user_id,
+            "is_guest": False
+        }) \
+        .eq("user_id", guest_id) \
+        .execute()
+
+    return {"status": "migrated"}
 
 @app.get("/robots.txt", response_class=PlainTextResponse)
 async def robots():
