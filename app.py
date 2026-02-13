@@ -322,6 +322,38 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
+async def get_current_identity(request: Request):
+    auth_header = request.headers.get("Authorization")
+    guest_id = request.cookies.get("guest_id")
+
+    user_id = None
+    is_authenticated = False
+    is_guest = False
+
+    if auth_header:
+        try:
+            token = auth_header.replace("Bearer ", "")
+            user_response = supabase.auth.get_user(token)
+
+            if user_response and user_response.user:
+                user_id = user_response.user.id
+                is_authenticated = True
+        except Exception:
+            pass
+
+    if not user_id:
+        if not guest_id:
+            guest_id = f"guest_{uuid.uuid4()}"
+        user_id = guest_id
+        is_guest = True
+
+    return {
+        "user_id": user_id,
+        "is_authenticated": is_authenticated,
+        "is_guest": is_guest,
+        "guest_id": guest_id if is_guest else None
+    }
+    
 async def get_or_create_user(request: Request, response: Response) -> User:
     # 1️⃣ Generate device fingerprint for the request
     device_fingerprint = generate_device_fingerprint(request)
