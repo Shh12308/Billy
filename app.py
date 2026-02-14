@@ -12,6 +12,7 @@ import tempfile
 import cv2
 import requests
 import random
+import imageio
 import asyncio
 import jwt
 import hashlib
@@ -697,175 +698,79 @@ async def _generate_video_with_pixverse_replicate(prompt: str, num_samples: int)
         "videos": generated_videos
     }
     
-async def generate_placeholder_video(prompt: str, samples: int = 1, user_id: str = None) -> dict:
-    """
-    Generate a simple animated video placeholder when no video generation API is available.
-    """
-    urls = []
-    
-    for i in range(samples):
-        try:
-            # Create a simple animated video using OpenCV
-            import numpy as np
-            
-            # Video settings
-            width, height = 1024, 576  # 16:9 aspect ratio
-            fps = 24
-            duration = 4  # seconds
-            total_frames = fps * duration
-            
-            # Create temporary file
-            with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as temp_file:
-                temp_path = temp_file.name
-            
-            # Create video writer
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-            out = cv2.VideoWriter(temp_path, fourcc, fps, (width, height))
-            
-            # Generate frames
-            for frame_num in range(total_frames):
-                # Create a gradient background that changes over time
-                frame = np.zeros((height, width, 3), dtype=np.uint8)
+import imageio
+
+async def generate_placeholder_video(prompt: str, samples: int, user_id: str):
+    """Generate animated GIF placeholders"""
+    try:
+        videos = []
+        
+        for i in range(samples):
+            # Create animated frames
+            frames = []
+            for frame_idx in range(30):  # 30 frames for ~1 second at 30fps
+                # Create a simple gradient frame
+                frame = np.zeros((576, 1024, 3), dtype=np.uint8)
                 
-                # Animated gradient
-                for y in range(height):
-                    for x in range(width):
-                        # Create a moving gradient effect
-                        hue = (frame_num * 2 + x // 4 + y // 4) % 360
-                        color = cv2.cvtColor(np.uint8([[[hue, 255, 255]]]), cv2.COLOR_HSV2BGR)[0][0]
-                        frame[y, x] = color
+                # Add gradient
+                for y in range(576):
+                    color_value = int(255 * (y / 576))
+                    frame[y, :] = [color_value // 2, 0, color_value]
                 
                 # Add text
-                font = cv2.FONT_HERSHEY_SIMPLEX
-                font_scale = 1.0
-                thickness = 2
+                text = f"AI Video\n{prompt[:30]}..."
+                cv2.putText(frame, text, (50, 300), cv2.FONT_HERSHEY_SIMPLEX, 
+                           2, (255, 255, 255), 3, cv2.LINE_AA)
                 
-                # Truncate prompt if too long
-                display_text = prompt[:50] + "..." if len(prompt) > 50 else prompt
-                text = f"Video Generation Placeholder\n\nPrompt: {display_text}\n\nVideo generation is currently unavailable."
+                # Add frame number
+                cv2.putText(frame, f"Frame {frame_idx}", (50, 550), cv2.FONT_HERSHEY_SIMPLEX, 
+                           1, (255, 255, 255), 2, cv2.LINE_AA)
                 
-                # Calculate text position
-                text_size = cv2.getTextSize(text, font, font_scale, thickness)[0]
-                text_x = (width - text_size[0]) // 2
-                text_y = (height + text_size[1]) // 2
-                
-                # Add text with background for better visibility
-                cv2.putText(frame, text, (text_x, text_y), font, font_scale, (255, 255, 255), thickness)
-                
-                out.write(frame)
+                frames.append(frame)
             
-            out.release()
+            # Save as MP4 using imageio
+            temp_filename = f"temp_{uuid.uuid4().hex[:8]}.mp4"
+            imageio.mimsave(temp_filename, frames, fps=10)
             
-            # Read the video file
-            with open(temp_path, 'rb') as f:
+            # Read the file
+            with open(temp_filename, 'rb') as f:
                 video_bytes = f.read()
             
-            # Clean up temp file
-            os.unlink(temp_path)
+            # Clean up
+            os.remove(temp_filename)
             
-            # Upload to Supabase as video
-            filename = f"{uuid.uuid4().hex[:8]}.mp4"
+            # Upload to Supabase
+            filename = f"placeholder_{uuid.uuid4().hex[:8]}.mp4"
             storage_path = f"anonymous/{filename}"
             
             supabase.storage.from_("ai-videos").upload(
                 path=storage_path,
                 file=video_bytes,
-                file_options={"content-type": "video/mp4"}  # Correct content type!
+                file_options={"content-type": "video/mp4"}
             )
             
             # Save video record
-            try:
-                supabase.table("videos").insert({
-                    "id": str(uuid.uuid4()),
-                    "user_id": user_id,
-                    "video_path": storage_path,
-                    "prompt": prompt,
-                    "provider": "placeholder",
-                    "created_at": datetime.now().isoformat()
-                }).execute()
-            except Exception as e:
-                logger.error(f"Failed to save video record: {e}")
+            video_id = str(uuid.uuid4())
+            supabase.table("videos").insert({
+                "id": video_id,
+                "user_id": user_id,
+                "video_path": storage_path,
+                "prompt": f"[PLACEHOLDER] {prompt}",
+                "provider": "placeholder",
+                "created_at": datetime.now().isoformat()
+            }).execute()
             
-            # Get public URL
-            public_url = get_public_url("ai-videos", storage_path)
-            urls.append(public_url)
-            
-        except Exception as e:
-            logger.error(f"Placeholder video generation failed: {e}")
-            # If video generation fails, fall back to image
-            try:
-                # Create a static image as fallback
-                from PIL import Image, ImageDraw, ImageFont
-                import io
-                
-                # Create a black image
-                width, height = 1024, 576
-                img = Image.new('RGB', (width, height), color='black')
-                draw = ImageDraw.Draw(img)
-                
-                # Add text
-                try:
-                    font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 40)
-                except:
-                    font = ImageFont.load_default()
-                
-                text = f"Video Generation Placeholder\n\nPrompt: {prompt[:50]}{'...' if len(prompt) > 50 else ''}\n\nVideo generation is currently unavailable. Please check back later."
-                
-                # Calculate text position
-                bbox = draw.textbbox((0, 0), text, font=font)
-                text_width = bbox[2] - bbox[0]
-                text_height = bbox[3] - bbox[1]
-                
-                x = (width - text_width) / 2
-                y = (height - text_height) / 2
-                
-                draw.text((x, y), text, fill='white', font=font)
-                
-                # Convert to bytes
-                img_bytes = io.BytesIO()
-                img.save(img_bytes, format='PNG')
-                img_bytes = img_bytes.getvalue()
-                
-                # Upload to videos bucket but as image
-                filename = f"{uuid.uuid4().hex[:8]}.png"
-                storage_path = f"anonymous/{filename}"
-                
-                supabase.storage.from_("ai-videos").upload(
-                    path=storage_path,
-                    file=img_bytes,
-                    file_options={"content-type": "image/png"}
-                )
-                
-                # Save video record
-                try:
-                    supabase.table("videos").insert({
-                        "id": str(uuid.uuid4()),
-                        "user_id": user_id,
-                        "video_path": storage_path,
-                        "prompt": prompt,
-                        "provider": "placeholder-image",
-                        "created_at": datetime.now().isoformat()
-                    }).execute()
-                except Exception as e:
-                    logger.error(f"Failed to save video record: {e}")
-                
-                # Get public URL
-                public_url = get_public_url("ai-videos", storage_path)
-                urls.append(public_url)
-                
-            except Exception as e2:
-                logger.error(f"Even fallback image generation failed: {e2}")
-                continue
-    
-    if not urls:
-        raise HTTPException(500, "No videos were generated successfully")
-    
-    return {
-        "provider": "placeholder",
-        "videos": [{"url": url, "type": "video/mp4" if url.endswith('.mp4') else "image/png"} for url in urls],
-        "message": "Video generation is currently unavailable. Please check back later."
-    }
-
+            videos.append({
+                "url": get_public_url("ai-videos", storage_path),
+                "type": "video/mp4",
+                "id": video_id
+            })
+        
+        return {"videos": videos}
+    except Exception as e:
+        logger.error(f"Failed to generate placeholder video: {e}")
+        raise
+        
 # Update the image generation handler
 async def image_generation_handler(prompt: str, user_id: str, stream: bool = False):
     """Handle image generation requests"""
