@@ -51,6 +51,7 @@ from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.schedulers.base import STATE_RUNNING
 import json
+from fastapi import Request
 from fastapi.responses import StreamingResponse
 
 scheduler = AsyncIOScheduler()
@@ -7118,6 +7119,12 @@ async def update_profile(request: Request, response: Response):
         logger.error(f"Failed to update profile: {e}")
         raise HTTPException(500, "Failed to update profile")
 
+
+@app.middleware("http")
+async def log_path(request: Request, call_next):
+    print(">>> PATH:", request.url.path)
+    return await call_next(request)
+        
 @app.get("/user/profile")
 async def get_profile(request: Request, response: Response):
     """Get user profile information"""
