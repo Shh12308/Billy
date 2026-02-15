@@ -7452,7 +7452,9 @@ async def stop(request: Request, response: Response):
     
 #// -----------------------------
 #// Regenerate endpoint
-#// -----------------------------@app.post("/regenerate")
+#// -----------------------------
+        
+@app.post("/regenerate")
 async def regenerate(req: Request, res: Response, tts: bool = False, samples: int = 1):
     """
     Cancel current stream (if any) and re-run the prompt as a fresh stream.
