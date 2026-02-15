@@ -5842,10 +5842,326 @@ async def cleanup_old_tasks():
         logger.error(f"Failed to cleanup old tasks: {e}")
 
 #// ---------- API Endpoints ----------
+#// ----------------------------------
+#// BACKGROUND TASK WORKER
+#// ----------------------------------
+def background_task_worker():
+    """
+    Worker function to process background tasks
+    """
+    while True:
+        try:
+            # Get pending tasks
+            response = supabase.table("background_tasks") \
+                .select("*") \
+                .eq("status", "pending") \
+                .order("created_at", desc=True) \
+                .limit(10) \
+                .execute()
+            
+            tasks = response.data if response.data else []
+            
+            for task in tasks:
+                # Update task status to processing
+                supabase.table("background_tasks") \
+                    .update({"status": "processing"}) \
+                    .eq("id", task["id"]) \
+                    .execute()
+                
+                # Process the task based on its type
+                if task["task_type"] == "ai_response":
+                    run_ai_task(task["id"])
+                elif task["task_type"] == "image_generation":
+                    run_image_generation_task(task["id"])
+                elif task["task_type"] == "video_generation":
+                    run_video_generation_task(task["id"])
+                
+                # Small delay between tasks
+                time.sleep(1)
+            
+            # Wait before checking for new tasks
+            time.sleep(5)
+            
+        except Exception as e:
+            logger.error(f"Background task worker error: {e}")
+            time.sleep(10)
+
+#// ----------------------------------
+#// IMAGE GENERATION TASK
+#// ----------------------------------
+def run_image_generation_task(task_id: str):
+    """
+    Process image generation task
+    """
+    try:
+        task = supabase.table("background_tasks") \
+            .select("*") \
+            .eq("id", task_id) \
+            .single() \
+            .execute()
+
+        if not task.data:
+            return
+
+        data = task.data
+        user_id = data["user_id"]
+        params = json.loads(data["params"])
+        
+        prompt = params["prompt"]
+        samples = params.get("samples", 1)
+        
+        # Generate images
+        result = generate_image_internal(prompt, samples, user_id)
+        
+        # Update task status
+        supabase.table("background_tasks") \
+            .update({
+                "status": "completed",
+                "result": json.dumps(result)
+            }) \
+            .eq("id", task_id) \
+            .execute()
+
+    except Exception as e:
+        logger.error(f"Image generation task failed: {e}")
+        supabase.table("background_tasks") \
+            .update({"status": "failed"}) \
+            .eq("id", task_id) \
+            .execute()
+
+#// ----------------------------------
+#// VIDEO GENERATION TASK
+#// ----------------------------------
+def run_video_generation_task(task_id: str):
+    """
+    Process video generation task
+    """
+    try:
+        task = supabase.table("background_tasks") \
+            .select("*") \
+            .eq("id", task_id) \
+            .single() \
+            .execute()
+
+        if not task.data:
+            return
+
+        data = task.data
+        user_id = data["user_id"]
+        params = json.loads(data["params"])
+        
+        prompt = params["prompt"]
+        samples = params.get("samples", 1)
+        
+        # Generate videos
+        result = await generate_video_replicate(prompt, samples, user_id)
+        
+        # Update task status
+        supabase.table("background_tasks") \
+            .update({
+                "status": "completed",
+                "result": json.dumps(result)
+            }) \
+            .eq("id", task_id) \
+            .execute()
+
+    except Exception as e:
+        logger.error(f"Video generation task failed: {e}")
+        supabase.table("background_tasks") \
+            .update({"status": "failed"}) \
+            .eq("id", task_id) \
+            .execute()
+
+#// ----------------------------------
+#// INTERNAL IMAGE GENERATION
+#// ----------------------------------
+def generate_image_internal(prompt: str, samples: int, user_id: str):
+    """
+    Internal function to generate images
+    """
+    try:
+        # Use Replicate for image generation
+        REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
+        if not REPLICATE_API_TOKEN:
+            return {"error": "No Replicate API key configured"}
+        
+        os.environ["REPLICATE_API_TOKEN"] = REPLICATE_API_TOKEN
+        
+        urls = []
+        
+        for i in range(samples):
+            output = replicate.run(
+                "stability-ai/stable-diffusion",
+                input={
+                    "prompt": prompt,
+                    "num_outputs": 1,
+                    "width": 1024,
+                    "height": 768,
+                    "num_inference_steps": 30,
+                    "guidance_scale": 7.5
+                }
+            )
+            
+            # The output is typically a URL to the generated image
+            image_url = output[0] if isinstance(output, list) else output
+            
+            # Download the image
+            image_response = httpx.get(image_url)
+            image_response.raise_for_status()
+            image_bytes = image_response.content
+            
+            # Upload to Supabase
+            filename = f"{uuid.uuid4().hex[:8]}.png"
+            storage_path = f"anonymous/{filename}"
+            
+            supabase.storage.from_("ai-images").upload(
+                path=storage_path,
+                file=image_bytes,
+                file_options={"content-type": "image/png"}
+            )
+            
+            # Save image record
+            supabase.table("images").insert({
+                "id": str(uuid.uuid4()),
+                "user_id": user_id,
+                "image_path": storage_path,
+                "prompt": prompt,
+                "provider": "replicate",
+                "created_at": datetime.now().isoformat()
+            }).execute()
+            
+            # Get public URL
+            public_url = get_public_url("ai-images", storage_path)
+            urls.append(public_url)
+        
+        return {"images": urls}
+        
+    except Exception as e:
+        logger.error(f"Image generation failed: {e}")
+        return {"error": str(e)}
+
+#// ----------------------------------
+#// HEALTH CHECK ENDPOINT
+#// ----------------------------------
 @app.get("/health")
-def health():
-    return {"status": "ok"}
-    
+async def health_check():
+    """
+    Health check endpoint for monitoring
+    """
+    try:
+        # Check database connection
+        db_response = supabase.table("users").select("id").limit(1).execute()
+        db_status = "healthy" if db_response.data else "unhealthy"
+        
+        # Check API keys
+        api_keys = {
+            "groq": bool(GROQ_API_KEY),
+            "replicate": bool(os.getenv("REPLICATE_API_TOKEN")),
+            "runwayml": bool(os.getenv("RUNWAYML_API_KEY"))
+        }
+        
+        return {
+            "status": "healthy",
+            "database": db_status,
+            "api_keys": api_keys,
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Health check failed: {e}")
+        return {
+            "status": "unhealthy",
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        }
+
+#// ----------------------------------
+#// METRICS ENDPOINT
+#// ----------------------------------
+@app.get("/metrics")
+async def get_metrics():
+    """
+    Get system metrics for monitoring
+    """
+    try:
+        # Get user count
+        users_response = supabase.table("users").select("id", count="exact").execute()
+        user_count = users_response.count if hasattr(users_response, 'count') else 0
+        
+        # Get conversation count
+        conv_response = supabase.table("conversations").select("id", count="exact").execute()
+        conv_count = conv_response.count if hasattr(conv_response, 'count') else 0
+        
+        # Get message count
+        msg_response = supabase.table("messages").select("id", count="exact").execute()
+        msg_count = msg_response.count if hasattr(msg_response, 'count') else 0
+        
+        # Get image count
+        img_response = supabase.table("images").select("id", count="exact").execute()
+        img_count = img_response.count if hasattr(img_response, 'count') else 0
+        
+        # Get video count
+        vid_response = supabase.table("videos").select("id", count="exact").execute()
+        vid_count = vid_response.count if hasattr(vid_response, 'count') else 0
+        
+        return {
+            "users": user_count,
+            "conversations": conv_count,
+            "messages": msg_count,
+            "images": img_count,
+            "videos": vid_count,
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Metrics collection failed: {e}")
+        return {"error": str(e)}
+
+#// ----------------------------------
+#// CLEANUP OLD DATA
+#// ----------------------------------
+@app.post("/admin/cleanup")
+async def cleanup_old_data(days: int = 30):
+    """
+    Clean up old data (admin only)
+    """
+    try:
+        cutoff_date = (datetime.now() - timedelta(days=days)).isoformat()
+        
+        # Clean up old messages
+        msg_response = supabase.table("messages") \
+            .delete() \
+            .lt("created_at", cutoff_date) \
+            .execute()
+        
+        # Clean up old conversations
+        conv_response = supabase.table("conversations") \
+            .delete() \
+            .lt("created_at", cutoff_date) \
+            .execute()
+        
+        # Clean up old images
+        img_response = supabase.table("images") \
+            .delete() \
+            .lt("created_at", cutoff_date) \
+            .execute()
+        
+        # Clean up old videos
+        vid_response = supabase.table("videos") \
+            .delete() \
+            .lt("created_at", cutoff_date) \
+            .execute()
+        
+        return {
+            "status": "success",
+            "deleted_messages": len(msg_response.data) if msg_response.data else 0,
+            "deleted_conversations": len(conv_response.data) if conv_response.data else 0,
+            "deleted_images": len(img_response.data) if img_response.data else 0,
+            "deleted_videos": len(vid_response.data) if vid_response.data else 0,
+            "cutoff_date": cutoff_date
+        }
+    except Exception as e:
+        logger.error(f"Cleanup failed: {e}")
+        return {"error": str(e)}
+        
 # Keep your existing GET handler
 @app.get("/")
 async def root():
