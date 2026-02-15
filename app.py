@@ -1,5 +1,6 @@
 import os
 import io
+from PIL import Image, ImageDraw, ImageFont
 import json
 import uuid
 import numpy as np
@@ -698,7 +699,170 @@ async def _generate_video_with_pixverse_replicate(prompt: str, num_samples: int)
         "videos": generated_videos
     }
     
-import imageio
+#// ----------------------------------
+#// VIDEO GENERATION (REPLICATE)
+#// ----------------------------------
+async def generate_video_replicate(prompt: str, samples: int, user_id: str):
+    """
+    Generate videos using Replicate API
+    """
+    REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
+    if not REPLICATE_API_TOKEN:
+        # Return placeholder if no API key
+        return await generate_placeholder_video(prompt, samples, user_id)
+    
+    try:
+        # Set the API token
+        os.environ["REPLICATE_API_TOKEN"] = REPLICATE_API_TOKEN
+        
+        urls = []
+        
+        for i in range(samples):
+            # Run the model in a thread to avoid blocking
+            output = await asyncio.to_thread(
+                replicate.run,
+                "stability-ai/stable-video-diffusion",
+                input={
+                    "prompt": prompt,
+                    "num_frames": 25,
+                    "num_inference_steps": 25,
+                    "guidance_scale": 7.5,
+                    "seed": random.randint(0, 4294967295),
+                    "width": 1024,
+                    "height": 576
+                }
+            )
+            
+            # The output is typically a URL to the generated video
+            video_url = output
+            if not video_url:
+                logger.error("No video URL in response")
+                continue
+            
+            # Download the video
+            video_response = await httpx.AsyncClient(timeout=120.0).get(video_url)
+            video_response.raise_for_status()
+            video_bytes = video_response.content
+            
+            # Upload to Supabase
+            filename = f"{uuid.uuid4().hex[:8]}.mp4"
+            storage_path = f"anonymous/{filename}"
+            
+            supabase.storage.from_("ai-videos").upload(
+                path=storage_path,
+                file=video_bytes,
+                file_options={"content-type": "video/mp4"}
+            )
+            
+            # Save video record
+            try:
+                supabase.table("videos").insert({
+                    "id": str(uuid.uuid4()),
+                    "user_id": user_id,
+                    "video_path": storage_path,
+                    "prompt": prompt,
+                    "provider": "replicate",
+                    "created_at": datetime.now().isoformat()
+                }).execute()
+            except Exception as e:
+                logger.error(f"Failed to save video record: {e}")
+            
+            # Get public URL
+            public_url = get_public_url("ai-videos", storage_path)
+            urls.append(public_url)
+        
+        return {
+            "provider": "replicate",
+            "videos": [{"url": url, "type": "video/mp4"} for url in urls]
+        }
+        
+    except Exception as e:
+        logger.error(f"Replicate video generation failed: {e}")
+        # Fallback to placeholder
+        return await generate_placeholder_video(prompt, samples, user_id)
+
+#// ----------------------------------
+#// PLACEHOLDER VIDEO GENERATION
+#// ----------------------------------
+async def generate_placeholder_video(prompt: str, samples: int, user_id: str):
+    """
+    Generate a placeholder video when no API is available
+    """
+    try:
+        # Create a simple text-based video placeholder
+        placeholder_text = f"Video for: {prompt[:50]}..."
+        
+        # Create a simple image with text
+        from PIL import Image, ImageDraw, ImageFont
+        
+        # Create a blank image
+        width, height = 1024, 576
+        image = Image.new('RGB', (width, height), color='#1a1a2e')
+        draw = ImageDraw.Draw(image)
+        
+        # Add text
+        try:
+            # Try to use a larger font
+            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 40)
+        except:
+            font = ImageFont.load_default()
+        
+        # Calculate text position
+        text_width, text_height = draw.textsize(placeholder_text, font=font)
+        x = (width - text_width) // 2
+        y = (height - text_height) // 2
+        
+        # Draw text
+        draw.text((x, y), placeholder_text, fill='white', font=font)
+        
+        # Save to bytes
+        img_bytes = io.BytesIO()
+        image.save(img_bytes, format='PNG')
+        img_bytes.seek(0)
+        
+        # For each sample, create a "video" (actually just the image)
+        urls = []
+        for i in range(samples):
+            # Upload the image as a "video" placeholder
+            filename = f"placeholder_{uuid.uuid4().hex[:8]}.png"
+            storage_path = f"anonymous/{filename}"
+            
+            supabase.storage.from_("ai-videos").upload(
+                path=storage_path,
+                file=img_bytes.getvalue(),
+                file_options={"content-type": "image/png"}
+            )
+            
+            # Save video record
+            try:
+                supabase.table("videos").insert({
+                    "id": str(uuid.uuid4()),
+                    "user_id": user_id,
+                    "video_path": storage_path,
+                    "prompt": prompt,
+                    "provider": "placeholder",
+                    "created_at": datetime.now().isoformat()
+                }).execute()
+            except Exception as e:
+                logger.error(f"Failed to save video record: {e}")
+            
+            # Get public URL
+            public_url = get_public_url("ai-videos", storage_path)
+            urls.append(public_url)
+        
+        return {
+            "provider": "placeholder",
+            "videos": [{"url": url, "type": "image/png"} for url in urls],
+            "message": "Placeholder videos generated (API not configured)"
+        }
+        
+    except Exception as e:
+        logger.error(f"Placeholder video generation failed: {e}")
+        return {
+            "provider": "error",
+            "videos": [],
+            "error": str(e)
+        }
 
 async def generate_placeholder_video(prompt: str, samples: int, user_id: str):
     """Generate animated GIF placeholders"""
@@ -5845,10 +6009,17 @@ async def cleanup_old_tasks():
 #// ----------------------------------
 #// BACKGROUND TASK WORKER
 #// ----------------------------------
+#// ----------------------------------
+#// BACKGROUND TASK WORKER
+#// ----------------------------------
 def background_task_worker():
     """
     Worker function to process background tasks
     """
+    # Create a new event loop for this thread
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
     while True:
         try:
             # Get pending tasks
@@ -5874,7 +6045,8 @@ def background_task_worker():
                 elif task["task_type"] == "image_generation":
                     run_image_generation_task(task["id"])
                 elif task["task_type"] == "video_generation":
-                    run_video_generation_task(task["id"])
+                    # Run the async function in the event loop
+                    loop.run_until_complete(run_video_generation_task(task["id"]))
                 
                 # Small delay between tasks
                 time.sleep(1)
@@ -5885,7 +6057,6 @@ def background_task_worker():
         except Exception as e:
             logger.error(f"Background task worker error: {e}")
             time.sleep(10)
-
 #// ----------------------------------
 #// IMAGE GENERATION TASK
 #// ----------------------------------
