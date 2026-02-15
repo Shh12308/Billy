@@ -6103,7 +6103,7 @@ def run_image_generation_task(task_id: str):
 #// ----------------------------------
 #// VIDEO GENERATION TASK
 #// ----------------------------------
-def run_video_generation_task(task_id: str):
+async def run_video_generation_task(task_id: str):
     """
     Process video generation task
     """
