@@ -2363,23 +2363,30 @@ Current message: {message}"""
         logger.error(f"Failed to build contextual prompt: {e}")
         return f"You are a helpful AI assistant. User message: {message}"
 
-async def persist_message(user_id: str, conversation_id: str, role: str, content: str, request: Request):
-    """Store message in database and associate it with the current device."""
+async def persist_message(
+    user_id: str,
+    conversation_id: str,
+    role: str,
+    content: str,
+    request: Request
+):
     try:
-        # Get the device fingerprint for this request
         device_fingerprint = generate_device_fingerprint(request)
-        
-        # Update the message with the device fingerprint
+
         await asyncio.to_thread(
             lambda: supabase.table("messages")
-            .update({
+            .insert({
+                "user_id": user_id,
+                "conversation_id": conversation_id,
+                "role": role,
+                "content": content,
                 "device_fingerprint": device_fingerprint
             })
-            .eq("id", conversation_id)
             .execute()
         )
+
     except Exception as e:
-        logger.error(f"Failed to update message with device fingerprint: {e}")
+        logger.error(f"Failed to persist message: {e}")
 
 async def get_or_create_conversation(user_id: str) -> str:
     """Get existing conversation or create new one with proper UUID"""
