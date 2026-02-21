@@ -357,88 +357,193 @@ async def get_current_identity(request: Request):
         "guest_id": guest_id if is_guest else None
     }
     
-async def get_or_create_user(request: Request, response: Response) -> User:
-    # 1️⃣ Generate device fingerprint for the request
-    device_fingerprint = generate_device_fingerprint(request)
+def create_session_token() -> str:
+    """Generates a cryptographically secure session token."""
+    return secrets.token_urlsafe(32)
 
-    # 2️⃣ Try to find a logged-in user via Supabase session (if available)
+async def get_or_create_user(request: Request, response: Response) -> Tuple[dict, bool]:
+    """
+    Advanced user identification.
+    - Tries to find an existing user via session cookie.
+    - If not found, creates a new anonymous user and sets the cookie.
+    - Returns a tuple of (user_dict, is_newly_created_bool).
+    """
+    session_token = request.cookies.get(COOKIE_NAME)
+
+    if session_token:
+        try:
+            # Look for a user with this session token
+            user_resp = supabase.table("users").select("*").eq("session_token", session_token).limit(1).execute()
+            if user_resp.data:
+                # Found an existing user (anonymous or previously anonymous)
+                return user_resp.data[0], False
+        except Exception as e:
+            logger.error(f"Error fetching user by session token: {e}")
+            # If the token is invalid or DB error, we proceed to create a new user
+
+    # No valid user found, create a new anonymous one
+    anonymous_id = str(uuid.uuid4())
+    new_session_token = create_session_token()
+    
+    user_data = {
+        "id": anonymous_id,
+        "email": f"anonymous+{anonymous_id}@zynara.local", # Placeholder email
+        "anonymous": True,
+        "session_token": new_session_token,
+        "created_at": datetime.utcnow().isoformat()
+    }
+
     try:
-        # This assumes you have some way to get `user_resp` from Supabase auth
-        user_resp = await asyncio.to_thread(
-            lambda: supabase.auth.get_user()  # adjust this to your auth call
+        supabase.table("users").insert(user_data).execute()
+        logger.info(f"Created new anonymous user: {anonymous_id}")
+
+        # Set the secure cookie
+        response.set_cookie(
+            key=COOKIE_NAME,
+            value=new_session_token,
+            max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60, # Convert to seconds
+            path="/",
+            secure=True, # Only send over HTTPS
+            httponly=True, # Inaccessible to JavaScript
+            samesite="lax", # Good balance for security and usability
         )
-
-        if user_resp.user:
-            # Update last_seen
-            await asyncio.to_thread(
-                lambda: supabase.table("users")
-                .update({"last_seen": datetime.utcnow().isoformat()})
-                .eq("id", user_resp.user.id)
-                .execute()
-            )
-
-            return User(
-                id=user_resp.user.id,
-                anonymous=False,
-                session_token=None,
-                device_fingerprint=None,
-            )
+        return user_data, True
 
     except Exception as e:
-        logger.warning(f"Supabase auth check failed: {e}")
+        logger.error(f"Failed to create new anonymous user: {e}")
+        raise HTTPException(status_code=500, detail="Could not establish user session.")
 
-    # 3️⃣ Look for existing anonymous user by device fingerprint
+async def get_current_user_optional(
+    request: Request,
+    response: Response,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
+) -> Optional[dict]:
+    """
+    Dependency to get the current user.
+    - If a valid JWT is provided, it authenticates the user.
+    - Otherwise, it falls back to the session cookie (anonymous user).
+    - Returns None only if no session can be established at all.
+    """
+    # 1. Check for JWT Bearer token first (highest priority)
+    if credentials and credentials.scheme == "Bearer":
+        try:
+            if not frontend_supabase:
+                logger.warning("Frontend Supabase client not configured for JWT validation.")
+                raise ValueError("Supabase client missing")
+            
+            # Let Supabase validate the JWT
+            user_jwt = frontend_supabase.auth.get_user(credentials.credentials)
+            if user_jwt.user:
+                # User is authenticated. Now, ensure their session cookie matches.
+                authenticated_user_id = user_jwt.user.id
+                session_token = request.cookies.get(COOKIE_NAME)
+                
+                # If cookie doesn't match, update it. This handles logins from other devices.
+                if not session_token or session_token != authenticated_user_id:
+                    response.set_cookie(
+                        key=COOKIE_NAME,
+                        value=authenticated_user_id,
+                        max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+                        path="/",
+                        secure=True,
+                        httponly=True,
+                        samesite="lax",
+                    )
+                    # Update the session_token in the DB for consistency
+                    supabase.table("users").update({"session_token": authenticated_user_id}).eq("id", authenticated_user_id).execute()
+                
+                # Return the authenticated user's full profile
+                user_resp = supabase.table("users").select("*").eq("id", authenticated_user_id).limit(1).execute()
+                return user_resp.data[0] if user_resp.data else None
+
+        except (JWTError, Exception) as e:
+            logger.warning(f"JWT validation failed: {e}. Falling back to session cookie.")
+            # If JWT is invalid, we don't raise an error, we just fall through to check the cookie.
+
+    # 2. If no valid JWT, check for session cookie (anonymous user)
+    user, _ = await get_or_create_user(request, response)
+    return user
+
+# --- The Data Merging Endpoint ---
+@app.post("/auth/merge-session")
+async def merge_anonymous_session(
+    request: Request,
+    response: Response,
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+):
+    """
+    CRITICAL ENDPOINT: This merges an anonymous user's data into a newly authenticated user's account.
+    It should be called immediately after a successful login or signup on the frontend.
+    """
+    if not credentials or not credentials.scheme == "Bearer":
+        raise HTTPException(status_code=401, detail="Authorization token required for merging.")
+
     try:
-        user_resp = await asyncio.to_thread(
-            lambda: supabase.table("users")
-            .select("*")
-            .eq("device_fingerprint", device_fingerprint)
-            .limit(1)
-            .execute()
+        # Validate the JWT to get the permanent user ID
+        user_jwt = frontend_supabase.auth.get_user(credentials.credentials)
+        if not user_jwt.user:
+            raise HTTPException(status_code=401, detail="Invalid token.")
+        
+        permanent_user_id = user_jwt.user.id
+        
+        # Get the anonymous user ID from the current session cookie
+        anonymous_session_token = request.cookies.get(COOKIE_NAME)
+        if not anonymous_session_token:
+            logger.info(f"No anonymous session to merge for user {permanent_user_id}.")
+            return {"status": "no_session", "message": "No anonymous session found to merge."}
+
+        # Find the anonymous user in the database
+        anon_user_resp = supabase.table("users").select("id").eq("session_token", anonymous_session_token).limit(1).execute()
+        if not anon_user_resp.data:
+            logger.warning(f"Anonymous user not found for token during merge: {anonymous_session_token}")
+            return {"status": "not_found", "message": "Anonymous session not found."}
+        
+        anonymous_user_id = anon_user_resp.data[0]['id']
+
+        # If the IDs are already the same, no merge is needed
+        if anonymous_user_id == permanent_user_id:
+            return {"status": "already_merged", "message": "Session is already for the authenticated user."}
+
+        logger.info(f"Merging session from anonymous user {anonymous_user_id} to permanent user {permanent_user_id}")
+
+        # --- Perform the data merge ---
+        # This is a critical section. We update all tables that reference user_id.
+        tables_to_merge = ["conversations", "messages", "images", "videos", "background_tasks"]
+        
+        for table_name in tables_to_merge:
+            try:
+                # Use raw SQL for performance and atomicity if possible, but RPC is fine
+                supabase.table(table_name).update({"user_id": permanent_user_id}).eq("user_id", anonymous_user_id).execute()
+                logger.info(f"Merged {table_name} for user {anonymous_user_id} -> {permanent_user_id}")
+            except Exception as e:
+                logger.error(f"Failed to merge table {table_name}: {e}")
+                # Continue with other tables, but this is a significant failure
+        
+        # --- Cleanup ---
+        # Delete the temporary anonymous user record
+        supabase.table("users").delete().eq("id", anonymous_user_id).execute()
+        logger.info(f"Deleted anonymous user record: {anonymous_user_id}")
+
+        # --- Update Cookie ---
+        # The cookie is now the permanent user ID
+        response.set_cookie(
+            key=COOKIE_NAME,
+            value=permanent_user_id,
+            max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+            path="/",
+            secure=True,
+            httponly=True,
+            samesite="lax",
         )
+        
+        return {"status": "success", "message": "Anonymous session merged successfully."}
 
-        if user_resp.data:
-            user_data = user_resp.data[0]
-            return User(
-                id=user_data["id"],
-                anonymous=True,
-                session_token=user_data.get("session_token"),
-                device_fingerprint=device_fingerprint,
-            )
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.warning(f"Device fingerprint lookup failed: {e}")
+        logger.error(f"Session merge failed: {e}")
+        raise HTTPException(status_code=500, detail="An internal error occurred during session merge.")
 
-    # 4️⃣ No user found → create a new anonymous user
-    new_session_token = str(uuid.uuid4())
-    new_user_id = str(uuid.uuid4())
-
-    await asyncio.to_thread(
-        lambda: supabase.table("users").insert({
-            "id": new_user_id,
-            "session_token": new_session_token,
-            "device_fingerprint": device_fingerprint,
-            "created_at": datetime.utcnow().isoformat(),
-            "last_seen": datetime.utcnow().isoformat()
-        }).execute()
-    )
-
-    # 5️⃣ Set session cookie for the new user
-    response.set_cookie(
-        key="session_token",
-        value=new_session_token,
-        max_age=60 * 60 * 24 * 30,  # 30 days
-        path="/",
-        secure=True,  # True in production
-        httponly=True,
-        samesite="lax"
-    )
-
-    return User(
-        id=new_user_id,
-        anonymous=True,
-        session_token=new_session_token,
-        device_fingerprint=device_fingerprint,
-    )
         
 # -----------------------------
 # Merge visitor → real user
