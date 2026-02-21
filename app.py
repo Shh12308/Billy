@@ -30,6 +30,7 @@ import httpx
 import aiohttp
 from fastapi.responses import PlainTextResponse
 import torch
+from typing import Tuple, Dict, Optional, List
 from PIL import Image
 from fastapi import BackgroundTasks, FastAPI, Request, Header, UploadFile, File, HTTPException, Query, Form, Depends, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse, FileResponse
