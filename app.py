@@ -82,7 +82,7 @@ app.add_middleware(
 
 # 1️⃣ Create scheduler (do NOT start here)
 
-    COOKIE_NAME = "session_token"
+COOKIE_NAME = "session_token"
 
 # Example job (optional)
 async def example_job():
