@@ -325,38 +325,6 @@ class ConnectionManager:
             await self.active_connections[user_id].send_text(message)
 
 manager = ConnectionManager()
-
-async def get_current_identity(request: Request):
-    auth_header = request.headers.get("Authorization")
-    guest_id = request.cookies.get("guest_id")
-
-    user_id = None
-    is_authenticated = False
-    is_guest = False
-
-    if auth_header:
-        try:
-            token = auth_header.replace("Bearer ", "")
-            user_response = supabase.auth.get_user(token)
-
-            if user_response and user_response.user:
-                user_id = user_response.user.id
-                is_authenticated = True
-        except Exception:
-            pass
-
-    if not user_id:
-        if not guest_id:
-            guest_id = f"guest_{uuid.uuid4()}"
-        user_id = guest_id
-        is_guest = True
-
-    return {
-        "user_id": user_id,
-        "is_authenticated": is_authenticated,
-        "is_guest": is_guest,
-        "guest_id": guest_id if is_guest else None
-    }
     
 def create_session_token() -> str:
     """Generates a cryptographically secure session token."""
@@ -735,7 +703,7 @@ async def generate_video_internal(prompt: str, samples: int = 1, user_id: str = 
     return await generate_placeholder_video(prompt, samples, user_id)
     
 # Add this new helper function to your app.py fil
-async def _generate_video_with_minimax_replicate(prompt: str, num_samples: int):
+async def _generate_video_with_pixverse_replicate(prompt: str, num_samples: int):
     """
     Generates video(s) using Minimax Video-01 on Replicate,
     uploads them to Supabase Storage, and returns permanent public URLs.
@@ -6711,7 +6679,7 @@ def load_conversation_history(user_id: str, limit: int = 20):
 async def ask_universal(
     request: Request,
     response: Response,
-    identity: dict = Depends(get_current_identity)
+    current_user: dict = Depends(get_current_user_optional)
 ):
     try:
         # -------------------------
