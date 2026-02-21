@@ -735,73 +735,82 @@ async def generate_video_internal(prompt: str, samples: int = 1, user_id: str = 
     return await generate_placeholder_video(prompt, samples, user_id)
     
 # Add this new helper function to your app.py fil
-async def _generate_video_with_pixverse_replicate(prompt: str, num_samples: int):
+async def _generate_video_with_minimax_replicate(prompt: str, num_samples: int):
     """
-    Generates a video using the Pixverse model on Replicate,
-    then uploads it to Supabase storage and returns the permanent URL.
+    Generates video(s) using Minimax Video-01 on Replicate,
+    uploads them to Supabase Storage, and returns permanent public URLs.
     """
-    model_id = "pixverse/pixverse-v5.6"
+
+    model_id = "minimax/video-01"
     bucket_name = "ai-videos"
     storage_path_prefix = "anonymous"
-    
+
     generated_videos = []
-    
+
     for i in range(num_samples):
         try:
-            # 1. Generate video with Replicate
+            # 1️⃣ Generate video with Replicate
             input_data = {
                 "prompt": prompt,
-                "quality": "1080p"
+                "duration": 5,          # seconds
+                "resolution": "720p"    # minimax supports 720p commonly
             }
+
             output = await asyncio.to_thread(
                 replicate.run,
                 model_id,
                 input=input_data
             )
-            
-            # 2. Download the video from the temporary Replicate URL
-            temp_video_url = output.url
-            async with httpx.AsyncClient(timeout=60.0) as client:
+
+            # 2️⃣ Handle different Replicate return formats safely
+            if isinstance(output, list):
+                temp_video_url = output[0]
+            elif isinstance(output, str):
+                temp_video_url = output
+            elif hasattr(output, "url"):
+                temp_video_url = output.url
+            else:
+                raise ValueError("Unexpected Replicate output format")
+
+            # 3️⃣ Download video from Replicate
+            async with httpx.AsyncClient(timeout=120.0) as client:
                 response = await client.get(temp_video_url)
-                response.raise_for_status() # Ensure the download was successful
+                response.raise_for_status()
                 video_bytes = response.content
 
-            # 3. Upload to Supabase Storage (Corrected Logic)
-            # Create a unique filename
-            file_extension = ".mp4" # Pixverse outputs mp4
+            # 4️⃣ Upload to Supabase
+            file_extension = ".mp4"
             unique_filename = f"{uuid.uuid4()}{file_extension}"
             storage_path = f"{storage_path_prefix}/{unique_filename}"
-            
-            # Use a try...except block to handle the upload correctly
-            try:
-                supabase.storage.from_(bucket_name).upload(
-                    path=storage_path,
-                    file=video_bytes,
-                    file_options={"content-type": "video/mp4"}
-                )
-                logger.info(f"Successfully uploaded {unique_filename} to Supabase.")
-            except Exception as e:
-                logger.error(f"Supabase upload failed for {unique_filename}: {e}")
-                # Re-raise the exception to stop the process
-                raise Exception(f"Supabase upload failed: {e}")
 
-            # 4. Get the permanent public URL from Supabase
-            # This call is safe and returns a string URL
+            supabase.storage.from_(bucket_name).upload(
+                path=storage_path,
+                file=video_bytes,
+                file_options={"content-type": "video/mp4"}
+            )
+
+            logger.info(f"Uploaded {unique_filename} to Supabase.")
+
+            # 5️⃣ Get public URL
             public_url = supabase.storage.from_(bucket_name).get_public_url(storage_path)
-            
-            generated_videos.append({"url": public_url, "id": unique_filename})
-            logger.info(f"Successfully generated and saved video {i+1}/{num_samples} to Supabase: {public_url}")
+
+            generated_videos.append({
+                "url": public_url,
+                "id": unique_filename
+            })
+
+            logger.info(f"Generated video {i+1}/{num_samples}: {public_url}")
 
         except Exception as e:
-            logger.error(f"Failed to generate/save video {i+1}: {e}")
-            # If one generation fails, we re-raise to stop the whole process.
+            logger.error(f"Video generation failed ({i+1}): {e}")
             raise
 
     if not generated_videos:
-        raise ValueError("Pixverse failed to generate and save any videos.")
+        raise ValueError("Minimax failed to generate any videos.")
 
     return {
         "provider": "supabase-storage",
+        "model": "minimax-video-01",
         "videos": generated_videos
     }
     
