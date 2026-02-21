@@ -2,6 +2,7 @@ import os
 import io
 from PIL import Image, ImageDraw, ImageFont
 import json
+import secrets
 import uuid
 import numpy as np
 import base64
