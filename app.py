@@ -178,7 +178,7 @@ if FRONTEND_SUPABASE_URL and FRONTEND_SUPABASE_ANON_KEY:
     )
 
 # Security for JWT tokens
-security = HTTPBearer()
+security = HTTPBearer(auto_error=False)
 
 # User model for authentication
 class User:
