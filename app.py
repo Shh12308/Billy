@@ -6702,19 +6702,25 @@ async def ask_universal(
                # -------------------------
         # USER & CONVERSATION
         # -------------------------
-        user_id = identity["user_id"]
-        is_guest = identity["is_guest"]
-        is_authenticated = identity["is_authenticated"]
-
-        if is_guest:
-            response.set_cookie(
-                key="guest_id",
-                value=identity["guest_id"],
-                httponly=True,
-                secure=True,  # True in production (HTTPS)
-                samesite="Lax",
-                max_age=60 * 60 * 24 * 7  # 7 days
-            )
+        # -------------------------
+# USER & CONVERSATION
+# -------------------------
+if current_user:
+    user_id = current_user.get("user_id")
+    is_guest = current_user.get("is_guest", False)
+    is_authenticated = current_user.get("is_authenticated", True)
+    guest_id = current_user.get("guest_id")
+else:
+    raise HTTPException(status_code=401, detail="User identity missing")
+if is_guest:
+    response.set_cookie(
+        key="guest_id",
+        value=guest_id,
+        httponly=True,
+        secure=True,
+        samesite="Lax",
+        max_age=60 * 60 * 24 * 7
+    )
         # -------------------------
         # CONVERSATION ID FIX
         # -------------------------
