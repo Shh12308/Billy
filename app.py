@@ -6699,28 +6699,25 @@ async def ask_universal(
         if not prompt and not files:
             raise HTTPException(status_code=400, detail="prompt or files required")
 
-               # -------------------------
+                  # -------------------------
         # USER & CONVERSATION
         # -------------------------
-        # -------------------------
-# USER & CONVERSATION
-# -------------------------
-if current_user:
-    user_id = current_user.get("user_id")
-    is_guest = current_user.get("is_guest", False)
-    is_authenticated = current_user.get("is_authenticated", True)
-    guest_id = current_user.get("guest_id")
-else:
-    raise HTTPException(status_code=401, detail="User identity missing")
-if is_guest:
-    response.set_cookie(
-        key="guest_id",
-        value=guest_id,
-        httponly=True,
-        secure=True,
-        samesite="Lax",
-        max_age=60 * 60 * 24 * 7
-    )
+        identity = current_user or {}
+
+        user_id = identity.get("user_id")
+        is_guest = identity.get("is_guest", False)
+        is_authenticated = identity.get("is_authenticated", False)
+        guest_id = identity.get("guest_id")
+
+        if is_guest and guest_id:
+            response.set_cookie(
+                key="guest_id",
+                value=guest_id,
+                httponly=True,
+                secure=True,
+                samesite="Lax",
+                max_age=60 * 60 * 24 * 7
+            )
         # -------------------------
         # CONVERSATION ID FIX
         # -------------------------
