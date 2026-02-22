@@ -83,6 +83,7 @@ app.add_middleware(
 
 # 1️⃣ Create scheduler (do NOT start here)
 
+ACCESS_TOKEN_EXPIRE_MINUTES = 60  # or whatever you want
 COOKIE_NAME = "session_token"
 
 # Example job (optional)
