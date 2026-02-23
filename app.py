@@ -949,77 +949,6 @@ async def generate_placeholder_video(prompt: str, samples: int, user_id: str):
             "videos": [],
             "error": str(e)
         }
-
-async def generate_placeholder_video(prompt: str, samples: int, user_id: str):
-    """Generate animated GIF placeholders"""
-    try:
-        videos = []
-        
-        for i in range(samples):
-            # Create animated frames
-            frames = []
-            for frame_idx in range(30):  # 30 frames for ~1 second at 30fps
-                # Create a simple gradient frame
-                frame = np.zeros((576, 1024, 3), dtype=np.uint8)
-                
-                # Add gradient
-                for y in range(576):
-                    color_value = int(255 * (y / 576))
-                    frame[y, :] = [color_value // 2, 0, color_value]
-                
-                # Add text
-                text = f"AI Video\n{prompt[:30]}..."
-                cv2.putText(frame, text, (50, 300), cv2.FONT_HERSHEY_SIMPLEX, 
-                           2, (255, 255, 255), 3, cv2.LINE_AA)
-                
-                # Add frame number
-                cv2.putText(frame, f"Frame {frame_idx}", (50, 550), cv2.FONT_HERSHEY_SIMPLEX, 
-                           1, (255, 255, 255), 2, cv2.LINE_AA)
-                
-                frames.append(frame)
-            
-            # Save as MP4 using imageio
-            temp_filename = f"temp_{uuid.uuid4().hex[:8]}.mp4"
-            imageio.mimsave(temp_filename, frames, fps=10)
-            
-            # Read the file
-            with open(temp_filename, 'rb') as f:
-                video_bytes = f.read()
-            
-            # Clean up
-            os.remove(temp_filename)
-            
-            # Upload to Supabase
-            filename = f"placeholder_{uuid.uuid4().hex[:8]}.mp4"
-            storage_path = f"anonymous/{filename}"
-            
-            supabase.storage.from_("ai-videos").upload(
-                path=storage_path,
-                file=video_bytes,
-                file_options={"content-type": "video/mp4"}
-            )
-            
-            # Save video record
-            video_id = str(uuid.uuid4())
-            supabase.table("videos").insert({
-                "id": video_id,
-                "user_id": user_id,
-                "video_path": storage_path,
-                "prompt": f"[PLACEHOLDER] {prompt}",
-                "provider": "placeholder",
-                "created_at": datetime.now().isoformat()
-            }).execute()
-            
-            videos.append({
-                "url": get_public_url("ai-videos", storage_path),
-                "type": "video/mp4",
-                "id": video_id
-            })
-        
-        return {"videos": videos}
-    except Exception as e:
-        logger.error(f"Failed to generate placeholder video: {e}")
-        raise
         
 # Update the image generation handler
 async def image_generation_handler(prompt: str, user_id: str, stream: bool = False):
@@ -6704,11 +6633,25 @@ async def ask_universal(
         # -------------------------
         identity = current_user or {}
 
-        user_id = identity.get("user_id")
-        is_guest = identity.get("is_guest", False)
-        is_authenticated = identity.get("is_authenticated", False)
-        guest_id = identity.get("guest_id")
+       is_authenticated = identity.get("is_authenticated", False)
+       user_id = identity.get("user_id")
+       is_guest = identity.get("is_guest", False)
+       guest_id = identity.get("guest_id")
 
+# If authenticated user exists → use it
+if user_id:
+    pass
+
+# If guest → use guest_id as user_id
+elif is_guest and guest_id:
+    user_id = guest_id
+
+# If nothing exists → create new guest id
+else:
+    user_id = str(uuid.uuid4())
+    guest_id = user_id
+    is_guest = True
+       
         if is_guest and guest_id:
             response.set_cookie(
                 key="guest_id",
