@@ -6628,30 +6628,30 @@ async def ask_universal(
         if not prompt and not files:
             raise HTTPException(status_code=400, detail="prompt or files required")
 
-                  # -------------------------
+                         # -------------------------
         # USER & CONVERSATION
         # -------------------------
         identity = current_user or {}
 
-       is_authenticated = identity.get("is_authenticated", False)
-       user_id = identity.get("user_id")
-       is_guest = identity.get("is_guest", False)
-       guest_id = identity.get("guest_id")
+        is_authenticated = identity.get("is_authenticated", False)
+        user_id = identity.get("user_id")
+        is_guest = identity.get("is_guest", False)
+        guest_id = identity.get("guest_id")
 
-# If authenticated user exists → use it
-if user_id:
-    pass
+        # If authenticated user exists → use it
+        if user_id:
+            pass
 
-# If guest → use guest_id as user_id
-elif is_guest and guest_id:
-    user_id = guest_id
+        # If guest → use guest_id as user_id
+        elif is_guest and guest_id:
+            user_id = guest_id
 
-# If nothing exists → create new guest id
-else:
-    user_id = str(uuid.uuid4())
-    guest_id = user_id
-    is_guest = True
-       
+        # If nothing exists → create new guest id
+        else:
+            user_id = str(uuid.uuid4())
+            guest_id = user_id
+            is_guest = True
+
         if is_guest and guest_id:
             response.set_cookie(
                 key="guest_id",
@@ -6661,6 +6661,7 @@ else:
                 samesite="Lax",
                 max_age=60 * 60 * 24 * 7
             )
+
         # -------------------------
         # CONVERSATION ID FIX
         # -------------------------
@@ -6678,16 +6679,14 @@ else:
         # ENSURE CONVERSATION EXISTS
         # -------------------------
         try:
-            # Check if conversation exists
             conv_response = await asyncio.to_thread(
                 lambda: supabase.table("conversations")
                 .select("id, title")
                 .eq("id", conversation_id)
                 .execute()
             )
-            
+
             if not conv_response.data:
-                # Conversation doesn't exist, create it
                 await asyncio.to_thread(
                     lambda: supabase.table("conversations")
                     .insert({
@@ -6699,10 +6698,9 @@ else:
                     })
                     .execute()
                 )
+
         except Exception as e:
             logger.error(f"Failed to check/create conversation: {e}")
-            # Continue anyway, the error will be caught below if needed
-
         # -------------------------
         # SAVE USER MESSAGE
         # -------------------------
