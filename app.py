@@ -7646,7 +7646,7 @@ async def stream_endpoint(request: Request):
 #// -----------------------------
 #// Stop endpoint
 #// -----------------------------
-@router.post("/stop")
+@app.post("/stop")
 async def stop_generation(request: Request):
     try:
         body = await request.json()
