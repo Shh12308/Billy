@@ -29,6 +29,9 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 import httpx
 import aiohttp
+from fastapi import FastAPI
+
+app = FastAPI()
 from fastapi.responses import PlainTextResponse
 import torch
 from typing import Tuple, Dict, Optional, List
