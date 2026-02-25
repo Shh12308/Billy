@@ -6031,9 +6031,6 @@ async def cleanup_old_tasks():
 #// ----------------------------------
 #// BACKGROUND TASK WORKER
 #// ----------------------------------
-#// ----------------------------------
-#// BACKGROUND TASK WORKER
-#// ----------------------------------
 def background_task_worker():
     """
     Worker function to process background tasks
@@ -7646,17 +7643,44 @@ async def stream_endpoint(request: Request):
 #// -----------------------------
 #// Stop endpoint
 #// -----------------------------
-@app.post("/stop")
-async def stop(request: Request, response: Response):
-    user = await get_or_create_user(request, response)
-    user_id = user.id
-    
-    task = active_streams.get(user_id)
-    if task:
-        task.cancel()
-        del active_streams[user_id]
-        return {"stopped": True}
-    return {"stopped": False}
+@router.post("/stop")
+async def stop_generation(request: Request):
+    try:
+        body = await request.json()
+        user_identifier = body.get("user_id")
+
+        if not user_identifier:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "user_id required"}
+            )
+
+        # If your user function returns (user, created)
+        user_result = get_or_create_user(user_identifier)
+
+        # ✅ FIX: Unpack safely
+        if isinstance(user_result, tuple):
+            user, _ = user_result
+        else:
+            user = user_result
+
+        user_id = getattr(user, "id", user)
+
+        # Cancel active task if exists
+        task = active_tasks.get(user_id)
+
+        if task:
+            task.cancel()
+            del active_tasks[user_id]
+            logging.info(f"Cancelled task for user {user_id}")
+
+            return {"status": "stopped"}
+        else:
+            return {"status": "no active task"}
+
+    except Exception as e:
+        logging.error(f"/stop failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="Stop failed")
     
 #// -----------------------------
 #// Regenerate endpoint
