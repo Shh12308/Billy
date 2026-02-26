@@ -6657,7 +6657,7 @@ async def ask_universal(
                 key="guest_id",
                 value=guest_id,
                 httponly=True,
-                secure=True,
+                secure=False,
                 samesite="Lax",
                 max_age=60 * 60 * 24 * 7
             )
