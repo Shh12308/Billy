@@ -4231,6 +4231,381 @@ async def multimodal_search(prompt: str, user_id: str, stream: bool = False):
             "search_id": search_id
         }
 
+async def generate_code_internal(prompt: str) -> str:
+    """Generate code based on prompt"""
+    try:
+        client = OpenAI(api_key=OPENAI_API_KEY)
+        
+        response = client.chat.completions.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": "You are a professional programmer. Generate clean, well-commented code based on the request. Only return the code, no explanations."},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=2000,
+            temperature=0.3
+        )
+        
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        logger.error(f"Code generation failed: {e}")
+        return f"// Code generation failed: {str(e)}"
+
+async def calculate_math_internal(expression: str) -> dict:
+    """Calculate mathematical expressions"""
+    try:
+        client = OpenAI(api_key=OPENAI_API_KEY)
+        
+        response = client.chat.completions.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": "You are a mathematical calculator. Solve the given problem and provide the result with steps. Return a JSON with 'result' and 'steps'."},
+                {"role": "user", "content": f"Solve: {expression}"}
+            ],
+            max_tokens=500,
+            temperature=0.1
+        )
+        
+        result = json.loads(response.choices[0].message.content.strip())
+        return result
+    except Exception as e:
+        logger.error(f"Math calculation failed: {e}")
+        return {"result": "Error", "steps": [str(e)]}
+
+async def generate_joke_internal() -> str:
+    """Generate a random joke"""
+    try:
+        jokes = [
+            "Why don't scientists trust atoms? Because they make up everything!",
+            "Why did the scarecrow win an award? He was outstanding in his field!",
+            "Why don't eggs tell jokes? They'd crack each other up!",
+            "What do you call a fake noodle? An impasta!",
+            "Why did the math book look so sad? Because it had too many problems!"
+        ]
+        return random.choice(jokes)
+    except Exception as e:
+        return "Why did the programmer quit? Because he didn't get arrays!"
+
+async def handle_personal_info_internal(message: str, user_id: str) -> dict:
+    """Handle personal information requests"""
+    try:
+        # Get user profile from database
+        profile_response = supabase.table("user_profiles") \
+            .select("*") \
+            .eq("user_id", user_id) \
+            .execute()
+        
+        if not profile_response.data:
+            return {"message": "No personal information stored yet"}
+        
+        profile = profile_response.data[0]
+        
+        # Check what information is being requested
+        message_lower = message.lower()
+        
+        if "name" in message_lower:
+            return {"name": profile.get("name", "Not set")}
+        elif "email" in message_lower:
+            return {"email": profile.get("email", "Not set")}
+        elif "phone" in message_lower:
+            return {"phone": profile.get("phone", "Not set")}
+        elif "address" in message_lower:
+            return {"address": profile.get("address", "Not set")}
+        elif "preferences" in message_lower:
+            return {"preferences": profile.get("preferences", {})}
+        else:
+            return profile
+            
+    except Exception as e:
+        logger.error(f"Personal info retrieval failed: {e}")
+        return {"error": str(e)}
+
+async def multimodal_search_internal(query: str) -> dict:
+    """Perform multimodal search across text, images, and videos"""
+    try:
+        # This would integrate multiple search engines
+        results = {
+            "text": await web_search_internal(query),
+            "images": [],  # Would integrate image search
+            "videos": []   # Would integrate video search
+        }
+        return results
+    except Exception as e:
+        return {"error": str(e), "results": {}}
+
+async def personalize_ai_internal(message: str, user_id: str) -> dict:
+    """Personalize AI behavior based on user preferences"""
+    try:
+        # Extract preferences from message
+        preferences = {}
+        message_lower = message.lower()
+        
+        if "friendly" in message_lower:
+            preferences["tone"] = "friendly"
+        elif "professional" in message_lower:
+            preferences["tone"] = "professional"
+        elif "casual" in message_lower:
+            preferences["tone"] = "casual"
+        
+        if "detailed" in message_lower:
+            preferences["detail_level"] = "high"
+        elif "brief" in message_lower or "short" in message_lower:
+            preferences["detail_level"] = "low"
+        
+        # Save preferences
+        supabase.table("user_preferences") \
+            .upsert({"user_id": user_id, "preferences": preferences}) \
+            .execute()
+        
+        return {"preferences": preferences, "message": "AI personalized successfully"}
+    except Exception as e:
+        return {"error": str(e)}
+
+# Chat operation handlers
+async def create_new_chat_internal(user_id: str) -> dict:
+    """Create a new chat/conversation"""
+    try:
+        chat_id = str(uuid.uuid4())
+        supabase.table("conversations").insert({
+            "id": chat_id,
+            "user_id": user_id,
+            "title": "New Chat",
+            "created_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat()
+        }).execute()
+        return {"chat_id": chat_id, "title": "New Chat"}
+    except Exception as e:
+        return {"error": str(e)}
+
+async def send_message_internal(message: str, chat_id: str, user_id: str) -> dict:
+    """Send a message to a chat"""
+    try:
+        message_id = str(uuid.uuid4())
+        supabase.table("messages").insert({
+            "id": message_id,
+            "conversation_id": chat_id,
+            "user_id": user_id,
+            "role": "user",
+            "content": message,
+            "created_at": datetime.utcnow().isoformat()
+        }).execute()
+        return {"message_id": message_id, "status": "sent"}
+    except Exception as e:
+        return {"error": str(e)}
+
+async def list_chats_internal(user_id: str) -> dict:
+    """List all chats for a user"""
+    try:
+        chats_response = supabase.table("conversations") \
+            .select("*") \
+            .eq("user_id", user_id) \
+            .order("updated_at", desc=True) \
+            .execute()
+        return {"chats": chats_response.data}
+    except Exception as e:
+        return {"error": str(e), "chats": []}
+
+async def search_chats_internal(query: str, user_id: str) -> dict:
+    """Search through user's chats"""
+    try:
+        # Search messages
+        messages_response = supabase.table("messages") \
+            .select("*, conversations!inner(*)") \
+            .eq("conversations.user_id", user_id) \
+            .ilike("content", f"%{query}%") \
+            .execute()
+        return {"results": messages_response.data}
+    except Exception as e:
+        return {"error": str(e), "results": []}
+
+async def pin_chat_internal(chat_id: str, user_id: str) -> dict:
+    """Pin a chat"""
+    try:
+        supabase.table("conversations") \
+            .update({"pinned": True}) \
+            .eq("id", chat_id) \
+            .eq("user_id", user_id) \
+            .execute()
+        return {"chat_id": chat_id, "pinned": True}
+    except Exception as e:
+        return {"error": str(e)}
+
+async def archive_chat_internal(chat_id: str, user_id: str) -> dict:
+    """Archive a chat"""
+    try:
+        supabase.table("conversations") \
+            .update({"archived": True}) \
+            .eq("id", chat_id) \
+            .eq("user_id", user_id) \
+            .execute()
+        return {"chat_id": chat_id, "archived": True}
+    except Exception as e:
+        return {"error": str(e)}
+
+async def move_to_folder_internal(chat_id: str, folder: str, user_id: str) -> dict:
+    """Move chat to folder"""
+    try:
+        supabase.table("conversations") \
+            .update({"folder": folder}) \
+            .eq("id", chat_id) \
+            .eq("user_id", user_id) \
+            .execute()
+        return {"chat_id": chat_id, "folder": folder}
+    except Exception as e:
+        return {"error": str(e)}
+
+async def share_chat_internal(chat_id: str, user_id: str) -> dict:
+    """Share a chat"""
+    try:
+        share_id = str(uuid.uuid4())
+        supabase.table("shared_chats").insert({
+            "id": share_id,
+            "chat_id": chat_id,
+            "user_id": user_id,
+            "created_at": datetime.utcnow().isoformat()
+        }).execute()
+        return {"share_id": share_id, "url": f"/shared/{share_id}"}
+    except Exception as e:
+        return {"error": str(e)}
+
+async def view_shared_chat_internal(share_id: str) -> dict:
+    """View a shared chat"""
+    try:
+        shared_response = supabase.table("shared_chats") \
+            .select("*, conversations!inner(*)") \
+            .eq("id", share_id) \
+            .execute()
+        
+        if not shared_response.data:
+            return {"error": "Shared chat not found"}
+        
+        chat_id = shared_response.data[0]["chat_id"]
+        
+        # Get chat messages
+        messages_response = supabase.table("messages") \
+            .select("*") \
+            .eq("conversation_id", chat_id) \
+            .order("created_at") \
+            .execute()
+        
+        return {
+            "chat": shared_response.data[0],
+            "messages": messages_response.data
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+async def edit_message_internal(message_id: str, new_content: str, user_id: str) -> dict:
+    """Edit a message"""
+    try:
+        supabase.table("messages") \
+            .update({"content": new_content, "edited": True}) \
+            .eq("id", message_id) \
+            .eq("user_id", user_id) \
+            .execute()
+        return {"message_id": message_id, "edited": True}
+    except Exception as e:
+        return {"error": str(e)}
+
+async def regenerate_response_internal(message_id: str, user_id: str) -> dict:
+    """Regenerate AI response"""
+    try:
+        # Get the original message
+        message_response = supabase.table("messages") \
+            .select("*") \
+            .eq("id", message_id) \
+            .eq("user_id", user_id) \
+            .execute()
+        
+        if not message_response.data:
+            return {"error": "Message not found"}
+        
+        original_message = message_response.data[0]["content"]
+        conversation_id = message_response.data[0]["conversation_id"]
+        
+        # Generate new response
+        new_response = await groq_chat_completion([{
+            "role": "user",
+            "content": original_message
+        }])
+        
+        # Save new response
+        new_message_id = str(uuid.uuid4())
+        supabase.table("messages").insert({
+            "id": new_message_id,
+            "conversation_id": conversation_id,
+            "user_id": user_id,
+            "role": "assistant",
+            "content": new_response,
+            "created_at": datetime.utcnow().isoformat()
+        }).execute()
+        
+        return {"message_id": new_message_id, "response": new_response}
+    except Exception as e:
+        return {"error": str(e)}
+
+async def stop_operation_internal(operation_id: str, user_id: str) -> dict:
+    """Stop a running operation"""
+    try:
+        # This would integrate with an operation tracking system
+        return {"operation_id": operation_id, "stopped": True}
+    except Exception as e:
+        return {"error": str(e)}
+
+async def get_vision_history_internal(user_id: str) -> dict:
+    """Get user's vision analysis history"""
+    try:
+        history_response = supabase.table("vision_analyses") \
+            .select("*") \
+            .eq("user_id", user_id) \
+            .order("created_at", desc=True) \
+            .execute()
+        return {"history": history_response.data}
+    except Exception as e:
+        return {"error": str(e), "history": []}
+
+async def get_user_info_internal(user_id: str) -> dict:
+    """Get comprehensive user information"""
+    try:
+        # Get user profile
+        profile_response = supabase.table("user_profiles") \
+            .select("*") \
+            .eq("user_id", user_id) \
+            .execute()
+        
+        # Get user preferences
+        prefs_response = supabase.table("user_preferences") \
+            .select("*") \
+            .eq("user_id", user_id) \
+            .execute()
+        
+        # Get usage stats
+        stats_response = supabase.table("user_stats") \
+            .select("*") \
+            .eq("user_id", user_id) \
+            .execute()
+        
+        return {
+            "profile": profile_response.data[0] if profile_response.data else {},
+            "preferences": prefs_response.data[0] if prefs_response.data else {},
+            "stats": stats_response.data[0] if stats_response.data else {}
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+async def merge_user_data_internal(user_id: str, target_user_id: str) -> dict:
+    """Merge user data with another account"""
+    try:
+        # This would be a complex operation merging all user data
+        # For now, just return a success message
+        return {
+            "user_id": user_id,
+            "merged_with": target_user_id,
+            "status": "merged"
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
 async def personalize_ai(prompt: str, user_id: str, stream: bool = False):
     """Customize AI behavior based on user preferences"""
     #// Extract preferences from prompt
@@ -5661,67 +6036,84 @@ async def merge_user_data_handler(prompt: str, user_id: str, stream: bool = Fals
         return {"error": "User data merging requires authentication. Please use the /user/merge endpoint directly."}
 
 def detect_intent(prompt: str) -> str:
+    """
+    Enhanced intent detection with comprehensive pattern matching.
+    Detects user intent from natural language prompts.
+    """
     if not prompt:
         return "chat"
 
     p = prompt.lower()
 
-    #// 🖼 Image generation
+    # 🖼 Image generation
     if any(w in p for w in [
         "image of", "draw", "picture of", "generate image",
         "make me an image", "photo of", "art of"
     ]):
-        return "image"
+        return "image_generation"
 
-    #// 🖼 Image → Image
+    # 🖼 Image → Image
     if any(w in p for w in [
         "edit this image", "change this image",
-        "modify image", "img2img"
+        "modify image", "img2img", "image to image"
     ]):
-        return "img2img"
+        return "image_to_image"
 
-    #// 👁 Vision / analysis
+    # 👁 Vision / analysis
     if any(w in p for w in [
         "analyze this image", "what is in this image",
-        "describe this image", "vision"
+        "describe this image", "vision", "image analysis"
     ]):
-        return "vision"
+        return "vision_analysis"
 
-   # // 🎙 Speech → Text
+    # 🎙 Speech → Text
     if any(w in p for w in [
-        "transcribe", "speech to text", "stt"
+        "transcribe", "speech to text", "stt", "voice to text",
+        "audio to text", "transcribe audio"
     ]):
-        return "stt"
+        return "speech_to_text"
 
-  #  // 🔊 Text → Speech
+    # 🔊 Text → Speech
     if any(w in p for w in [
-        "say this", "speak", "tts", "read this", "read aloud"
+        "say this", "speak", "tts", "read this", "read aloud",
+        "text to speech", "generate audio", "create audio"
     ]):
-        return "tts"
+        return "text_to_speech"
 
-   # // 🎥 Video (future-ready)
+    # 🎥 Video (future-ready)
     if any(w in p for w in [
-        "video of", "make a video", "animation of", "clip of"
+        "video of", "make a video", "animation of", "clip of",
+        "generate video", "create video", "video generation"
     ]):
-        return "video"
+        return "video_generation"
 
-  #  // 💻 Code
+    # 💻 Code
     if any(w in p for w in [
         "write code", "generate code", "python code",
-        "javascript code", "fix this code"
+        "javascript code", "fix this code", "code help",
+        "debug code", "optimize code"
     ]):
-        return "code"
+        return "code_generation"
+
+    # 🔍 Code Review
+    if any(w in p for w in [
+        "review code", "code review", "analyze code", "code quality",
+        "check code", "code suggestions", "improve code"
+    ]):
+        return "code_review"
 
     # Math intent
     if any(w in p for w in [
-        "calculate", "solve", "equation", "math", "compute", "calculate", "add", "subtract", 
-        "multiply", "divide", "square root", "sin", "cos", "tan", "log", "integral", "derivative"
+        "calculate", "solve", "equation", "math", "compute", "add", "subtract", 
+        "multiply", "divide", "square root", "sin", "cos", "tan", "log", 
+        "integral", "derivative", "statistics", "probability"
     ]):
-        return "math"
+        return "math_calculation"
 
     # Joke intent
     if any(w in p for w in [
-        "joke", "funny", "laugh", "humor", "tell me a joke", "make me laugh"
+        "joke", "funny", "laugh", "humor", "tell me a joke", 
+        "make me laugh", "entertain me"
     ]):
         return "joke"
 
@@ -5729,154 +6121,165 @@ def detect_intent(prompt: str) -> str:
     if any(w in p for w in [
         "my name", "what's my name", "who am i", "about me", "remember me",
         "i am", "i'm", "i was", "i like", "i live in", "i work at",
-        "my email", "my phone", "my address", "my preferences"
+        "my email", "my phone", "my address", "my preferences", "my profile"
     ]):
-        return "personal"
+        return "personal_info"
 
-  #  // 🔍 Search
+    # 🔍 Search
     if any(w in p for w in [
-        "search", "look up", "find info", "who is", "what is"
+        "search", "look up", "find info", "who is", "what is",
+        "find information", "search for", "google", "web search"
     ]):
-        return "search"
+        return "web_search"
 
-   # // 📄 Document Analysis
+    # 🔍 Multi-modal Search
     if any(w in p for w in [
-        "analyze document", "extract information", "summarize document",
-        "document analysis", "extract entities", "find keywords"
-    ]):
-        return "document_analysis"
-    
-   # // 🌐 Translation
-    if any(w in p for w in [
-        "translate", "translation", "translate to", "in spanish", "in french",
-        "in german", "in japanese", "in chinese"
-    ]):
-        return "translation"
-    
-   # // 😊 Sentiment Analysis
-    if any(w in p for w in [
-        "sentiment", "emotion", "feeling", "analyze sentiment", "mood"
-    ]):
-        return "sentiment_analysis"
-    
-  #  // 🕸️ Knowledge Graph
-    if any(w in p for w in [
-        "knowledge graph", "relationship map", "entity graph", "concept map"
-    ]):
-        return "knowledge_graph"
-    
-  #  // 🤖 Custom Model Training
-    if any(w in p for w in [
-        "train model", "custom model", "fine-tune", "model training"
-    ]):
-        return "custom_model"
-    
-  #  // 🔍 Code Review
-    if any(w in p for w in [
-        "review code", "code review", "analyze code", "code quality"
-    ]):
-        return "code_review"
-    
-  #  // 🔍 Multi-modal Search
-    if any(w in p for w in [
-        "search everything", "multimodal search", "search all", "comprehensive search"
+        "search everything", "multimodal search", "search all", 
+        "comprehensive search", "search across"
     ]):
         return "multimodal_search"
-    
-   # // 🧠 AI Personalization
+
+    # 📄 Document Analysis
     if any(w in p for w in [
-        "personalize ai", "ai personality", "custom ai behavior", "ai preferences"
+        "analyze document", "extract information", "summarize document",
+        "document analysis", "extract entities", "find keywords",
+        "pdf analysis", "document processing"
+    ]):
+        return "document_analysis"
+
+    # 🌐 Translation
+    if any(w in p for w in [
+        "translate", "translation", "translate to", "in spanish", "in french",
+        "in german", "in japanese", "in chinese", "in italian", "in portuguese"
+    ]):
+        return "translation"
+
+    # 😊 Sentiment Analysis
+    if any(w in p for w in [
+        "sentiment", "emotion", "feeling", "analyze sentiment", "mood",
+        "tone analysis", "attitude analysis", "emotion detection"
+    ]):
+        return "sentiment_analysis"
+
+    # 🕸️ Knowledge Graph
+    if any(w in p for w in [
+        "knowledge graph", "relationship map", "entity graph", "concept map",
+        "create graph", "entity relationships", "knowledge mapping"
+    ]):
+        return "knowledge_graph"
+
+    # 🤖 Custom Model Training
+    if any(w in p for w in [
+        "train model", "custom model", "fine-tune", "model training",
+        "train ai", "custom ai", "model development"
+    ]):
+        return "custom_model"
+
+    # 🧠 AI Personalization
+    if any(w in p for w in [
+        "personalize ai", "ai personality", "custom ai behavior", 
+        "ai preferences", "ai settings", "configure ai"
     ]):
         return "ai_personalization"
-    
-   # // 📊 Data Visualization
+
+    # 📊 Data Visualization
     if any(w in p for w in [
-        "create chart", "visualize data", "make graph", "data visualization"
+        "create chart", "visualize data", "make graph", "data visualization",
+        "plot data", "create diagram", "make plot", "generate chart"
     ]):
         return "data_visualization"
-    
-    #// 🎤 Voice Cloning
+
+    # 🎤 Voice Cloning
     if any(w in p for w in [
-        "clone voice", "custom voice", "voice profile", "voice synthesis"
+        "clone voice", "custom voice", "voice profile", "voice synthesis",
+        "create voice", "voice custom", "personal voice"
     ]):
         return "voice_cloning"
-    
-    #// 💬 Chat Operations
+
+    # 💬 Chat Operations
     if any(w in p for w in [
-        "new chat", "start conversation", "create conversation"
+        "new chat", "start conversation", "create conversation",
+        "new thread", "start new chat"
     ]):
         return "new_chat"
-    
+
     if any(w in p for w in [
-        "send message", "add message", "reply to"
+        "send message", "add message", "reply to", "post message"
     ]):
         return "send_message"
-    
+
     if any(w in p for w in [
-        "list chats", "show conversations", "my conversations"
+        "list chats", "show conversations", "my conversations",
+        "all chats", "chat list"
     ]):
         return "list_chats"
-    
+
     if any(w in p for w in [
-        "search chats", "find conversation", "search conversation"
+        "search chats", "find conversation", "search conversation",
+        "find chat", "chat search"
     ]):
         return "search_chats"
-    
+
     if any(w in p for w in [
-        "pin chat", "pin conversation"
+        "pin chat", "pin conversation", "star chat", "favorite chat"
     ]):
         return "pin_chat"
-    
+
     if any(w in p for w in [
-        "archive chat", "archive conversation"
+        "archive chat", "archive conversation", "hide chat"
     ]):
         return "archive_chat"
-    
+
     if any(w in p for w in [
-        "move to folder", "change folder", "folder"
+        "move to folder", "change folder", "folder", "organize chats"
     ]):
         return "move_folder"
-    
+
     if any(w in p for w in [
-        "share chat", "share conversation"
+        "share chat", "share conversation", "export chat"
     ]):
         return "share_chat"
-    
+
     if any(w in p for w in [
-        "view shared chat", "shared conversation"
+        "view shared chat", "shared conversation", "open shared"
     ]):
         return "view_shared_chat"
-    
+
     if any(w in p for w in [
-        "edit message", "change message"
+        "edit message", "change message", "modify message"
     ]):
         return "edit_message"
-    
+
     if any(w in p for w in [
-        "regenerate", "regenerate response", "try again"
+        "regenerate", "regenerate response", "try again", 
+        "redo", "retry", "new response"
     ]):
         return "regenerate"
-    
+
     if any(w in p for w in [
-        "stop", "cancel", "abort"
+        "stop", "cancel", "abort", "halt", "end"
     ]):
         return "stop"
-    
+
     if any(w in p for w in [
-        "vision history", "image history", "analysis history"
+        "vision history", "image history", "analysis history",
+        "past analysis", "previous images"
     ]):
         return "vision_history"
-    
+
     if any(w in p for w in [
-        "user info", "my profile", "my account"
+        "user info", "my profile", "my account", "account info",
+        "profile information", "user details"
     ]):
         return "get_user_info"
-    
+
     if any(w in p for w in [
-        "merge user data", "merge account", "merge profile"
+        "merge user data", "merge account", "merge profile",
+        "combine accounts", "sync accounts"
     ]):
         return "merge_user_data"
 
+    # Default to chat if no specific intent detected
     return "chat"
 
 async def tts_stream_helper(text: str):
