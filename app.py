@@ -61,11 +61,16 @@ import json
 from fastapi import Request
 from fastapi.responses import StreamingResponse
 
-scheduler = AsyncIOScheduler()
-
 async def cleanup_old_tasks():
-    logger.info("Running cleanup job...")
-    # your cleanup logic here
+    # your async cleanup code here
+    print("Cleaning old tasks...")
+
+scheduler = AsyncIOScheduler()
+scheduler.add_job(cleanup_old_tasks, "interval", minutes=10)  # schedule every 10 minutes
+scheduler.start()
+
+# Keep asyncio running if this is a standalone script
+asyncio.get_event_loop().run_forever()
 
 async def stream():
     data = {"message": "hello"}
