@@ -69,9 +69,6 @@ scheduler = AsyncIOScheduler()
 scheduler.add_job(cleanup_old_tasks, "interval", minutes=10)  # schedule every 10 minutes
 scheduler.start()
 
-# Keep asyncio running if this is a standalone script
-asyncio.get_event_loop().run_forever()
-
 async def stream():
     data = {"message": "hello"}
     yield json.dumps(data)  # ✅ convert to string
@@ -118,7 +115,7 @@ async def start_scheduler():
 @app.on_event("shutdown")
 async def stop_scheduler():
     if scheduler.state == STATE_RUNNING:
-        scheduler.shutdown()
+        scheduler.shutdown(wait=False)  # wait=False avoids blocking shutdown
         logger.info("Scheduler shut down.")
 
 # ---------- CONFIG & LOGGING ----------
