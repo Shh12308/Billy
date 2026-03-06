@@ -8054,7 +8054,12 @@ async def stream_endpoint(request: Request):
 @app.post("/stop")
 async def stop_generation(request: Request):
     try:
-        body = await request.json()
+        # ✅ Safely parse JSON, fallback to empty dict
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+
         user_identifier = body.get("user_id")
 
         if not user_identifier:
@@ -8066,7 +8071,6 @@ async def stop_generation(request: Request):
         # If your user function returns (user, created)
         user_result = get_or_create_user(user_identifier)
 
-        # ✅ FIX: Unpack safely
         if isinstance(user_result, tuple):
             user, _ = user_result
         else:
@@ -8081,7 +8085,6 @@ async def stop_generation(request: Request):
             task.cancel()
             del active_tasks[user_id]
             logging.info(f"Cancelled task for user {user_id}")
-
             return {"status": "stopped"}
         else:
             return {"status": "no active task"}
@@ -8089,7 +8092,7 @@ async def stop_generation(request: Request):
     except Exception as e:
         logging.error(f"/stop failed: {str(e)}")
         raise HTTPException(status_code=500, detail="Stop failed")
-    
+        
 #// -----------------------------
 #// Regenerate endpoint
 #// -----------------------------
