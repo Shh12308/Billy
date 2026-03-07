@@ -6975,13 +6975,16 @@ async def ask_universal(
 # -------------------------
 # USER & CONVERSATION
 # -------------------------
-identity = current_user or {}
-
-is_authenticated = identity.get("is_authenticated", False)
-user_id = identity.get("user_id")
-is_guest = identity.get("is_guest", False)
-guest_id = identity.get("guest_id")
-
+try:
+    identity = current_user or {}
+    is_authenticated = identity.get("is_authenticated", False)
+    user_id = identity.get("user_id")
+    is_guest = identity.get("is_guest", False)
+    guest_id = identity.get("guest_id")
+except Exception as e:
+    logger.error(f"Failed to get user identity: {e}")
+    raise HTTPException(status_code=500, detail="Internal server error")
+    
 # If authenticated user exists → use it
 if user_id:
     pass
