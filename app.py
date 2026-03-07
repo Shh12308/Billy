@@ -6966,24 +6966,22 @@ async def ask_universal(
         tts = body.get("tts", False)
         samples = max(1, int(body.get("samples", 1)))
 
-        # Validation must be inside try
         if not prompt and not files:
             raise HTTPException(status_code=400, detail="prompt or files required")
 
-        # -------------------------
-        # USER & CONVERSATION
-        # -------------------------
         identity = current_user or {}
         is_authenticated = identity.get("is_authenticated", False)
         user_id = identity.get("user_id")
         is_guest = identity.get("is_guest", False)
         guest_id = identity.get("guest_id")
 
-    except Exception as e:  # aligned with try
+    except Exception as e:
         logger.error(f"Failed to get user identity: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
-    # Post-processing outside try/except but inside function
+    # -------------------------
+    # USER HANDLING
+    # -------------------------
     if user_id:
         pass
     elif is_guest and guest_id:
@@ -7003,66 +7001,65 @@ async def ask_universal(
             max_age=60 * 60 * 24 * 7
         )
 
-# -------------------------
-# ENSURE CONVERSATION EXISTS
-# -------------------------
-if not conversation_id:
-    conversation_id = str(uuid.uuid4())
+    # -------------------------
+    # ENSURE CONVERSATION EXISTS
+    # -------------------------
+    if not conversation_id:
+        conversation_id = str(uuid.uuid4())
 
-uuid_pattern = re.compile(
-    r'^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$',
-    re.IGNORECASE
-)
-if conversation_id and not uuid_pattern.match(conversation_id):
-    conversation_id = str(uuid.uuid4())
-
-try:
-    # Check if conversation exists (blocking supabase call in a thread)
-    conv_response = await asyncio.to_thread(
-        lambda: supabase.table("conversations")
-        .select("id, title")
-        .eq("id", conversation_id)
-        .execute()
+    uuid_pattern = re.compile(
+        r'^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$',
+        re.IGNORECASE
     )
 
-    if not conv_response.data:
-        # Insert new conversation if it doesn’t exist
-        await asyncio.to_thread(
+    if conversation_id and not uuid_pattern.match(conversation_id):
+        conversation_id = str(uuid.uuid4())
+
+    try:
+        conv_response = await asyncio.to_thread(
             lambda: supabase.table("conversations")
-            .insert({
-                "id": conversation_id,
-                "user_id": user_id,
-                "title": prompt[:50] if len(prompt) > 50 else "New Chat",
-                "created_at": datetime.utcnow().isoformat(),
-                "updated_at": datetime.utcnow().isoformat()
-            })
+            .select("id, title")
+            .eq("id", conversation_id)
             .execute()
         )
 
-except Exception as e:
-    logger.error(f"Failed to check/create conversation: {e}")
-    
-        # -------------------------
-        # SAVE USER MESSAGE
-        # -------------------------
-        message_content = prompt
-            if files:
-            # If files are provided, include them in the message
-            message_content = json.dumps({
-                "text": prompt,
-                "files": files
-            })
+        if not conv_response.data:
+            await asyncio.to_thread(
+                lambda: supabase.table("conversations")
+                .insert({
+                    "id": conversation_id,
+                    "user_id": user_id,
+                    "title": prompt[:50] if len(prompt) > 50 else "New Chat",
+                    "created_at": datetime.utcnow().isoformat(),
+                    "updated_at": datetime.utcnow().isoformat()
+                })
+                .execute()
+            )
 
-        await asyncio.to_thread(
-            lambda: supabase.table("messages").insert({
-                "id": str(uuid.uuid4()),
-                "conversation_id": conversation_id,
-                "user_id": user_id,
-                "role": "user",
-                "content": message_content,
-                "created_at": datetime.utcnow().isoformat()
-            }).execute()
-        )
+    except Exception as e:
+        logger.error(f"Failed to check/create conversation: {e}")
+
+    # -------------------------
+    # SAVE USER MESSAGE
+    # -------------------------
+    message_content = prompt
+
+    if files:
+        message_content = json.dumps({
+            "text": prompt,
+            "files": files
+        })
+
+    await asyncio.to_thread(
+        lambda: supabase.table("messages").insert({
+            "id": str(uuid.uuid4()),
+            "conversation_id": conversation_id,
+            "user_id": user_id,
+            "role": "user",
+            "content": message_content,
+            "created_at": datetime.utcnow().isoformat()
+        }).execute()
+    )
 
         # -------------------------
         # INTENT DETECTION
