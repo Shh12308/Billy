@@ -6959,7 +6959,6 @@ async def ask_universal(
 ):
     try:
         body = await request.json()
-
         prompt = body.get("prompt", "").strip()
         conversation_id = body.get("conversation_id")
         files = body.get("files", [])
@@ -6977,9 +6976,7 @@ async def ask_universal(
     # -------------------------
     # USER / GUEST HANDLING
     # -------------------------
-
     identity = current_user or {}
-
     user_id = identity.get("user_id")
     is_guest = identity.get("is_guest", False)
     guest_id = identity.get("guest_id")
@@ -7005,7 +7002,6 @@ async def ask_universal(
     # -------------------------
     # CONVERSATION HANDLING
     # -------------------------
-
     if not conversation_id:
         conversation_id = str(uuid.uuid4())
 
@@ -7013,21 +7009,17 @@ async def ask_universal(
         r'^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$',
         re.IGNORECASE
     )
-
     if not uuid_pattern.match(conversation_id):
         conversation_id = str(uuid.uuid4())
 
     try:
-
         conv = await asyncio.to_thread(
             lambda: supabase.table("conversations")
             .select("id")
             .eq("id", conversation_id)
             .execute()
         )
-
         if not conv.data:
-
             await asyncio.to_thread(
                 lambda: supabase.table("conversations")
                 .insert({
@@ -7039,16 +7031,13 @@ async def ask_universal(
                 })
                 .execute()
             )
-
     except Exception as e:
         logger.error(f"Conversation check failed: {e}")
 
     # -------------------------
     # SAVE USER MESSAGE
     # -------------------------
-
     message_content = prompt
-
     if files:
         message_content = json.dumps({
             "text": prompt,
@@ -7056,7 +7045,6 @@ async def ask_universal(
         })
 
     try:
-
         await asyncio.to_thread(
             lambda: supabase.table("messages").insert({
                 "id": str(uuid.uuid4()),
@@ -7067,20 +7055,21 @@ async def ask_universal(
                 "created_at": datetime.utcnow().isoformat()
             }).execute()
         )
-
     except Exception as e:
         logger.error(f"Failed saving message: {e}")
 
     # -------------------------
     # INTENT DETECTION
     # -------------------------
-
-    intent = detect_intent(prompt)
+    try:
+        intent = detect_intent(prompt)
+    except Exception as e:
+        logger.error(f"Intent detection failed: {e}")
+        intent = "default"
 
     # -------------------------
     # MODEL ROUTING
     # -------------------------
-
     if intent == "image":
         model = "dalle"
     elif intent == "code":
@@ -7090,6 +7079,13 @@ async def ask_universal(
     else:
         model = "gpt-4o-mini"
 
+    return {
+        "conversation_id": conversation_id,
+        "user_id": user_id,
+        "intent": intent,
+        "model": model
+    }
+    
     # -------------------------
     # AI RESPONSE
     # -------------------------
