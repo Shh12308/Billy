@@ -6972,79 +6972,79 @@ async def ask_universal(
         if not prompt and not files:
             raise HTTPException(status_code=400, detail="prompt or files required")
 
-                         # -------------------------
-        # USER & CONVERSATION
-        # -------------------------
-        identity = current_user or {}
+# -------------------------
+# USER & CONVERSATION
+# -------------------------
+identity = current_user or {}
 
-        is_authenticated = identity.get("is_authenticated", False)
-        user_id = identity.get("user_id")
-        is_guest = identity.get("is_guest", False)
-        guest_id = identity.get("guest_id")
+is_authenticated = identity.get("is_authenticated", False)
+user_id = identity.get("user_id")
+is_guest = identity.get("is_guest", False)
+guest_id = identity.get("guest_id")
 
-        # If authenticated user exists → use it
-        if user_id:
-            pass
+# If authenticated user exists → use it
+if user_id:
+    pass
 
-        # If guest → use guest_id as user_id
-        elif is_guest and guest_id:
-            user_id = guest_id
+# If guest → use guest_id as user_id
+elif is_guest and guest_id:
+    user_id = guest_id
 
-        # If nothing exists → create new guest id
-        else:
-            user_id = str(uuid.uuid4())
-            guest_id = user_id
-            is_guest = True
+# If nothing exists → create new guest id
+else:
+    user_id = str(uuid.uuid4())
+    guest_id = user_id
+    is_guest = True
 
-        if is_guest and guest_id:
-            response.set_cookie(
-                key="guest_id",
-                value=guest_id,
-                httponly=True,
-                secure=False,
-                samesite="Lax",
-                max_age=60 * 60 * 24 * 7
-            )
+if is_guest and guest_id:
+    response.set_cookie(
+        key="guest_id",
+        value=guest_id,
+        httponly=True,
+        secure=False,
+        samesite="Lax",
+        max_age=60 * 60 * 24 * 7
+    )
 
-        # -------------------------
-        # CONVERSATION ID FIX
-        # -------------------------
-        if conversation_id:
-            uuid_pattern = re.compile(
-                r'^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$',
-                re.IGNORECASE
-            )
-            if not uuid_pattern.match(conversation_id):
-                conversation_id = str(uuid.uuid4())
-        else:
-            conversation_id = str(uuid.uuid4())
+# -------------------------
+# ENSURE CONVERSATION EXISTS
+# -------------------------
+if not conversation_id:
+    conversation_id = str(uuid.uuid4())
 
-        # -------------------------
-        # ENSURE CONVERSATION EXISTS
-        # -------------------------
-        try:
-            conv_response = await asyncio.to_thread(
-                lambda: supabase.table("conversations")
-                .select("id, title")
-                .eq("id", conversation_id)
-                .execute()
-            )
+uuid_pattern = re.compile(
+    r'^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$',
+    re.IGNORECASE
+)
+if conversation_id and not uuid_pattern.match(conversation_id):
+    conversation_id = str(uuid.uuid4())
 
-            if not conv_response.data:
-                await asyncio.to_thread(
-                    lambda: supabase.table("conversations")
-                    .insert({
-                        "id": conversation_id,
-                        "user_id": user_id,
-                        "title": prompt[:50] if len(prompt) > 50 else "New Chat",
-                        "created_at": datetime.utcnow().isoformat(),
-                        "updated_at": datetime.utcnow().isoformat()
-                    })
-                    .execute()
-                )
+try:
+    # Check if conversation exists (blocking supabase call in a thread)
+    conv_response = await asyncio.to_thread(
+        lambda: supabase.table("conversations")
+        .select("id, title")
+        .eq("id", conversation_id)
+        .execute()
+    )
 
-        except Exception as e:
-            logger.error(f"Failed to check/create conversation: {e}")
+    if not conv_response.data:
+        # Insert new conversation if it doesn’t exist
+        await asyncio.to_thread(
+            lambda: supabase.table("conversations")
+            .insert({
+                "id": conversation_id,
+                "user_id": user_id,
+                "title": prompt[:50] if len(prompt) > 50 else "New Chat",
+                "created_at": datetime.utcnow().isoformat(),
+                "updated_at": datetime.utcnow().isoformat()
+            })
+            .execute()
+        )
+
+except Exception as e:
+    logger.error(f"Failed to check/create conversation: {e}")
+    
         # -------------------------
         # SAVE USER MESSAGE
         # -------------------------
