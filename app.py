@@ -6957,7 +6957,7 @@ async def ask_universal(
     response: Response,
     current_user: dict = Depends(get_current_user_optional)
 ):
-try:
+          try:
     body = await request.json()
     prompt = body.get("prompt", "").strip()
     conversation_id = body.get("conversation_id")
