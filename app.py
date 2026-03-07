@@ -6957,7 +6957,7 @@ async def ask_universal(
     response: Response,
     current_user: dict = Depends(get_current_user_optional)
 ):
-  try:
+try:
     body = await request.json()
     prompt = body.get("prompt", "").strip()
     conversation_id = body.get("conversation_id")
@@ -6966,7 +6966,7 @@ async def ask_universal(
     tts = body.get("tts", False)
     samples = max(1, int(body.get("samples", 1)))
 
-    # Validation: must have prompt or files
+    # Validation must be inside try
     if not prompt and not files:
         raise HTTPException(status_code=400, detail="prompt or files required")
 
@@ -6979,19 +6979,15 @@ async def ask_universal(
     is_guest = identity.get("is_guest", False)
     guest_id = identity.get("guest_id")
 
-except Exception as e:
+except Exception as e:  # Aligned with try
     logger.error(f"Failed to get user identity: {e}")
     raise HTTPException(status_code=500, detail="Internal server error")
 
-# If authenticated user exists → use it
+# Post-processing outside try/except
 if user_id:
     pass
-
-# If guest → use guest_id as user_id
 elif is_guest and guest_id:
     user_id = guest_id
-
-# If nothing exists → create new guest id
 else:
     user_id = str(uuid.uuid4())
     guest_id = user_id
