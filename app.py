@@ -6957,30 +6957,27 @@ async def ask_universal(
     response: Response,
     current_user: dict = Depends(get_current_user_optional)
 ):
-    try:
-        # -------------------------
-        # BODY & STREAM FLAG
-        # -------------------------
-        body = await request.json()
-        prompt = body.get("prompt", "").strip()
-        conversation_id = body.get("conversation_id")
-        stream = body.get("stream", False)
-        files = body.get("files", [])
-        tts = body.get("tts", False)
-        samples = max(1, int(body.get("samples", 1)))
-
-        if not prompt and not files:
-            raise HTTPException(status_code=400, detail="prompt or files required")
-
-# -------------------------
-# USER & CONVERSATION
-# -------------------------
 try:
+    body = await request.json()
+    prompt = body.get("prompt", "").strip()
+    conversation_id = body.get("conversation_id")
+    stream = body.get("stream", False)
+    files = body.get("files", [])
+    tts = body.get("tts", False)
+    samples = max(1, int(body.get("samples", 1)))
+
+    if not prompt and not files:
+        raise HTTPException(status_code=400, detail="prompt or files required")
+
+    # -------------------------
+    # USER & CONVERSATION
+    # -------------------------
     identity = current_user or {}
     is_authenticated = identity.get("is_authenticated", False)
     user_id = identity.get("user_id")
     is_guest = identity.get("is_guest", False)
     guest_id = identity.get("guest_id")
+    
 except Exception as e:
     logger.error(f"Failed to get user identity: {e}")
     raise HTTPException(status_code=500, detail="Internal server error")
