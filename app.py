@@ -6959,29 +6959,31 @@ async def ask_universal(
 ):
     try:
         body = await request.json()
+
         prompt = body.get("prompt", "").strip()
         conversation_id = body.get("conversation_id")
-        stream = body.get("stream", False)
         files = body.get("files", [])
+        stream = body.get("stream", False)
         tts = body.get("tts", False)
         samples = max(1, int(body.get("samples", 1)))
 
         if not prompt and not files:
             raise HTTPException(status_code=400, detail="prompt or files required")
 
-        identity = current_user or {}
-        is_authenticated = identity.get("is_authenticated", False)
-        user_id = identity.get("user_id")
-        is_guest = identity.get("is_guest", False)
-        guest_id = identity.get("guest_id")
-
     except Exception as e:
-        logger.error(f"Failed to get user identity: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        logger.error(f"Failed to parse request: {e}")
+        raise HTTPException(status_code=400, detail="Invalid request body")
 
     # -------------------------
-    # USER HANDLING
+    # USER / GUEST HANDLING
     # -------------------------
+
+    identity = current_user or {}
+
+    user_id = identity.get("user_id")
+    is_guest = identity.get("is_guest", False)
+    guest_id = identity.get("guest_id")
+
     if user_id:
         pass
     elif is_guest and guest_id:
@@ -6996,14 +6998,14 @@ async def ask_universal(
             key="guest_id",
             value=guest_id,
             httponly=True,
-            secure=False,
             samesite="Lax",
             max_age=60 * 60 * 24 * 7
         )
 
     # -------------------------
-    # ENSURE CONVERSATION EXISTS
+    # CONVERSATION HANDLING
     # -------------------------
+
     if not conversation_id:
         conversation_id = str(uuid.uuid4())
 
@@ -7012,24 +7014,26 @@ async def ask_universal(
         re.IGNORECASE
     )
 
-    if conversation_id and not uuid_pattern.match(conversation_id):
+    if not uuid_pattern.match(conversation_id):
         conversation_id = str(uuid.uuid4())
 
     try:
-        conv_response = await asyncio.to_thread(
+
+        conv = await asyncio.to_thread(
             lambda: supabase.table("conversations")
-            .select("id, title")
+            .select("id")
             .eq("id", conversation_id)
             .execute()
         )
 
-        if not conv_response.data:
+        if not conv.data:
+
             await asyncio.to_thread(
                 lambda: supabase.table("conversations")
                 .insert({
                     "id": conversation_id,
                     "user_id": user_id,
-                    "title": prompt[:50] if len(prompt) > 50 else "New Chat",
+                    "title": prompt[:50] if prompt else "New Chat",
                     "created_at": datetime.utcnow().isoformat(),
                     "updated_at": datetime.utcnow().isoformat()
                 })
@@ -7037,11 +7041,12 @@ async def ask_universal(
             )
 
     except Exception as e:
-        logger.error(f"Failed to check/create conversation: {e}")
+        logger.error(f"Conversation check failed: {e}")
 
     # -------------------------
     # SAVE USER MESSAGE
     # -------------------------
+
     message_content = prompt
 
     if files:
@@ -7050,16 +7055,86 @@ async def ask_universal(
             "files": files
         })
 
-    await asyncio.to_thread(
-        lambda: supabase.table("messages").insert({
-            "id": str(uuid.uuid4()),
-            "conversation_id": conversation_id,
-            "user_id": user_id,
-            "role": "user",
-            "content": message_content,
-            "created_at": datetime.utcnow().isoformat()
-        }).execute()
-    )
+    try:
+
+        await asyncio.to_thread(
+            lambda: supabase.table("messages").insert({
+                "id": str(uuid.uuid4()),
+                "conversation_id": conversation_id,
+                "user_id": user_id,
+                "role": "user",
+                "content": message_content,
+                "created_at": datetime.utcnow().isoformat()
+            }).execute()
+        )
+
+    except Exception as e:
+        logger.error(f"Failed saving message: {e}")
+
+    # -------------------------
+    # INTENT DETECTION
+    # -------------------------
+
+    intent = detect_intent(prompt)
+
+    # -------------------------
+    # MODEL ROUTING
+    # -------------------------
+
+    if intent == "image":
+        model = "dalle"
+    elif intent == "code":
+        model = "gpt-4o"
+    elif intent == "search":
+        model = "perplexity"
+    else:
+        model = "gpt-4o-mini"
+
+    # -------------------------
+    # AI RESPONSE
+    # -------------------------
+
+    try:
+
+        ai_response = await call_ai_model(
+            model=model,
+            prompt=prompt,
+            files=files
+        )
+
+    except Exception as e:
+        logger.error(f"AI call failed: {e}")
+        raise HTTPException(status_code=500, detail="AI generation failed")
+
+    # -------------------------
+    # SAVE AI MESSAGE
+    # -------------------------
+
+    try:
+
+        await asyncio.to_thread(
+            lambda: supabase.table("messages").insert({
+                "id": str(uuid.uuid4()),
+                "conversation_id": conversation_id,
+                "user_id": user_id,
+                "role": "assistant",
+                "content": ai_response,
+                "created_at": datetime.utcnow().isoformat()
+            }).execute()
+        )
+
+    except Exception as e:
+        logger.error(f"Failed saving AI message: {e}")
+
+    # -------------------------
+    # RESPONSE
+    # -------------------------
+
+    return {
+        "conversation_id": conversation_id,
+        "model": model,
+        "response": ai_response
+    }
 
         # -------------------------
         # INTENT DETECTION
