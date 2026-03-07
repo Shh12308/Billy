@@ -6957,51 +6957,51 @@ async def ask_universal(
     response: Response,
     current_user: dict = Depends(get_current_user_optional)
 ):
-          try:
-    body = await request.json()
-    prompt = body.get("prompt", "").strip()
-    conversation_id = body.get("conversation_id")
-    stream = body.get("stream", False)
-    files = body.get("files", [])
-    tts = body.get("tts", False)
-    samples = max(1, int(body.get("samples", 1)))
+    try:
+        body = await request.json()
+        prompt = body.get("prompt", "").strip()
+        conversation_id = body.get("conversation_id")
+        stream = body.get("stream", False)
+        files = body.get("files", [])
+        tts = body.get("tts", False)
+        samples = max(1, int(body.get("samples", 1)))
 
-    # Validation must be inside try
-    if not prompt and not files:
-        raise HTTPException(status_code=400, detail="prompt or files required")
+        # Validation must be inside try
+        if not prompt and not files:
+            raise HTTPException(status_code=400, detail="prompt or files required")
 
-    # -------------------------
-    # USER & CONVERSATION
-    # -------------------------
-    identity = current_user or {}
-    is_authenticated = identity.get("is_authenticated", False)
-    user_id = identity.get("user_id")
-    is_guest = identity.get("is_guest", False)
-    guest_id = identity.get("guest_id")
+        # -------------------------
+        # USER & CONVERSATION
+        # -------------------------
+        identity = current_user or {}
+        is_authenticated = identity.get("is_authenticated", False)
+        user_id = identity.get("user_id")
+        is_guest = identity.get("is_guest", False)
+        guest_id = identity.get("guest_id")
 
-except Exception as e:  # Aligned with try
-    logger.error(f"Failed to get user identity: {e}")
-    raise HTTPException(status_code=500, detail="Internal server error")
+    except Exception as e:  # aligned with try
+        logger.error(f"Failed to get user identity: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
-# Post-processing outside try/except
-if user_id:
-    pass
-elif is_guest and guest_id:
-    user_id = guest_id
-else:
-    user_id = str(uuid.uuid4())
-    guest_id = user_id
-    is_guest = True
+    # Post-processing outside try/except but inside function
+    if user_id:
+        pass
+    elif is_guest and guest_id:
+        user_id = guest_id
+    else:
+        user_id = str(uuid.uuid4())
+        guest_id = user_id
+        is_guest = True
 
-if is_guest and guest_id:
-    response.set_cookie(
-        key="guest_id",
-        value=guest_id,
-        httponly=True,
-        secure=False,
-        samesite="Lax",
-        max_age=60 * 60 * 24 * 7
-    )
+    if is_guest and guest_id:
+        response.set_cookie(
+            key="guest_id",
+            value=guest_id,
+            httponly=True,
+            secure=False,
+            samesite="Lax",
+            max_age=60 * 60 * 24 * 7
+        )
 
 # -------------------------
 # ENSURE CONVERSATION EXISTS
