@@ -7046,7 +7046,7 @@ except Exception as e:
         # SAVE USER MESSAGE
         # -------------------------
         message_content = prompt
-        if files:
+            if files:
             # If files are provided, include them in the message
             message_content = json.dumps({
                 "text": prompt,
