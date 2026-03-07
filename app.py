@@ -6957,6 +6957,9 @@ async def ask_universal(
     response: Response,
     current_user: dict = Depends(get_current_user_optional)
 ):
+    # -------------------------
+    # PARSE REQUEST
+    # -------------------------
     try:
         body = await request.json()
         prompt = body.get("prompt", "").strip()
@@ -7079,29 +7082,29 @@ async def ask_universal(
     else:
         model = "gpt-4o-mini"
 
-    return {
-        "conversation_id": conversation_id,
-        "user_id": user_id,
-        "intent": intent,
-        "model": model
-    }
-    
     # -------------------------
     # AI RESPONSE
     # -------------------------
-
     try:
-
         ai_response = await call_ai_model(
             model=model,
             prompt=prompt,
             files=files
         )
-
     except Exception as e:
         logger.error(f"AI call failed: {e}")
         raise HTTPException(status_code=500, detail="AI generation failed")
 
+    # -------------------------
+    # FINAL RESPONSE
+    # -------------------------
+    return {
+        "conversation_id": conversation_id,
+        "user_id": user_id,
+        "intent": intent,
+        "model": model,
+        "ai_response": ai_response
+    }
     # -------------------------
     # SAVE AI MESSAGE
     # -------------------------
