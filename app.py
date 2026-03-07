@@ -6037,252 +6037,172 @@ async def merge_user_data_handler(prompt: str, user_id: str, stream: bool = Fals
     else:
         return {"error": "User data merging requires authentication. Please use the /user/merge endpoint directly."}
 
-def detect_intent(prompt: str) -> str:
-    """
-    Enhanced intent detection with comprehensive pattern matching.
-    Detects user intent from natural language prompts.
-    """
-    if not prompt:
-        return "chat"
+INTENT_PATTERNS: Dict[str, List[str]] = {
 
-    p = prompt.lower()
+    # 🖼 Image Generation
+    "image_generation": [
+        r"\b(draw|generate|create|make)\b.*\b(image|picture|art|photo)\b",
+        r"\bimage of\b",
+        r"\bart of\b",
+    ],
 
-    # 🖼 Image generation
-    if any(w in p for w in [
-        "image of", "draw", "picture of", "generate image",
-        "make me an image", "photo of", "art of"
-    ]):
-        return "image_generation"
+    # 🖼 Image Editing
+    "image_to_image": [
+        r"\b(edit|modify|change|transform)\b.*\bimage\b",
+        r"\bimg2img\b",
+        r"\bimage to image\b",
+    ],
 
-    # 🖼 Image → Image
-    if any(w in p for w in [
-        "edit this image", "change this image",
-        "modify image", "img2img", "image to image"
-    ]):
-        return "image_to_image"
-
-    # 👁 Vision / analysis
-    if any(w in p for w in [
-        "analyze this image", "what is in this image",
-        "describe this image", "vision", "image analysis"
-    ]):
-        return "vision_analysis"
+    # 👁 Vision
+    "vision_analysis": [
+        r"\b(analyze|describe|what is in)\b.*\bimage\b",
+        r"\bvision\b",
+        r"\bimage analysis\b",
+    ],
 
     # 🎙 Speech → Text
-    if any(w in p for w in [
-        "transcribe", "speech to text", "stt", "voice to text",
-        "audio to text", "transcribe audio"
-    ]):
-        return "speech_to_text"
+    "speech_to_text": [
+        r"\btranscribe\b",
+        r"\bspeech to text\b",
+        r"\baudio to text\b",
+        r"\bstt\b"
+    ],
 
     # 🔊 Text → Speech
-    if any(w in p for w in [
-        "say this", "speak", "tts", "read this", "read aloud",
-        "text to speech", "generate audio", "create audio"
-    ]):
-        return "text_to_speech"
+    "text_to_speech": [
+        r"\btext to speech\b",
+        r"\btts\b",
+        r"\bread aloud\b",
+        r"\bspeak\b"
+    ],
 
-    # 🎥 Video (future-ready)
-    if any(w in p for w in [
-        "video of", "make a video", "animation of", "clip of",
-        "generate video", "create video", "video generation"
-    ]):
-        return "video_generation"
+    # 🎥 Video
+    "video_generation": [
+        r"\b(generate|create|make)\b.*\bvideo\b",
+        r"\banimation of\b",
+        r"\bvideo of\b"
+    ],
 
-    # 💻 Code
-    if any(w in p for w in [
-        "write code", "generate code", "python code",
-        "javascript code", "fix this code", "code help",
-        "debug code", "optimize code"
-    ]):
-        return "code_generation"
+    # 💻 Code Generation
+    "code_generation": [
+        r"\b(write|generate|create)\b.*\bcode\b",
+        r"\bpython code\b",
+        r"\bjavascript code\b",
+        r"\bdebug\b"
+    ],
 
     # 🔍 Code Review
-    if any(w in p for w in [
-        "review code", "code review", "analyze code", "code quality",
-        "check code", "code suggestions", "improve code"
-    ]):
-        return "code_review"
+    "code_review": [
+        r"\breview code\b",
+        r"\bcode review\b",
+        r"\banalyze code\b"
+    ],
 
-    # Math intent
-    if any(w in p for w in [
-        "calculate", "solve", "equation", "math", "compute", "add", "subtract", 
-        "multiply", "divide", "square root", "sin", "cos", "tan", "log", 
-        "integral", "derivative", "statistics", "probability"
-    ]):
-        return "math_calculation"
-
-    # Joke intent
-    if any(w in p for w in [
-        "joke", "funny", "laugh", "humor", "tell me a joke", 
-        "make me laugh", "entertain me"
-    ]):
-        return "joke"
-
-    # Personal information intent (enhanced)
-    if any(w in p for w in [
-        "my name", "what's my name", "who am i", "about me", "remember me",
-        "i am", "i'm", "i was", "i like", "i live in", "i work at",
-        "my email", "my phone", "my address", "my preferences", "my profile"
-    ]):
-        return "personal_info"
-
-    # 🔍 Search
-    if any(w in p for w in [
-        "search", "look up", "find info", "who is", "what is",
-        "find information", "search for", "google", "web search"
-    ]):
-        return "web_search"
-
-    # 🔍 Multi-modal Search
-    if any(w in p for w in [
-        "search everything", "multimodal search", "search all", 
-        "comprehensive search", "search across"
-    ]):
-        return "multimodal_search"
-
-    # 📄 Document Analysis
-    if any(w in p for w in [
-        "analyze document", "extract information", "summarize document",
-        "document analysis", "extract entities", "find keywords",
-        "pdf analysis", "document processing"
-    ]):
-        return "document_analysis"
+    # 🧮 Math
+    "math_calculation": [
+        r"\bcalculate\b",
+        r"\bsolve\b",
+        r"\bequation\b",
+        r"[0-9]+\s*[\+\-\*\/]\s*[0-9]+"
+    ],
 
     # 🌐 Translation
-    if any(w in p for w in [
-        "translate", "translation", "translate to", "in spanish", "in french",
-        "in german", "in japanese", "in chinese", "in italian", "in portuguese"
-    ]):
-        return "translation"
-
-    # 😊 Sentiment Analysis
-    if any(w in p for w in [
-        "sentiment", "emotion", "feeling", "analyze sentiment", "mood",
-        "tone analysis", "attitude analysis", "emotion detection"
-    ]):
-        return "sentiment_analysis"
-
-    # 🕸️ Knowledge Graph
-    if any(w in p for w in [
-        "knowledge graph", "relationship map", "entity graph", "concept map",
-        "create graph", "entity relationships", "knowledge mapping"
-    ]):
-        return "knowledge_graph"
-
-    # 🤖 Custom Model Training
-    if any(w in p for w in [
-        "train model", "custom model", "fine-tune", "model training",
-        "train ai", "custom ai", "model development"
-    ]):
-        return "custom_model"
-
-    # 🧠 AI Personalization
-    if any(w in p for w in [
-        "personalize ai", "ai personality", "custom ai behavior", 
-        "ai preferences", "ai settings", "configure ai"
-    ]):
-        return "ai_personalization"
+    "translation": [
+        r"\btranslate\b",
+        r"\btranslation\b"
+    ],
 
     # 📊 Data Visualization
-    if any(w in p for w in [
-        "create chart", "visualize data", "make graph", "data visualization",
-        "plot data", "create diagram", "make plot", "generate chart"
-    ]):
-        return "data_visualization"
+    "data_visualization": [
+        r"\bcreate chart\b",
+        r"\bplot data\b",
+        r"\bvisualize data\b",
+        r"\bmake graph\b"
+    ],
 
-    # 🎤 Voice Cloning
-    if any(w in p for w in [
-        "clone voice", "custom voice", "voice profile", "voice synthesis",
-        "create voice", "voice custom", "personal voice"
-    ]):
-        return "voice_cloning"
+    # 🔍 Web Search
+    "web_search": [
+        r"\bsearch\b",
+        r"\blook up\b",
+        r"\bwho is\b",
+        r"\bwhat is\b"
+    ],
 
-    # 💬 Chat Operations
-    if any(w in p for w in [
-        "new chat", "start conversation", "create conversation",
-        "new thread", "start new chat"
-    ]):
-        return "new_chat"
+    # 😊 Joke
+    "joke": [
+        r"\bjoke\b",
+        r"\bmake me laugh\b",
+        r"\bfunny\b"
+    ],
 
-    if any(w in p for w in [
-        "send message", "add message", "reply to", "post message"
-    ]):
-        return "send_message"
+    # 📄 Document Analysis
+    "document_analysis": [
+        r"\banalyze document\b",
+        r"\bsummarize document\b",
+        r"\bextract information\b",
+        r"\bpdf analysis\b"
+    ],
 
-    if any(w in p for w in [
-        "list chats", "show conversations", "my conversations",
-        "all chats", "chat list"
-    ]):
-        return "list_chats"
+    # 🤖 AI Personalization
+    "ai_personalization": [
+        r"\bai personality\b",
+        r"\bpersonalize ai\b",
+        r"\bconfigure ai\b"
+    ],
 
-    if any(w in p for w in [
-        "search chats", "find conversation", "search conversation",
-        "find chat", "chat search"
-    ]):
-        return "search_chats"
+    # 🧠 Custom Model
+    "custom_model": [
+        r"\btrain model\b",
+        r"\bfine[- ]?tune\b",
+        r"\bcustom ai\b"
+    ],
 
-    if any(w in p for w in [
-        "pin chat", "pin conversation", "star chat", "favorite chat"
-    ]):
-        return "pin_chat"
+    # 💬 Chat Controls
+    "new_chat": [
+        r"\bnew chat\b",
+        r"\bstart conversation\b"
+    ],
 
-    if any(w in p for w in [
-        "archive chat", "archive conversation", "hide chat"
-    ]):
-        return "archive_chat"
+    "list_chats": [
+        r"\blist chats\b",
+        r"\bshow conversations\b"
+    ],
 
-    if any(w in p for w in [
-        "move to folder", "change folder", "folder", "organize chats"
-    ]):
-        return "move_folder"
+    "search_chats": [
+        r"\bsearch chats\b",
+        r"\bfind conversation\b"
+    ],
+}
 
-    if any(w in p for w in [
-        "share chat", "share conversation", "export chat"
-    ]):
-        return "share_chat"
 
-    if any(w in p for w in [
-        "view shared chat", "shared conversation", "open shared"
-    ]):
-        return "view_shared_chat"
+def detect_intent(prompt: str) -> Tuple[str, float]:
+    """
+    Advanced intent detection with regex scoring.
+    Returns intent + confidence score.
+    """
 
-    if any(w in p for w in [
-        "edit message", "change message", "modify message"
-    ]):
-        return "edit_message"
+    if not prompt:
+        return "chat", 0.0
 
-    if any(w in p for w in [
-        "regenerate", "regenerate response", "try again", 
-        "redo", "retry", "new response"
-    ]):
-        return "regenerate"
+    prompt = prompt.lower()
 
-    if any(w in p for w in [
-        "stop", "cancel", "abort", "halt", "end"
-    ]):
-        return "stop"
+    best_intent = "chat"
+    best_score = 0
 
-    if any(w in p for w in [
-        "vision history", "image history", "analysis history",
-        "past analysis", "previous images"
-    ]):
-        return "vision_history"
+    for intent, patterns in INTENT_PATTERNS.items():
+        score = 0
 
-    if any(w in p for w in [
-        "user info", "my profile", "my account", "account info",
-        "profile information", "user details"
-    ]):
-        return "get_user_info"
+        for pattern in patterns:
+            if re.search(pattern, prompt):
+                score += 1
 
-    if any(w in p for w in [
-        "merge user data", "merge account", "merge profile",
-        "combine accounts", "sync accounts"
-    ]):
-        return "merge_user_data"
+        if score > best_score:
+            best_intent = intent
+            best_score = score
 
-    # Default to chat if no specific intent detected
-    return "chat"
+    confidence = min(best_score / 3, 1.0)
+
+    return best_intent, confidence
 
 async def tts_stream_helper(text: str):
     headers = {
