@@ -62,7 +62,31 @@ from apscheduler.schedulers.base import STATE_RUNNING
 import json
 from fastapi import Request
 from fastapi.responses import StreamingResponse
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
+# Rate limiting
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# Simple in-memory cache
+cache = {}
+
+@app.get("/cached/{key}")
+@limiter.limit("10/minute")
+async def get_cached_data(request: Request, key: str):
+    if key in cache:
+        return cache[key]
+    return {"message": "Not found"}
+
+def set_cache(key: str, value: Any, ttl: int = 300):
+    cache[key] = {
+        "value": value,
+        "expires": datetime.now() + timedelta(seconds=ttl)
+    }
+    
 async def cleanup_old_tasks():
     # your async cleanup code here
     print("Cleaning old tasks...")
