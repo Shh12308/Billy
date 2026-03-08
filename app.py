@@ -7174,7 +7174,7 @@ async def ask_universal(
         # -------------------------
         # INTENT DETECTION
         # -------------------------
-   intent = detect_intent(prompt)
+    intent = detect_intent(prompt)
 
         # -------------------------
         # PROCESS INTENT
