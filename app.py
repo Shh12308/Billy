@@ -7105,6 +7105,42 @@ async def ask_universal(
         "model": model,
         "ai_response": ai_response
     }
+
+    # -------------------------
+    # MODEL ROUTING
+    # -------------------------
+    if intent == "image":
+        model = "dalle"
+    elif intent == "code":
+        model = "gpt-4o"
+    elif intent == "search":
+        model = "perplexity"
+    else:
+        model = "gpt-4o-mini"
+
+    # -------------------------
+    # AI RESPONSE
+    # -------------------------
+    try:
+        ai_response = await call_ai_model(
+            model=model,
+            prompt=prompt,
+            files=files
+        )
+    except Exception as e:
+        logger.error(f"AI call failed: {e}")
+        raise HTTPException(status_code=500, detail="AI generation failed")
+
+    # -------------------------
+    # FINAL RESPONSE
+    # -------------------------
+    return {
+        "conversation_id": conversation_id,
+        "user_id": user_id,
+        "intent": intent,
+        "model": model,
+        "ai_response": ai_response
+    }
     # -------------------------
     # SAVE AI MESSAGE
     # -------------------------
