@@ -7320,7 +7320,7 @@ elif intent == "math":
         # -------------------------
         # JOKE TELLING
         # -------------------------
-   elif intent == "joke":
+        elif intent == "joke":
             if stream:
                 async def event_generator():
                     yield sse({"type": "starting", "message": "Finding a joke..."})
