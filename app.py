@@ -7241,7 +7241,7 @@ if intent == "chat":
 # -------------------------
 # IMAGE GENERATION
 # -------------------------
-elif intent == "image":
+     elif intent == "image":
     # Extract sample count from prompt
     sample_match = re.search(r'(\d+)\s+(image|images)', prompt.lower())
     if sample_match:
@@ -7279,7 +7279,7 @@ elif intent == "image":
         # -------------------------
         # MATH SOLVING
         # -------------------------
-elif intent == "math":
+        elif intent == "math":
             if stream:
                 async def event_generator():
                     yield sse({"type": "starting", "message": "Solving math problem..."})
