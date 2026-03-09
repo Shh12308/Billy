@@ -7279,7 +7279,7 @@ elif intent == "image":
         # -------------------------
         # MATH SOLVING
         # -------------------------
-        elif intent == "math":
+elif intent == "math":
             if stream:
                 async def event_generator():
                     yield sse({"type": "starting", "message": "Solving math problem..."})
