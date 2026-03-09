@@ -7925,7 +7925,7 @@ else:
                 "user_id": user_id,
                 "type": "chat"
             }
-
+try:
     except HTTPException:
         raise
     except Exception as e:
