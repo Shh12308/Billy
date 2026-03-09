@@ -7238,47 +7238,44 @@ if intent == "chat":
         "type": "chat"
     }
 
-        # -------------------------
-        # IMAGE GENERATION
-        # -------------------------
-        elif intent == "image":
-            # Extract sample count from prompt
-            sample_match = re.search(r'(\d+)\s+(image|images)', prompt.lower())
-            if sample_match:
-                num_samples = min(int(sample_match.group(1)), 4)  # Cap at 4 images
-            else:
-                num_samples = samples  # Use provided samples or default to 1
-            
-            if stream:
-                async def event_generator():
-                    yield sse({"type": "starting", "message": "Generating image..."})
-                    try:
-                        # Generate the image
-                        result = await _generate_image_core(prompt, num_samples, user_id, return_base64=False)
-                        
-                        yield sse({
-                            "type": "images",
-                            "provider": result["provider"],
-                            "images": result["images"]  # Already in the correct format
-                        })
-                        yield sse({"type": "done"})
-                    except Exception as e:
-                        logger.error(f"Image generation failed: {e}")
-                        yield sse({"type": "error", "message": str(e)})
-                
-                return StreamingResponse(
-                    event_generator(),
-                    media_type="text/event-stream",
-                    headers={
-                        "Cache-Control": "no-cache",
-                        "Connection": "keep-alive",
-                        "X-Accel-Buffering": "no"
-                    }
-                )
-            else:
-                # Non-streaming version
-                return await _generate_image_core(prompt, num_samples, user_id, return_base64=False)
-
+# -------------------------
+# IMAGE GENERATION
+# -------------------------
+elif intent == "image":
+    # Extract sample count from prompt
+    sample_match = re.search(r'(\d+)\s+(image|images)', prompt.lower())
+    if sample_match:
+        num_samples = min(int(sample_match.group(1)), 4)  # Cap at 4 images
+    else:
+        num_samples = samples  # Use provided samples or default to 1
+    
+    if stream:
+        async def event_generator():
+            yield sse({"type": "starting", "message": "Generating image..."})
+            try:
+                result = await _generate_image_core(prompt, num_samples, user_id, return_base64=False)
+                yield sse({
+                    "type": "images",
+                    "provider": result["provider"],
+                    "images": result["images"]
+                })
+                yield sse({"type": "done"})
+            except Exception as e:
+                logger.error(f"Image generation failed: {e}")
+                yield sse({"type": "error", "message": str(e)})
+        
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
+    else:
+        return await _generate_image_core(prompt, num_samples, user_id, return_base64=False)
+        
         # -------------------------
         # MATH SOLVING
         # -------------------------
