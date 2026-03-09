@@ -7926,11 +7926,12 @@ else:
                 "type": "chat"
             }
 try:
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"/ask/universal failed: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+    process_request()  # your main code here
+except HTTPException:
+    raise  # re-raise HTTP exceptions as is
+except Exception as e:
+    logger.error(f"/ask/universal failed: {e}")
+    raise HTTPException(status_code=500, detail="Internal server error")
         
 @app.post("/migrate-guest")
 async def migrate_guest(
