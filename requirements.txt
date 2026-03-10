@@ -14,6 +14,7 @@ APScheduler==3.10.0
 replicate
 uvloop[standard]
 imageio
+slowapi==0.1.5
 
 # SUPABASE / DATABASE
 supabase==2.9.0
