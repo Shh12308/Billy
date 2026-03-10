@@ -65,6 +65,11 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
+app = FastAPI(
+    title="ZyNaraAI1.0 Multimodal Server",
+    redirect_slashes=False
+)
+
 # Rate limiting
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
@@ -97,11 +102,6 @@ scheduler.start()
 async def stream():
     data = {"message": "hello"}
     yield json.dumps(data)  # ✅ convert to string
-
-app = FastAPI(
-    title="ZyNaraAI1.0 Multimodal Server",
-    redirect_slashes=False
-)
 
 app.add_middleware(
     CORSMiddleware,
