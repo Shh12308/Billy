@@ -7255,7 +7255,7 @@ return {
 # -------------------------
 # IMAGE GENERATION
 # -------------------------
-elif intent == "image":
+if intent == "image":
     # Extract sample count from prompt
     sample_match = re.search(r'(\d+)\s+(image|images)', prompt.lower())
     if sample_match:
@@ -7293,7 +7293,7 @@ elif intent == "image":
         # -------------------------
         # MATH SOLVING
         # -------------------------
-elif intent == "math":
+if intent == "math":
             if stream:
                 async def event_generator():
                     yield sse({"type": "starting", "message": "Solving math problem..."})
@@ -7334,7 +7334,7 @@ elif intent == "math":
         # -------------------------
         # JOKE TELLING
         # -------------------------
-elif intent == "joke":
+if intent == "joke":
             if stream:
                 async def event_generator():
                     yield sse({"type": "starting", "message": "Finding a joke..."})
@@ -7380,7 +7380,7 @@ elif intent == "joke":
         # -------------------------
         # PERSONAL INFORMATION
         # -------------------------
-elif intent == "personal":
+if intent == "personal":
             # This will be handled by the enhanced chat_with_tools function
             # which now checks user memory first
             messages = [{"role": "user", "content": prompt}]
@@ -7419,7 +7419,7 @@ elif intent == "personal":
         # -------------------------
         # VIDEO GENERATION (Fixed indentation)
         # -------------------------
-elif intent == "video":
+if intent == "video":
             # Extract sample count from prompt
             sample_match = re.search(r'(\d+)\s+(video|videos)', prompt.lower())
             if sample_match:
@@ -7460,7 +7460,7 @@ elif intent == "video":
         # -------------------------
         # VISION ANALYSIS (Fixed file handling)
         # -------------------------
-elif intent == "vision" and files:
+if intent == "vision" and files:
             if not files or len(files) == 0:
                 raise HTTPException(400, "No files provided for vision analysis")
             
@@ -7557,7 +7557,7 @@ elif intent == "vision" and files:
         # -------------------------
         # IMG2VID (IMAGE TO VIDEO) (Fixed file handling)
         # -------------------------
-elif intent == "img2vid" and files:
+if intent == "img2vid" and files:
             if not files or len(files) == 0:
                 raise HTTPException(400, "No files provided for img2vid")
             
@@ -7657,7 +7657,7 @@ elif intent == "img2vid" and files:
         # -------------------------
         # CODE GENERATION
         # -------------------------
-elif intent == "code":
+if intent == "code":
             # Extract language from prompt
             language = "python"
             lang_match = re.search(r'(python|javascript|java|c\+\+|c#|php|ruby|go|rust|swift|kotlin)\s+code', prompt.lower())
@@ -7775,7 +7775,7 @@ elif intent == "code":
         # -------------------------
         # WEB SEARCH
         # -------------------------
-elif intent == "search":
+if intent == "search":
             # Extract query from prompt
             query = prompt
             if "search for" in prompt.lower():
@@ -7816,7 +7816,7 @@ elif intent == "search":
         # -------------------------
         # TEXT-TO-SPEECH
         # -------------------------
-elif intent == "tts" or tts:
+if intent == "tts" or tts:
             # Extract text to speak
             text = prompt
             if "say" in prompt.lower():
