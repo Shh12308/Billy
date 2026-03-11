@@ -7210,7 +7210,6 @@ if intent == "chat":
         logger.error(f"Chat processing failed: {e}")
         raise HTTPException(status_code=500, detail="Chat processing failed")
 
-    # --- STREAMING RESPONSE ---
     if stream:
         async def generator():
             yield sse({"type": "starting"})
