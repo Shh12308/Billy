@@ -6975,30 +6975,68 @@ def load_conversation_history(user_id: str, limit: int = 20):
 #// 🚀 HELPER FUNCTION FOR TOOL-ENABLED CHAT
 #// =========================================================
 @app.post("/ask/universal")
-async def ask_universal(request: Request, response: Response, current_user: dict = Depends(get_current_user_optional)):
+async def ask_universal(
+    request: Request,
+    response: Response,
+    current_user: dict = Depends(get_current_user_optional)
+):
+    try:
+        # Parse request body
+        body = await request.json()
+        prompt = body.get("prompt")
 
-    body = await request.json()
-    prompt = body.get("prompt")
+        # Validate prompt
+        if not prompt or not prompt.strip():
+            return {"error": "Prompt is required"}
 
-    intent = detect_intent(prompt)
+        # Extract user_id safely
+        user_id = current_user["id"] if current_user and "id" in current_user else "anonymous"
 
-    if intent == "chat":
-        assistant_reply = await chat_with_tools(user_id, [{"role":"user","content":prompt}])
-        return {"reply": assistant_reply}
+        # Detect intent
+        intent = detect_intent(prompt)
 
-    elif intent == "image":
-        return await _generate_image_core(prompt, 1, user_id)
+        # IMAGE GENERATION
+        if intent == "image":
+            result = await _generate_image_core(prompt, 1, user_id)
+            return {
+                "type": "image",
+                "result": result
+            }
 
-    elif intent == "math":
-        return await solve_math(prompt)
+        # VIDEO GENERATION
+        elif intent == "video":
+            result = await _generate_video_with_pixverse_replicate(prompt, 1)
+            return {
+                "type": "video",
+                "result": result
+            }
 
-    elif intent == "video":
-        return await _generate_video_with_pixverse_replicate(prompt, 1)
+        # MATH SOLVER
+        elif intent == "math":
+            result = await solve_math(prompt)
+            return {
+                "type": "math",
+                "result": result
+            }
 
-    else:
-        assistant_reply = await chat_with_tools(user_id, [{"role":"user","content":prompt}])
-        return {"reply": assistant_reply}
-        
+        # DEFAULT → CHAT
+        else:
+            assistant_reply = await chat_with_tools(
+                user_id,
+                [{"role": "user", "content": prompt}]
+            )
+
+            return {
+                "type": "chat",
+                "reply": assistant_reply
+            }
+
+    except Exception as e:
+        print("Universal endpoint error:", str(e))
+        return {
+            "error": "Internal server error",
+            "detail": str(e)
+        }        
 @app.post("/migrate-guest")
 async def migrate_guest(
     request: Request,
