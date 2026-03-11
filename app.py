@@ -7581,117 +7581,168 @@ async def vision_analyze(
     res: Response,
     file: UploadFile = File(...)
 ):
+
     user = await get_or_create_user(req, res)
     user_id = user.id
+
+    # =========================
+    # VALIDATE FILE
+    # =========================
+    if not file.content_type.startswith("image/"):
+        raise HTTPException(400, "file must be an image")
+
     content = await file.read()
 
     if not content:
         raise HTTPException(400, "empty file")
 
-    # Load image
-    img = Image.open(BytesIO(content)).convert("RGB")
+    # =========================
+    # LOAD IMAGE SAFELY
+    # =========================
+    try:
+        img = Image.open(BytesIO(content)).convert("RGB")
+    except Exception:
+        raise HTTPException(400, "invalid image file")
+
     np_img = np.array(img)
+
+    # =========================
+    # RESIZE LARGE IMAGES
+    # =========================
+    MAX_SIZE = 1280
+    h, w = np_img.shape[:2]
+
+    if max(h, w) > MAX_SIZE:
+        scale = MAX_SIZE / max(h, w)
+        np_img = cv2.resize(np_img, (int(w * scale), int(h * scale)))
+
     annotated = np_img.copy()
 
     # =========================
-    # 1️⃣ YOLO OBJECT DETECTION
+    # YOLO OBJECT DETECTION
     # =========================
-    obj_results = get_yolo_objects()(np_img, conf=0.25)
     detections = []
 
-    for r in obj_results:
-        for box in r.boxes:
-            label = YOLO_OBJECTS.names[int(box.cls)]
-            conf = float(box.conf)
-            x1, y1, x2, y2 = map(int, box.xyxy[0])
+    try:
+        obj_results = get_yolo_objects()(np_img, conf=0.25)
 
-            detections.append({
-                "label": label,
-                "confidence": conf,
-                "bbox": [x1, y1, x2, y2]
-            })
+        for r in obj_results:
+            for box in r.boxes:
+                label = YOLO_OBJECTS.names[int(box.cls)]
+                conf = float(box.conf)
+                x1, y1, x2, y2 = map(int, box.xyxy[0])
 
-            cv2.rectangle(annotated, (x1, y1), (x2, y2), (0,255,0), 2)
-            cv2.putText(
-                annotated,
-                f"{label} {conf:.2f}",
-                (x1, y1-5),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                (0,255,0),
-                2
-            )
+                detections.append({
+                    "label": label,
+                    "confidence": conf,
+                    "bbox": [x1, y1, x2, y2]
+                })
+
+                cv2.rectangle(annotated, (x1, y1), (x2, y2), (0,255,0), 2)
+                cv2.putText(
+                    annotated,
+                    f"{label} {conf:.2f}",
+                    (x1, y1-5),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    (0,255,0),
+                    2
+                )
+
+    except Exception as e:
+        print("YOLO detection failed", e)
 
     # =========================
-    # 2️⃣ FACE DETECTION
+    # FACE DETECTION
     # =========================
-    face_results = get_yolo_faces()(np_img)
     face_count = 0
 
-    for r in face_results:
-        for box in r.boxes:
-            face_count += 1
-            x1, y1, x2, y2 = map(int, box.xyxy[0])
-            cv2.rectangle(annotated, (x1,y1), (x2,y2), (255,0,0), 2)
-            cv2.putText(
-                annotated,
-                "face",
-                (x1, y1-5),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                (255,0,0),
-                2
-            )
+    try:
+        face_results = get_yolo_faces()(np_img)
+
+        for r in face_results:
+            for box in r.boxes:
+                face_count += 1
+
+                x1, y1, x2, y2 = map(int, box.xyxy[0])
+
+                cv2.rectangle(annotated, (x1,y1), (x2,y2), (255,0,0), 2)
+
+                cv2.putText(
+                    annotated,
+                    "face",
+                    (x1, y1-5),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    (255,0,0),
+                    2
+                )
+
+    except Exception as e:
+        print("Face detection failed", e)
 
     # =========================
-    # 3️⃣ DOMINANT COLORS
+    # DOMINANT COLORS
     # =========================
     hex_colors = []
 
     try:
-        # Fix: Define pixels variable before using it
-        pixels = np_img.reshape(-1, 3)
-        
+        pixels = np_img.reshape(-1,3)
+
+        if len(pixels) > 50000:
+            idx = np.random.choice(len(pixels), 50000, replace=False)
+            pixels = pixels[idx]
+
         from sklearn.cluster import KMeans
+
         kmeans = KMeans(n_clusters=5, random_state=0).fit(pixels)
+
         hex_colors = [
             '#%02x%02x%02x' % tuple(map(int, c))
             for c in kmeans.cluster_centers_
         ]
-    except ImportError:
-        logger.warning("sklearn not installed, skipping color analysis")
+
     except Exception:
-        logger.exception("Color clustering failed")
+        pass
 
     # =========================
-    # 4️⃣ UPLOAD TO SUPABASE
+    # SUPABASE UPLOAD
     # =========================
     raw_path = f"anonymous/raw/{uuid.uuid4().hex}.png"
     ann_path = f"anonymous/annotated/{uuid.uuid4().hex}.png"
 
-    _, ann_buf = cv2.imencode(".png", annotated)
+    try:
 
-    supabase.storage.from_("ai-images").upload(
-        raw_path,
-        content,
-        {"content-type": "image/png"}
-    )
+        _, ann_buf = cv2.imencode(".png", annotated)
 
-    supabase.storage.from_("ai-images").upload(
-        ann_path,
-        ann_buf.tobytes(),
-        {"content-type": "image/png"}
-    )
+        supabase.storage.from_("ai-images").upload(
+            raw_path,
+            content,
+            {"content-type": "image/png"}
+        )
 
-    raw_url = supabase.storage.from_("ai-images").create_signed_url(raw_path, 3600)["signedURL"]
-    ann_url = supabase.storage.from_("ai-images").create_signed_url(ann_path, 3600)["signedURL"]
+        supabase.storage.from_("ai-images").upload(
+            ann_path,
+            ann_buf.tobytes(),
+            {"content-type": "image/png"}
+        )
+
+        raw_signed = supabase.storage.from_("ai-images").create_signed_url(raw_path, 3600)
+        ann_signed = supabase.storage.from_("ai-images").create_signed_url(ann_path, 3600)
+
+        raw_url = raw_signed.get("signedURL") or raw_signed.get("signedUrl")
+        ann_url = ann_signed.get("signedURL") or ann_signed.get("signedUrl")
+
+    except Exception as e:
+        raise HTTPException(500, f"upload failed: {e}")
 
     # =========================
-    # 5️⃣ SAVE HISTORY
+    # SAVE HISTORY
     # =========================
     analysis_id = str(uuid.uuid4())
 
     try:
+
         supabase.table("vision_history").insert({
             "id": analysis_id,
             "user_id": user_id,
@@ -7701,10 +7752,15 @@ async def vision_analyze(
             "faces": face_count,
             "created_at": datetime.now(timezone.utc).isoformat()
         }).execute()
-    except Exception as e:
-        logger.error(f"Failed to save vision analysis: {e}")
 
+    except Exception:
+        pass
+
+    # =========================
+    # RESPONSE
+    # =========================
     return {
+        "analysis_id": analysis_id,
         "objects": detections,
         "faces_detected": face_count,
         "dominant_colors": hex_colors,
