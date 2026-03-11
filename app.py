@@ -6991,10 +6991,8 @@ async def ask_universal(
         stream = body.get("stream", False)
         tts = body.get("tts", False)
         samples = max(1, int(body.get("samples", 1)))
-
         if not prompt and not files:
             raise HTTPException(status_code=400, detail="prompt or files required")
-
     except Exception as e:
         logger.error(f"Failed to parse request: {e}")
         raise HTTPException(status_code=400, detail="Invalid request body")
@@ -7031,13 +7029,6 @@ async def ask_universal(
     if not conversation_id:
         conversation_id = str(uuid.uuid4())
 
-    uuid_pattern = re.compile(
-        r'^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$',
-        re.IGNORECASE
-    )
-    if not uuid_pattern.match(conversation_id):
-        conversation_id = str(uuid.uuid4())
-
     try:
         conv = await asyncio.to_thread(
             lambda: supabase.table("conversations")
@@ -7065,10 +7056,7 @@ async def ask_universal(
     # -------------------------
     message_content = prompt
     if files:
-        message_content = json.dumps({
-            "text": prompt,
-            "files": files
-        })
+        message_content = json.dumps({"text": prompt, "files": files})
 
     try:
         await asyncio.to_thread(
@@ -7094,163 +7082,85 @@ async def ask_universal(
         intent = "default"
 
     # -------------------------
-    # MODEL ROUTING
+    # PROCESS INTENT
     # -------------------------
-    if intent == "image":
-        model = "dalle"
-    elif intent == "code":
-        model = "gpt-4o"
-    elif intent == "search":
-        model = "perplexity"
-    else:
-        model = "gpt-4o-mini"
+    if intent == "chat":
+        messages = [{"role": "user", "content": prompt}]
+        try:
+            assistant_reply = await chat_with_tools(user_id, messages)
+        except Exception as e:
+            logger.error(f"Chat processing failed: {e}")
+            raise HTTPException(status_code=500, detail="Chat processing failed")
 
-    # -------------------------
-    # AI RESPONSE
-    # -------------------------
-    try:
-        ai_response = await call_ai_model(
-            model=model,
-            prompt=prompt,
-            files=files
-        )
-    except Exception as e:
-        logger.error(f"AI call failed: {e}")
-        raise HTTPException(status_code=500, detail="AI generation failed")
+        if stream:
+            async def generator():
+                yield sse({"type": "starting"})
+                for char in assistant_reply:
+                    yield sse({"type": "token", "text": char})
+                    await asyncio.sleep(0.005)
+                yield sse({"type": "done"})
 
-    # -------------------------
-    # FINAL RESPONSE
-    # -------------------------
-    return {
-        "conversation_id": conversation_id,
-        "user_id": user_id,
-        "intent": intent,
-        "model": model,
-        "ai_response": ai_response
-    }
+            return StreamingResponse(
+                generator(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no"
+                }
+            )
 
-    # -------------------------
-    # MODEL ROUTING
-    # -------------------------
-    if intent == "image":
-        model = "dalle"
-    elif intent == "code":
-        model = "gpt-4o"
-    elif intent == "search":
-        model = "perplexity"
-    else:
-        model = "gpt-4o-mini"
+        # Save assistant response
+        try:
+            await asyncio.to_thread(
+                lambda: supabase.table("messages").insert({
+                    "id": str(uuid.uuid4()),
+                    "conversation_id": conversation_id,
+                    "user_id": user_id,
+                    "role": "assistant",
+                    "content": assistant_reply,
+                    "created_at": datetime.utcnow().isoformat()
+                }).execute()
+            )
+        except Exception as e:
+            logger.error(f"Failed saving AI message: {e}")
 
-    # -------------------------
-    # AI RESPONSE
-    # -------------------------
-    try:
-        ai_response = await call_ai_model(
-            model=model,
-            prompt=prompt,
-            files=files
-        )
-    except Exception as e:
-        logger.error(f"AI call failed: {e}")
-        raise HTTPException(status_code=500, detail="AI generation failed")
-
-    # -------------------------
-    # FINAL RESPONSE
-    # -------------------------
-    return {
-        "conversation_id": conversation_id,
-        "user_id": user_id,
-        "intent": intent,
-        "model": model,
-        "ai_response": ai_response
-    }
-    # -------------------------
-    # SAVE AI MESSAGE
-    # -------------------------
-
-    try:
-
-        await asyncio.to_thread(
-            lambda: supabase.table("messages").insert({
-                "id": str(uuid.uuid4()),
-                "conversation_id": conversation_id,
-                "user_id": user_id,
-                "role": "assistant",
-                "content": ai_response,
-                "created_at": datetime.utcnow().isoformat()
-            }).execute()
-        )
-
-    except Exception as e:
-        logger.error(f"Failed saving AI message: {e}")
-
-# -------------------------
-# INTENT DETECTION
-# -------------------------
-# -------------------------
-# INTENT DETECTION
-# -------------------------
-intent = detect_intent(prompt)
-
-# -------------------------
-# PROCESS INTENT
-# -------------------------
-if intent == "chat":
-    messages = [{"role": "user", "content": prompt}]
-    try:
-        assistant_reply = await chat_with_tools(user_id, messages)
-    except Exception as e:
-        logger.error(f"Chat processing failed: {e}")
-        raise HTTPException(status_code=500, detail="Chat processing failed")
-
-    if stream:
-        async def generator():
-            yield sse({"type": "starting"})
-            for char in assistant_reply:
-                yield sse({"type": "token", "text": char})
-                await asyncio.sleep(0.005)
-            yield sse({"type": "done"})
-
-        return StreamingResponse(
-            generator(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no"
-            }
-        )
-
-    return {
-        "status": "completed",
-        "reply": assistant_reply,
-        "conversation_id": conversation_id,
-        "user_id": user_id,
-        "type": "chat"
-    }
-
-# -------------------------
-# SAVE MESSAGE
-# -------------------------
-try:
-    await asyncio.to_thread(
-        lambda: supabase.table("messages").insert({
-            "id": str(uuid.uuid4()),
+        return {
+            "status": "completed",
+            "reply": assistant_reply,
             "conversation_id": conversation_id,
             "user_id": user_id,
-            "role": "assistant",
-            "content": ai_response,
-            "created_at": datetime.utcnow().isoformat()
-        }).execute()
-    )
-except Exception as e:
-    logger.error(f"Failed saving AI message: {e}")
+            "type": "chat"
+        }
 
-return {
-    "conversation_id": conversation_id,
-    "model": model,
-    "response": ai_response
-}
+    # You can add more intents here:
+    elif intent == "image":
+        # handle image generation here
+        pass
+    else:
+        # default intent
+        ai_response = await call_ai_model(model=model, prompt=prompt, files=files)
+        try:
+            await asyncio.to_thread(
+                lambda: supabase.table("messages").insert({
+                    "id": str(uuid.uuid4()),
+                    "conversation_id": conversation_id,
+                    "user_id": user_id,
+                    "role": "assistant",
+                    "content": ai_response,
+                    "created_at": datetime.utcnow().isoformat()
+                }).execute()
+            )
+        except Exception as e:
+            logger.error(f"Failed saving AI message: {e}")
+
+        return {
+            "conversation_id": conversation_id,
+            "user_id": user_id,
+            "intent": intent,
+            "model": model,
+            "ai_response": ai_response
+        }
 
 # -------------------------
 # IMAGE GENERATION
