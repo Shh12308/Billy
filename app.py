@@ -7184,16 +7184,9 @@ async def ask_universal(
     except Exception as e:
         logger.error(f"Failed saving AI message: {e}")
 
-    # -------------------------
-    # RESPONSE
-    # -------------------------
-
-    return {
-        "conversation_id": conversation_id,
-        "model": model,
-        "response": ai_response
-    }
-
+# -------------------------
+# INTENT DETECTION
+# -------------------------
 # -------------------------
 # INTENT DETECTION
 # -------------------------
@@ -7235,6 +7228,29 @@ if intent == "chat":
         "user_id": user_id,
         "type": "chat"
     }
+
+# -------------------------
+# SAVE MESSAGE
+# -------------------------
+try:
+    await asyncio.to_thread(
+        lambda: supabase.table("messages").insert({
+            "id": str(uuid.uuid4()),
+            "conversation_id": conversation_id,
+            "user_id": user_id,
+            "role": "assistant",
+            "content": ai_response,
+            "created_at": datetime.utcnow().isoformat()
+        }).execute()
+    )
+except Exception as e:
+    logger.error(f"Failed saving AI message: {e}")
+
+return {
+    "conversation_id": conversation_id,
+    "model": model,
+    "response": ai_response
+}
 
 # -------------------------
 # IMAGE GENERATION
