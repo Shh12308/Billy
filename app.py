@@ -7396,42 +7396,103 @@ async def regenerate(req: Request, res: Response, tts: bool = False, samples: in
 
 #// ---------- Img2Img (DALL·E edits) ----------
 @app.post("/img2img")
-async def img2img(request: Request, file: UploadFile = File(...), prompt: str = ""):
-    user = await get_or_create_user(request, Response())
+async def img2img(
+    request: Request,
+    response: Response,
+    file: UploadFile = File(...),
+    prompt: str = ""
+):
+
+    user = await get_or_create_user(request, response)
     user_id = user.id
-        
+
     if not prompt:
         raise HTTPException(400, "prompt required")
+
+    if not file.content_type.startswith("image/"):
+        raise HTTPException(400, "file must be an image")
+
     content = await file.read()
+
     if not content:
         raise HTTPException(400, "empty file")
+
+    if len(content) > 10 * 1024 * 1024:
+        raise HTTPException(400, "image too large (10MB max)")
+
     if not OPENAI_API_KEY:
-        raise HTTPException(400, "no OpenAI API key configured")
+        raise HTTPException(500, "OpenAI API key not configured")
 
     urls = []
-    try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            files = {"image": (file.filename, content, file.content_type or "video/mpeg")}
-            data = {"prompt": prompt, "n": 1, "size": "1024x1024"}
-            headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
-            r = await client.post("https://api.openai.com/v1/images/edits", headers=headers, files=files, data=data)
-            r.raise_for_status()
-            jr = r.json()
-            for d in jr.get("data", []):
-                b64 = d.get("b64_json")
-                if b64:
-                    fname = unique_filename("png")
-             #       // Upload to anonymous folder
-                    image_bytes = base64.b64decode(b64)
-                    supabase_fname = f"anonymous/{fname}"
-                    upload_image_to_supabase(image_bytes, supabase_fname, user_id)
-                    signed = supabase.storage.from_("ai-images").create_signed_url(supabase_fname, 60*60)
-                    urls.append(signed["signedURL"])
-    except Exception:
-        logger.exception("img2img DALL-E edit failed")
-        raise HTTPException(400, "img2img failed")
 
-    return {"provider": "dalle3-edit", "images": urls}
+    try:
+
+        async with httpx.AsyncClient(timeout=120.0) as client:
+
+            files = {
+                "image": (
+                    file.filename,
+                    content,
+                    file.content_type or "image/png"
+                )
+            }
+
+            data = {
+                "model": "gpt-image-1",
+                "prompt": prompt,
+                "size": "1024x1024",
+                "n": 1
+            }
+
+            headers = {
+                "Authorization": f"Bearer {OPENAI_API_KEY}"
+            }
+
+            r = await client.post(
+                "https://api.openai.com/v1/images/edits",
+                headers=headers,
+                files=files,
+                data=data
+            )
+
+            r.raise_for_status()
+
+            jr = r.json()
+
+            for d in jr.get("data", []):
+
+                b64 = d.get("b64_json")
+
+                if not b64:
+                    continue
+
+                image_bytes = base64.b64decode(b64)
+
+                fname = unique_filename("png")
+                supabase_fname = f"anonymous/{fname}"
+
+                upload_image_to_supabase(
+                    image_bytes,
+                    supabase_fname,
+                    user_id
+                )
+
+                signed = supabase.storage \
+                    .from_("ai-images") \
+                    .create_signed_url(supabase_fname, 3600)
+
+                url = signed.get("signedURL") or signed.get("signedUrl")
+
+                urls.append(url)
+
+    except Exception:
+        logger.exception("img2img edit failed")
+        raise HTTPException(500, "img2img failed")
+
+    return {
+        "provider": "openai-gpt-image-1",
+        "images": urls
+    }
     
 #// ---------- TTS ----------
 @app.post("/tts")
