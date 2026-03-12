@@ -33,6 +33,7 @@ import httpx
 import aiohttp
 from fastapi import FastAPI
 
+app = FastAPI()
 from fastapi.responses import PlainTextResponse
 import torch
 from typing import Tuple, Dict, Optional, List
@@ -6991,8 +6992,10 @@ async def ask_universal(
         stream = body.get("stream", False)
         tts = body.get("tts", False)
         samples = max(1, int(body.get("samples", 1)))
+
         if not prompt and not files:
             raise HTTPException(status_code=400, detail="prompt or files required")
+
     except Exception as e:
         logger.error(f"Failed to parse request: {e}")
         raise HTTPException(status_code=400, detail="Invalid request body")
@@ -7029,6 +7032,13 @@ async def ask_universal(
     if not conversation_id:
         conversation_id = str(uuid.uuid4())
 
+    uuid_pattern = re.compile(
+        r'^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$',
+        re.IGNORECASE
+    )
+    if not uuid_pattern.match(conversation_id):
+        conversation_id = str(uuid.uuid4())
+
     try:
         conv = await asyncio.to_thread(
             lambda: supabase.table("conversations")
@@ -7056,7 +7066,10 @@ async def ask_universal(
     # -------------------------
     message_content = prompt
     if files:
-        message_content = json.dumps({"text": prompt, "files": files})
+        message_content = json.dumps({
+            "text": prompt,
+            "files": files
+        })
 
     try:
         await asyncio.to_thread(
@@ -7082,90 +7095,153 @@ async def ask_universal(
         intent = "default"
 
     # -------------------------
-    # PROCESS INTENT
+    # MODEL ROUTING
     # -------------------------
-    if intent == "chat":
-        messages = [{"role": "user", "content": prompt}]
-        try:
-            assistant_reply = await chat_with_tools(user_id, messages)
-        except Exception as e:
-            logger.error(f"Chat processing failed: {e}")
-            raise HTTPException(status_code=500, detail="Chat processing failed")
-
-        if stream:
-            async def generator():
-                yield sse({"type": "starting"})
-                for char in assistant_reply:
-                    yield sse({"type": "token", "text": char})
-                    await asyncio.sleep(0.005)
-                yield sse({"type": "done"})
-
-            return StreamingResponse(
-                generator(),
-                media_type="text/event-stream",
-                headers={
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
-                    "X-Accel-Buffering": "no"
-                }
-            )
-
-        # Save assistant response
-        try:
-            await asyncio.to_thread(
-                lambda: supabase.table("messages").insert({
-                    "id": str(uuid.uuid4()),
-                    "conversation_id": conversation_id,
-                    "user_id": user_id,
-                    "role": "assistant",
-                    "content": assistant_reply,
-                    "created_at": datetime.utcnow().isoformat()
-                }).execute()
-            )
-        except Exception as e:
-            logger.error(f"Failed saving AI message: {e}")
-
-        return {
-            "status": "completed",
-            "reply": assistant_reply,
-            "conversation_id": conversation_id,
-            "user_id": user_id,
-            "type": "chat"
-        }
-
-    # You can add more intents here:
-    elif intent == "image":
-        # handle image generation here
-        pass
+    if intent == "image":
+        model = "dalle"
+    elif intent == "code":
+        model = "gpt-4o"
+    elif intent == "search":
+        model = "perplexity"
     else:
-        # default intent
-        ai_response = await call_ai_model(model=model, prompt=prompt, files=files)
-        try:
-            await asyncio.to_thread(
-                lambda: supabase.table("messages").insert({
-                    "id": str(uuid.uuid4()),
-                    "conversation_id": conversation_id,
-                    "user_id": user_id,
-                    "role": "assistant",
-                    "content": ai_response,
-                    "created_at": datetime.utcnow().isoformat()
-                }).execute()
-            )
-        except Exception as e:
-            logger.error(f"Failed saving AI message: {e}")
+        model = "gpt-4o-mini"
 
-        return {
-            "conversation_id": conversation_id,
-            "user_id": user_id,
-            "intent": intent,
-            "model": model,
-            "ai_response": ai_response
-        }
+    # -------------------------
+    # AI RESPONSE
+    # -------------------------
+    try:
+        ai_response = await call_ai_model(
+            model=model,
+            prompt=prompt,
+            files=files
+        )
+    except Exception as e:
+        logger.error(f"AI call failed: {e}")
+        raise HTTPException(status_code=500, detail="AI generation failed")
+
+    # -------------------------
+    # FINAL RESPONSE
+    # -------------------------
+    return {
+        "conversation_id": conversation_id,
+        "user_id": user_id,
+        "intent": intent,
+        "model": model,
+        "ai_response": ai_response
+    }
+
+    # -------------------------
+    # MODEL ROUTING
+    # -------------------------
+    if intent == "image":
+        model = "dalle"
+    elif intent == "code":
+        model = "gpt-4o"
+    elif intent == "search":
+        model = "perplexity"
+    else:
+        model = "gpt-4o-mini"
+
+    # -------------------------
+    # AI RESPONSE
+    # -------------------------
+    try:
+        ai_response = await call_ai_model(
+            model=model,
+            prompt=prompt,
+            files=files
+        )
+    except Exception as e:
+        logger.error(f"AI call failed: {e}")
+        raise HTTPException(status_code=500, detail="AI generation failed")
+
+    # -------------------------
+    # FINAL RESPONSE
+    # -------------------------
+    return {
+        "conversation_id": conversation_id,
+        "user_id": user_id,
+        "intent": intent,
+        "model": model,
+        "ai_response": ai_response
+    }
+    # -------------------------
+    # SAVE AI MESSAGE
+    # -------------------------
+
+    try:
+
+        await asyncio.to_thread(
+            lambda: supabase.table("messages").insert({
+                "id": str(uuid.uuid4()),
+                "conversation_id": conversation_id,
+                "user_id": user_id,
+                "role": "assistant",
+                "content": ai_response,
+                "created_at": datetime.utcnow().isoformat()
+            }).execute()
+        )
+
+    except Exception as e:
+        logger.error(f"Failed saving AI message: {e}")
+
+    # -------------------------
+    # RESPONSE
+    # -------------------------
+
+    return {
+        "conversation_id": conversation_id,
+        "model": model,
+        "response": ai_response
+    }
+
+# -------------------------
+# INTENT DETECTION
+# -------------------------
+intent = detect_intent(prompt)
+
+# -------------------------
+# PROCESS INTENT
+# -------------------------
+if intent == "chat":
+    messages = [{"role": "user", "content": prompt}]
+    try:
+        assistant_reply = await chat_with_tools(user_id, messages)
+    except Exception as e:
+        logger.error(f"Chat processing failed: {e}")
+        raise HTTPException(status_code=500, detail="Chat processing failed")
+
+    # --- STREAMING RESPONSE ---
+    if stream:
+        async def generator():
+            yield sse({"type": "starting"})
+            for char in assistant_reply:
+                yield sse({"type": "token", "text": char})
+                await asyncio.sleep(0.005)
+            yield sse({"type": "done"})
+
+        return StreamingResponse(
+            generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
+
+    return {
+        "status": "completed",
+        "reply": assistant_reply,
+        "conversation_id": conversation_id,
+        "user_id": user_id,
+        "type": "chat"
+    }
 
 # -------------------------
 # IMAGE GENERATION
 # -------------------------
-if intent == "image":
+elif intent == "image":
     # Extract sample count from prompt
     sample_match = re.search(r'(\d+)\s+(image|images)', prompt.lower())
     if sample_match:
@@ -7203,7 +7279,7 @@ if intent == "image":
         # -------------------------
         # MATH SOLVING
         # -------------------------
-if intent == "math":
+        elif intent == "math":
             if stream:
                 async def event_generator():
                     yield sse({"type": "starting", "message": "Solving math problem..."})
@@ -7244,7 +7320,7 @@ if intent == "math":
         # -------------------------
         # JOKE TELLING
         # -------------------------
-if intent == "joke":
+        elif intent == "joke":
             if stream:
                 async def event_generator():
                     yield sse({"type": "starting", "message": "Finding a joke..."})
@@ -7290,7 +7366,7 @@ if intent == "joke":
         # -------------------------
         # PERSONAL INFORMATION
         # -------------------------
-if intent == "personal":
+        elif intent == "personal":
             # This will be handled by the enhanced chat_with_tools function
             # which now checks user memory first
             messages = [{"role": "user", "content": prompt}]
@@ -7329,7 +7405,7 @@ if intent == "personal":
         # -------------------------
         # VIDEO GENERATION (Fixed indentation)
         # -------------------------
-if intent == "video":
+        elif intent == "video":
             # Extract sample count from prompt
             sample_match = re.search(r'(\d+)\s+(video|videos)', prompt.lower())
             if sample_match:
@@ -7370,7 +7446,7 @@ if intent == "video":
         # -------------------------
         # VISION ANALYSIS (Fixed file handling)
         # -------------------------
-if intent == "vision" and files:
+        elif intent == "vision" and files:
             if not files or len(files) == 0:
                 raise HTTPException(400, "No files provided for vision analysis")
             
@@ -7467,7 +7543,7 @@ if intent == "vision" and files:
         # -------------------------
         # IMG2VID (IMAGE TO VIDEO) (Fixed file handling)
         # -------------------------
-if intent == "img2vid" and files:
+        elif intent == "img2vid" and files:
             if not files or len(files) == 0:
                 raise HTTPException(400, "No files provided for img2vid")
             
@@ -7567,7 +7643,7 @@ if intent == "img2vid" and files:
         # -------------------------
         # CODE GENERATION
         # -------------------------
-if intent == "code":
+        elif intent == "code":
             # Extract language from prompt
             language = "python"
             lang_match = re.search(r'(python|javascript|java|c\+\+|c#|php|ruby|go|rust|swift|kotlin)\s+code', prompt.lower())
@@ -7685,7 +7761,7 @@ if intent == "code":
         # -------------------------
         # WEB SEARCH
         # -------------------------
-if intent == "search":
+        elif intent == "search":
             # Extract query from prompt
             query = prompt
             if "search for" in prompt.lower():
@@ -7726,7 +7802,7 @@ if intent == "search":
         # -------------------------
         # TEXT-TO-SPEECH
         # -------------------------
-if intent == "tts" or tts:
+        elif intent == "tts" or tts:
             # Extract text to speak
             text = prompt
             if "say" in prompt.lower():
@@ -7813,7 +7889,7 @@ if intent == "tts" or tts:
         # -------------------------
         # DEFAULT: CHAT
         # -------------------------
-else:
+        else:
             # Default to chat for any unrecognized intent
             messages = [{"role": "user", "content": prompt}]
             try:
@@ -7849,13 +7925,12 @@ else:
                 "user_id": user_id,
                 "type": "chat"
             }
-try:
-    process_request()  # your main code here
-except HTTPException:
-    raise  # re-raise HTTP exceptions as is
-except Exception as e:
-    logger.error(f"/ask/universal failed: {e}")
-    raise HTTPException(status_code=500, detail="Internal server error")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"/ask/universal failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
         
 @app.post("/migrate-guest")
 async def migrate_guest(
@@ -8870,6 +8945,8 @@ async def view_shared_chat(token: str):
 #// Example FastAPI endpoint that fires AI response in the background
 from fastapi.responses import StreamingResponse
 
+# Fix the syntax error by ensuring the return statement is inside a function
+
 @app.post("/chat/stream/{conversation_id}/{user_id}")
 async def chat_stream_endpoint(conversation_id: str, user_id: str, messages: list):
     """
@@ -8879,14 +8956,14 @@ async def chat_stream_endpoint(conversation_id: str, user_id: str, messages: lis
         async for token_sse in stream_llm(user_id, conversation_id, messages):
             yield token_sse  # only yield here, no return
 
-    #// Return StreamingResponse from the endpoint, not inside the generator
+    # Return StreamingResponse from the endpoint, not inside the generator
     return StreamingResponse(
         event_generator(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache"},
     )
 
-#// ---------- Dedicated Endpoints for Advanced Features ----------
+# ---------- Dedicated Endpoints for Advanced Features ----------
 @app.post("/document/analyze")
 async def document_analysis_endpoint(request: DocumentAnalysisRequest, req: Request, res: Response):
     """Analyze documents for key information"""
@@ -8970,18 +9047,18 @@ async def set_preferences(request: Request, response: Response):
     body = await request.json()
     preferences = body.get("preferences", {})
     
-  #  // Upsert preferences
+    # Upsert preferences
     try:
         existing = supabase.table("profiles").select("id").eq("id", user_id).execute()
         
         if existing.data:
-          #  // Update existing profile
+            # Update existing profile
             supabase.table("profiles").update({
                 "preferences": preferences,
                 "updated_at": datetime.utcnow().isoformat()
             }).eq("id", user_id).execute()
         else:
-          #  // Create new profile
+            # Create new profile
             supabase.table("profiles").insert({
                 "id": user_id,
                 "preferences": preferences,
@@ -9026,26 +9103,26 @@ async def voice_cloning_endpoint(request: VoiceCloningRequest, req: Request, res
         False
     )
 
-#// Add a new endpoint to get user information
+# Add a new endpoint to get user information
 @app.get("/user/info")
 async def get_user_info(req: Request, res: Response):
     user = await get_or_create_user(req, res)
     user_id = user.id
     
-#    // Get additional user data from database
+    # Get additional user data from database
     try:
         user_response = supabase.table("users").select("*").eq("id", user_id).execute()
         user_data = user_response.data[0] if user_response.data else None
         
-  #      // Get user's images count
+        # Get user's images count
         images_response = supabase.table("images").select("id", count="exact").eq("user_id", user_id).execute()
         images_count = images_response.count if hasattr(images_response, 'count') else 0
         
-   #     // Get user's videos count
+        # Get user's videos count
         videos_response = supabase.table("videos").select("id", count="exact").eq("user_id", user_id).execute()
         videos_count = videos_response.count if hasattr(videos_response, 'count') else 0
         
-  #      // Get user's conversations count
+        # Get user's conversations count
         conversations_response = supabase.table("conversations").select("id", count="exact").eq("user_id", user_id).execute()
         conversations_count = conversations_response.count if hasattr(conversations_response, 'count') else 0
         
@@ -9070,7 +9147,8 @@ async def get_user_info(req: Request, res: Response):
             "error": "Failed to get additional user data"
         }
 
-#// Add a new endpoint to merge anonymous user data with logged-in user@app.post("/user/merge")
+# Add a new endpoint to merge anonymous user data with logged-in user
+@app.post("/user/merge")
 async def merge_user_data(req: Request, response: Response):
     """
     Merges an anonymous user's data into a logged-in user's account.
