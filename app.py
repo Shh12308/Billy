@@ -7259,41 +7259,46 @@ elif intent == "math":
     handle_math()
 
     if stream:
+
         async def event_generator():
-                    yield sse({"type": "starting", "message": "Solving math problem..."})
-                    try:
-                        # Extract the math problem from the prompt
-                        problem = prompt
-                        result = await solve_math(problem)
-                        
-                        yield sse({
-                            "type": "math_result",
-                            "problem": result.get("problem"),
-                            "result": result.get("result"),
-                            "steps": result.get("steps", [])
-                        })
-                        yield sse({"type": "done"})
-                    except Exception as e:
-                        logger.error(f"Math solving failed: {e}")
-                        yield sse({"type": "error", "message": str(e)})
-                
-                return StreamingResponse(
-                    event_generator(),
-                    media_type="text/event-stream",
-                    headers={
-                        "Cache-Control": "no-cache",
-                        "Connection": "keep-alive",
-                        "X-Accel-Buffering": "no"
-                    }
-                )
-            else:
-                # Non-streaming version
-                result = await solve_math(prompt)
-                return {
+            yield sse({"type": "starting", "message": "Solving math problem..."})
+
+            try:
+                # Extract the math problem from the prompt
+                problem = prompt
+                result = await solve_math(problem)
+
+                yield sse({
+                    "type": "math_result",
                     "problem": result.get("problem"),
                     "result": result.get("result"),
                     "steps": result.get("steps", [])
-                }
+                })
+
+                yield sse({"type": "done"})
+
+            except Exception as e:
+                logger.error(f"Math solving failed: {e}")
+                yield sse({"type": "error", "message": str(e)})
+
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
+
+    else:
+        # Non-streaming version
+        result = await solve_math(prompt)
+        return {
+            "problem": result.get("problem"),
+            "result": result.get("result"),
+            "steps": result.get("steps", [])
+        }
 
         # -------------------------
         # JOKE TELLING
