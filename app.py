@@ -7095,18 +7095,6 @@ async def ask_universal(
         intent = "default"
 
     # -------------------------
-    # MODEL ROUTING
-    # -------------------------
-    if intent == "image":
-        model = "dalle"
-    elif intent == "code":
-        model = "gpt-4o"
-    elif intent == "search":
-        model = "perplexity"
-    else:
-        model = "gpt-4o-mini"
-
-    # -------------------------
     # AI RESPONSE
     # -------------------------
     try:
@@ -7129,18 +7117,6 @@ async def ask_universal(
         "model": model,
         "ai_response": ai_response
     }
-
-    # -------------------------
-    # MODEL ROUTING
-    # -------------------------
-    if intent == "image":
-        model = "dalle"
-    elif intent == "code":
-        model = "gpt-4o"
-    elif intent == "search":
-        model = "perplexity"
-    else:
-        model = "gpt-4o-mini"
 
     # -------------------------
     # AI RESPONSE
@@ -7279,7 +7255,11 @@ elif intent == "image":
         # -------------------------
         # MATH SOLVING
         # -------------------------
-        elif intent == "math":
+        # ✅ Correct
+if intent == "greet":
+    handle_greet()
+elif intent == "math":
+    handle_math()
             if stream:
                 async def event_generator():
                     yield sse({"type": "starting", "message": "Solving math problem..."})
