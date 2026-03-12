@@ -7188,7 +7188,7 @@ if intent == "chat":
         raise HTTPException(status_code=500, detail="Chat processing failed")
 
     # --- STREAMING RESPONSE ---
-    if stream:
+if stream:
         async def generator():
             yield sse({"type": "starting"})
             for char in assistant_reply:
