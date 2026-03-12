@@ -7255,10 +7255,6 @@ elif intent == "image":
         # -------------------------
         # MATH SOLVING
         # -------------------------
-        # ✅ Correct
-if intent == "greet":
-    handle_greet()
-
 elif intent == "math":
     handle_math()
 
