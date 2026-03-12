@@ -7258,10 +7258,12 @@ elif intent == "image":
         # ✅ Correct
 if intent == "greet":
     handle_greet()
+
 elif intent == "math":
     handle_math()
-            if stream:
-                async def event_generator():
+
+    if stream:
+        async def event_generator():
                     yield sse({"type": "starting", "message": "Solving math problem..."})
                     try:
                         # Extract the math problem from the prompt
