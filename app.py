@@ -170,9 +170,9 @@ def build_messages(prompt: str):
         {"role": "user", "content": prompt.strip()}
     ]
 
-   prompt = "Hello! How are you today?"
+# === Top-level code starts at column 0 ===
+prompt = "Hello! How are you today?"
 messages = build_messages(prompt)
-
 
 response = client.chat.completions.create(
     model="llama-3.1-8b-instant",
