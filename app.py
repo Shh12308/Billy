@@ -32,6 +32,7 @@ from pydantic import BaseModel
 import httpx
 import aiohttp
 from fastapi import FastAPI
+from fastapi.concurrency import run_in_threadpool
 
 app = FastAPI()
 from fastapi.responses import PlainTextResponse
