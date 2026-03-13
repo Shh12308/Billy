@@ -6760,54 +6760,53 @@ async def chat_stream(req: Request, res: Response, tts: bool = False, samples: i
 @app.post("/chat")
 async def chat_endpoint(request: Request, response: Response):
     """Main chat endpoint with user memory"""
-   # // Get or create user with stable UUID
-    user = await get_or_create_user(request, response)
-    user_id = user.id
-    
-   # // Parse request
+
+    # Get or create user
+    user, _ = await get_or_create_user(request, response)
+    user_id = user["id"]
+
+    # Parse request
     body = await request.json()
     message = body.get("message", "")
-    
+
     if not message:
-        raise HTTPException(400, "message required")
-    
-  #  // Get or create conversation for this user
+        raise HTTPException(status_code=400, detail="message required")
+
+    # Get or create conversation
     conversation_id = get_or_create_conversation(user_id)
-    
-    #// Store user message
+
+    # Store user message
     persist_message(user_id, conversation_id, "user", message)
-    
-  #  // Build contextual prompt with user history
+
+    # Build contextual prompt
     system_prompt = build_contextual_prompt(user_id, message)
-    
-    #// Prepare messages for API call
+
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": message}
     ]
-    
-  #  // Call language model
+
     payload = {
         "model": CHAT_MODEL,
         "messages": messages,
         "max_tokens": 1500
     }
-    
+
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
         "Content-Type": "application/json"
     }
-    
+
     async with httpx.AsyncClient(timeout=30) as client:
         r = await client.post(GROQ_URL, headers=headers, json=payload)
         r.raise_for_status()
         response_data = r.json()
-    
+
     assistant_reply = response_data["choices"][0]["message"]["content"]
-    
-  #  // Store assistant message
+
+    # Store assistant reply
     persist_message(user_id, conversation_id, "assistant", assistant_reply)
-    
+
     return {
         "reply": assistant_reply,
         "conversation_id": conversation_id,
