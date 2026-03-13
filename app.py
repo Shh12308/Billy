@@ -68,7 +68,15 @@ async def cleanup_old_tasks():
     print("Cleaning old tasks...")
 
 scheduler = AsyncIOScheduler()
-scheduler.add_job(cleanup_old_tasks, "interval", minutes=10)  # schedule every 10 minutes
+
+scheduler.add_job(
+    cleanup_old_tasks,
+    "interval",
+    minutes=10,
+    coalesce=False,
+    misfire_grace_time=30
+)
+
 scheduler.start()
 
 async def stream():
