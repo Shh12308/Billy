@@ -1282,29 +1282,6 @@ async def debug_health():
         }
     }
 
-def build_messages(prompt: str):
-    if not prompt or not prompt.strip():
-        raise ValueError("Prompt cannot be empty")
-
-    return [
-        {"role": "system", "content": "You are a helpful AI assistant."},
-        {"role": "user", "content": prompt.strip()}
-    ]
-
-# === Top-level code starts at column 0 ===
-prompt = "Hello! How are you today?"
-messages = build_messages(prompt)
-
-response = client.chat.completions.create(
-    model="llama-3.1-8b-instant",
-    messages=messages
-)
-
-logger.info({
-    "model": "llama-3.1-8b-instant",
-    "messages": messages
-})
-
 @app.get("/debug/supabase")
 async def debug_supabase():
     """Debug endpoint to test Supabase connection"""
