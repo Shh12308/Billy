@@ -6757,28 +6757,15 @@ async def chat_stream(req: Request, res: Response, tts: bool = False, samples: i
     user_id = user.id
     
 #// ---------- Chat endpoint ----------
-@app.post("/chat")
-async def chat_endpoint(request: Request, response: Response):
-    """Main chat endpoint with user memory"""
+@app.post("/chat-stream")
+async def chat_stream(request: Request, response: Response):
 
-    # Get or create user
     user, _ = await get_or_create_user(request, response)
     user_id = user["id"]
 
-    # Parse request
     body = await request.json()
-    message = body.get("message", "")
+    message = body.get("message")
 
-    if not message:
-        raise HTTPException(status_code=400, detail="message required")
-
-    # Get or create conversation
-    conversation_id = get_or_create_conversation(user_id)
-
-    # Store user message
-    persist_message(user_id, conversation_id, "user", message)
-
-    # Build contextual prompt
     system_prompt = build_contextual_prompt(user_id, message)
 
     messages = [
@@ -6789,7 +6776,7 @@ async def chat_endpoint(request: Request, response: Response):
     payload = {
         "model": CHAT_MODEL,
         "messages": messages,
-        "max_tokens": 1500
+        "stream": True
     }
 
     headers = {
@@ -6797,21 +6784,13 @@ async def chat_endpoint(request: Request, response: Response):
         "Content-Type": "application/json"
     }
 
-    async with httpx.AsyncClient(timeout=30) as client:
-        r = await client.post(GROQ_URL, headers=headers, json=payload)
-        r.raise_for_status()
-        response_data = r.json()
+    async def event_generator():
+        async with groq_client.stream("POST", GROQ_URL, headers=headers, json=payload) as r:
+            async for line in r.aiter_lines():
+                if line:
+                    yield f"data: {line}\n\n"
 
-    assistant_reply = response_data["choices"][0]["message"]["content"]
-
-    # Store assistant reply
-    persist_message(user_id, conversation_id, "assistant", assistant_reply)
-
-    return {
-        "reply": assistant_reply,
-        "conversation_id": conversation_id,
-        "user_id": user_id
-    }
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 #// Background chat endpoint
 @app.post("/chat/background")
