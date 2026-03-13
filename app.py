@@ -161,29 +161,6 @@ def get_yolo_faces():
         YOLO_FACES.to(YOLO_DEVICE)
     return YOLO_FACES
 
-def build_messages(prompt: str):
-    if not prompt or not prompt.strip():
-        raise ValueError("Prompt cannot be empty")
-
-    return [
-        {"role": "system", "content": "You are a helpful AI assistant."},
-        {"role": "user", "content": prompt.strip()}
-    ]
-
-# === Top-level code starts at column 0 ===
-prompt = "Hello! How are you today?"
-messages = build_messages(prompt)
-
-response = client.chat.completions.create(
-    model="llama-3.1-8b-instant",
-    messages=messages
-)
-
-logger.info({
-    "model": "llama-3.1-8b-instant",
-    "messages": messages
-})
-
 # ---------- ENV KEYS ----------
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
@@ -1303,6 +1280,29 @@ async def debug_health():
             "runwayml": "configured" if RUNWAYML_API_KEY else "not configured"
         }
     }
+
+def build_messages(prompt: str):
+    if not prompt or not prompt.strip():
+        raise ValueError("Prompt cannot be empty")
+
+    return [
+        {"role": "system", "content": "You are a helpful AI assistant."},
+        {"role": "user", "content": prompt.strip()}
+    ]
+
+# === Top-level code starts at column 0 ===
+prompt = "Hello! How are you today?"
+messages = build_messages(prompt)
+
+response = client.chat.completions.create(
+    model="llama-3.1-8b-instant",
+    messages=messages
+)
+
+logger.info({
+    "model": "llama-3.1-8b-instant",
+    "messages": messages
+})
 
 @app.get("/debug/supabase")
 async def debug_supabase():
