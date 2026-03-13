@@ -3,6 +3,7 @@ import cv2
 import io
 from PIL import Image, ImageDraw, ImageFont
 import json
+from groq import Groq
 import secrets
 import uuid
 import numpy as np
