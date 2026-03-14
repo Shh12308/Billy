@@ -64,7 +64,6 @@ import json
 from fastapi import Request
 from fastapi.responses import StreamingResponse
 import asyncio
-asyncio.create_task(cleanup_old_tasks())
 
 async def cleanup_old_tasks():
     # your async cleanup code here
