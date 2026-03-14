@@ -1170,19 +1170,10 @@ logger.info(f"RunwayML key present: {bool(RUNWAYML_API_KEY)}")
 # -------------------
 # Models
 # -------------------
-# Update this line in your code
-# Choose a non-GPT model explicitly
-CHAT_MODEL = os.getenv("CHAT_MODEL", "llama-3.1-8b-instant")  
+CHAT_MODEL = os.getenv("CHAT_MODEL", "llama-3.1-8b-instant")  # normal chat
+CODE_MODEL = os.getenv("CODE_MODEL", "gpt-5-mini")           # code generation only
 
-# Groq endpoint
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-
-# When sending a request, check model
-payload = {
-    "model": CHAT_MODEL,
-    "messages": [{"role": "user", "content": code_prompt}],
-    "max_tokens": 1024
-}
 
 # TTS/STT are handled via ElevenLabs now
 # ---------- Creator info ----------
@@ -7533,7 +7524,7 @@ async def ask_universal(
                         # Generate code
                         code_prompt = f"Write a complete {language} program to: {prompt}"
                         payload = {
-                            "model": CHAT_MODEL,
+                            "model": CODE_MODEL,
                             "messages": [{"role": "user", "content": code_prompt}],
                             "max_tokens": 2048
                         }
