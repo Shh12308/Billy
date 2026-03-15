@@ -6845,42 +6845,6 @@ async def chat_stream(req: Request, res: Response, tts: bool = False, samples: i
    # // ✅ COOKIE USER
     user = await get_or_create_user(req, res)
     user_id = user.id
-    
-#// ---------- Chat endpoint ----------
-@app.post("/chat-stream")
-async def chat_stream(request: Request, response: Response):
-
-    user, _ = await get_or_create_user(request, response)
-    user_id = user["id"]
-
-    body = await request.json()
-    message = body.get("message")
-
-    system_prompt = build_contextual_prompt(user_id, message)
-
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": message}
-    ]
-
-    payload = {
-        "model": CHAT_MODEL,
-        "messages": messages,
-        "stream": True
-    }
-
-    headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
-        "Content-Type": "application/json"
-    }
-
-    async def event_generator():
-        async with groq_client.stream("POST", GROQ_URL, headers=headers, json=payload) as r:
-            async for line in r.aiter_lines():
-                if line:
-                    yield f"data: {line}\n\n"
-
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 #// Background chat endpoint
 @app.post("/chat/background")
