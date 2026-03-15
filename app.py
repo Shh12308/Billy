@@ -71,13 +71,7 @@ async def cleanup_old_tasks():
 
 scheduler = AsyncIOScheduler()
 
-scheduler.add_job(
-    cleanup_old_tasks,
-    "interval",
-    minutes=10,
-    coalesce=False,
-    misfire_grace_time=30
-)
+scheduler.add_job(lambda: asyncio.create_task(cleanup_old_tasks()), 'interval', minutes=10)
 
 scheduler.start()
 
@@ -1171,7 +1165,7 @@ logger.info(f"RunwayML key present: {bool(RUNWAYML_API_KEY)}")
 # -------------------
 # Models
 # -------------------
-CHAT_MODEL = os.getenv("CHAT_MODEL", "llama-3.1-8b-instant")  # normal chat
+CHAT_MODEL = os.getenv("CHAT_MODEL", "llama3-70b-8192")  # normal chat
 CODE_MODEL = os.getenv("CODE_MODEL", "gpt-5-mini")           # code generation only
 
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
