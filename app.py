@@ -70,10 +70,8 @@ async def cleanup_old_tasks():
     print("Cleaning old tasks...")
 
 scheduler = AsyncIOScheduler()
-
-scheduler.add_job(lambda: asyncio.create_task(cleanup_old_tasks()), 'interval', minutes=10)
-
-scheduler.start()
+scheduler.add_job(cleanup_old_tasks, 'interval', minutes=10)
+scheduler.start(
 
 async def stream():
     data = {"message": "hello"}
