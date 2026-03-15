@@ -77,7 +77,7 @@ scheduler.start()
 
 async def stream():
     data = {"message": "hello"}
-    yield json.dumps(data)  # ✅ convert to string
+    yield json.dumps(data) nmmmnm # ✅ convert to string
 
 app = FastAPI(
     title="ZyNaraAI1.0 Multimodal Server",
