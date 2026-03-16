@@ -9098,16 +9098,6 @@ async def data_visualization_endpoint(request: DataVisualizationRequest, req: Re
         False
     )
 
-@app.post("/voice/clone")
-async def voice_cloning_endpoint(request: VoiceCloningRequest, req: Request, res: Response):
-    """Create custom voice profiles for TTS"""
-    user = await get_or_create_user(req, res)
-    return await clone_voice(
-        f"sample: {request.voice_sample}\ntext: {request.text}\nname: {request.voice_name}",
-        user.id,
-        False
-    )
-
 #// Add a new endpoint to get user information
 @app.get("/user/info")
 async def get_user_info(req: Request, res: Response):
@@ -9638,143 +9628,158 @@ async def img2vid(
     duration: int = Form(4)
 ):
     """
-    Generate a video from an image and text prompt using RunwayML Gen-2.
+    Generate a video from an image and prompt using Replicate.
     """
-    RUNWAYML_API_KEY = os.getenv("RUNWAYML_API_KEY")
-    if not RUNWAYML_API_KEY:
-        raise HTTPException(500, "RUNWAYML_API_KEY not configured")
-    
+
+    REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
+    if not REPLICATE_API_TOKEN:
+        raise HTTPException(500, "REPLICATE_API_TOKEN not configured")
+
     user = await get_or_create_user(request, Response())
     user_id = user.id
-    
+
     if not prompt:
         raise HTTPException(400, "prompt required")
-    
-    # Read and validate the image
+
     image_bytes = await file.read()
     if not image_bytes:
         raise HTTPException(400, "empty file")
-    
+
     try:
-        # Upload the image to a temporary location
+
+        # -------------------------
+        # Upload image to Supabase
+        # -------------------------
         image_filename = f"temp_{uuid.uuid4().hex[:8]}.png"
         image_path = f"temp/{image_filename}"
-        
+
         supabase.storage.from_("ai-images").upload(
             path=image_path,
             file=image_bytes,
             file_options={"content-type": "image/png"}
         )
-        
-        # Get a public URL for the image
+
         image_url = get_public_url("ai-images", image_path)
-        
-        # Create a task for image-to-video generation
+
         headers = {
-            "Authorization": f"Bearer {RUNWAYML_API_KEY}",
+            "Authorization": f"Token {REPLICATE_API_TOKEN}",
             "Content-Type": "application/json"
         }
-        
-        task_payload = {
-            "model": "gen-2",
-            "image_prompt": image_url,
-            "text_prompt": prompt,
-            "watermark": False,
-            "duration": min(max(duration, 1), 14),  # Between 1-14 seconds
-            "ratio": "16:9",
-            "upscale": True
+
+        # -------------------------
+        # Create prediction
+        # -------------------------
+        prediction_payload = {
+            "version": "MODEL_VERSION_ID",  # replace with actual Replicate model version
+            "input": {
+                "image": image_url,
+                "prompt": prompt,
+                "duration": min(max(duration, 1), 10)
+            }
         }
-        
-        # Submit the task
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            task_response = await client.post(
-                "https://api.runwayml.com/v1/video_tasks",
+
+        async with httpx.AsyncClient(timeout=120.0) as client:
+
+            prediction_res = await client.post(
+                "https://api.replicate.com/v1/predictions",
                 headers=headers,
-                json=task_payload
+                json=prediction_payload
             )
-            task_response.raise_for_status()
-            task_data = task_response.json()
-            task_id = task_data.get("id")
-            
-            if not task_id:
-                raise HTTPException(500, "Failed to create video generation task")
-            
-            # Poll for task completion
-            max_attempts = 60  # Maximum polling attempts (5 minutes)
+
+            prediction_res.raise_for_status()
+            prediction_data = prediction_res.json()
+
+            prediction_id = prediction_data["id"]
+
+            # -------------------------
+            # Poll prediction
+            # -------------------------
             video_url = None
-            
-            for attempt in range(max_attempts):
-                # Check task status
-                status_response = await client.get(
-                    f"https://api.runwayml.com/v1/video_tasks/{task_id}",
+            for _ in range(60):
+
+                status_res = await client.get(
+                    f"https://api.replicate.com/v1/predictions/{prediction_id}",
                     headers=headers
                 )
-                status_response.raise_for_status()
-                status_data = status_response.json()
-                
-                status = status_data.get("status")
-                
-                if status == "SUCCEEDED":
-                    video_url = status_data.get("output", {}).get("url")
+
+                status_res.raise_for_status()
+                status_data = status_res.json()
+
+                status = status_data["status"]
+
+                if status == "succeeded":
+                    output = status_data["output"]
+
+                    if isinstance(output, list):
+                        video_url = output[0]
+                    else:
+                        video_url = output
+
                     break
-                elif status == "FAILED":
-                    error_message = status_data.get("failure_reason", "Unknown error")
-                    raise HTTPException(500, f"Video generation failed: {error_message}")
-                
-                # Wait before polling again
+
+                if status == "failed":
+                    raise HTTPException(
+                        500,
+                        f"Replicate video generation failed: {status_data.get('error')}"
+                    )
+
                 await asyncio.sleep(5)
-            
+
             if not video_url:
                 raise HTTPException(500, "Video generation timed out")
-            
-            # Download the video
-            video_response = await client.get(video_url)
-            video_response.raise_for_status()
-            video_bytes = video_response.content
-            
-            # Upload to Supabase
-            filename = f"{uuid.uuid4().hex[:8]}.mp4"
-            storage_path = f"anonymous/{filename}"
-            
-            supabase.storage.from_("ai-videos").upload(
-                path=storage_path,
-                file=video_bytes,
-                file_options={"content-type": "video/mp4"}
-            )
-            
-            # Save video record
-            try:
-                supabase.table("videos").insert({
-                    "id": str(uuid.uuid4()),
-                    "user_id": user_id,
-                    "video_path": storage_path,
-                    "prompt": prompt,
-                    "provider": "runwayml-gen2-img2vid",
-                    "created_at": datetime.now().isoformat()
-                }).execute()
-            except Exception as e:
-                logger.error(f"Failed to save video record: {e}")
-            
-            # Get public URL
-            public_url = get_public_url("ai-videos", storage_path)
-            
-            # Clean up the temporary image
-            try:
-                supabase.storage.from_("ai-images").remove([image_path])
-            except:
-                pass
-            
-            return {
-                "provider": "runwayml-gen2-img2vid",
-                "video": {"url": public_url, "type": "video/mp4"}
-            }
-            
+
+            # -------------------------
+            # Download video
+            # -------------------------
+            video_res = await client.get(video_url)
+            video_res.raise_for_status()
+
+            video_bytes = video_res.content
+
+        # -------------------------
+        # Upload to Supabase
+        # -------------------------
+        filename = f"{uuid.uuid4().hex[:8]}.mp4"
+        storage_path = f"anonymous/{filename}"
+
+        supabase.storage.from_("ai-videos").upload(
+            path=storage_path,
+            file=video_bytes,
+            file_options={"content-type": "video/mp4"}
+        )
+
+        # Save DB record
+        try:
+            supabase.table("videos").insert({
+                "id": str(uuid.uuid4()),
+                "user_id": user_id,
+                "video_path": storage_path,
+                "prompt": prompt,
+                "provider": "replicate-img2vid",
+                "created_at": datetime.utcnow().isoformat()
+            }).execute()
+        except Exception as e:
+            logger.error(f"Failed to save video record: {e}")
+
+        public_url = get_public_url("ai-videos", storage_path)
+
+        # Clean temp image
+        try:
+            supabase.storage.from_("ai-images").remove([image_path])
+        except:
+            pass
+
+        return {
+            "provider": "replicate-img2vid",
+            "video": {"url": public_url, "type": "video/mp4"}
+        }
+
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         logger.exception("Image-to-video generation failed")
         raise HTTPException(500, "Image-to-video generation failed")
-
+        
 @app.get("/test/video-replicate")
 async def test_video_replicate(prompt: str = "A cat walking on a leash in a garden"):
     """Test endpoint for Replicate video generation"""
