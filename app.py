@@ -5179,124 +5179,6 @@ async def tts_handler(prompt: str, user_id: str, stream: bool = False):
             "audio": audio_b64
         }
 
-async def code_generation_handler(prompt: str, user_id: str, stream: bool = False):
-    """Handle code generation requests"""
-   # // Extract language from prompt
-    language = "python"
-    lang_match = re.search(r'(python|javascript|java|c\+\+|c#|php|ruby|go|rust|swift|kotlin)\s+code', prompt.lower())
-    if lang_match:
-        language = lang_match.group(1)
-    
-  #  // Extract run flag
-    run_flag = "run" in prompt.lower() or "execute" in prompt.lower()
-    
-    if stream:
-        async def event_generator():
-            yield sse({"type": "starting", "message": f"Generating {language} code..."})
-            try:
-               # // Generate code
-                code_prompt = f"Write a complete {language} program to: {prompt}"
-                payload = {
-                    "model": CHAT_MODEL,
-                    "messages": [{"role": "user", "content": code_prompt}],
-                    "max_tokens": 2048
-                }
-                async with httpx.AsyncClient(timeout=60) as client:
-                    r = await client.post(
-                        "https://api.groq.com/openai/v1/chat/completions",
-                        headers=get_groq_headers(),
-                        json=payload
-                    )
-                    r.raise_for_status()
-                    code = r.json()["choices"][0]["message"]["content"]
-                
-                yield sse({
-                    "type": "code",
-                    "language": language,
-                    "code": code
-                })
-                
-                #// Run code if requested
-                if run_flag:
-                    yield sse({"type": "progress", "message": "Running code..."})
-                    lang_id = JUDGE0_LANGUAGES.get(language, 71)
-                    execution = await run_code_judge0(code, lang_id)
-                    yield sse({
-                        "type": "execution",
-                        "result": execution
-                    })
-                
-                #// Save code generation record
-                try:
-                    supabase.table("code_generations").insert({
-                        "id": str(uuid.uuid4()),
-                        "user_id": user_id,
-                        "language": language,
-                        "prompt": prompt,
-                        "code": code,
-                        "created_at": datetime.now().isoformat()
-                    }).execute()
-                except Exception as e:
-                    logger.error(f"Failed to save code generation record: {e}")
-                
-                yield sse({"type": "done"})
-            except Exception as e:
-                logger.error(f"Code generation failed: {e}")
-                yield sse({"type": "error", "message": str(e)})
-        
-        return StreamingResponse(
-            event_generator(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no"
-            }
-        )
-    else:
-     #   // Non-streaming version
-        code_prompt = f"Write a complete {language} program to: {prompt}"
-        payload = {
-            "model": CHAT_MODEL,
-            "messages": [{"role": "user", "content": code_prompt}],
-            "max_tokens": 2048
-        }
-        async with httpx.AsyncClient(timeout=60) as client:
-            r = await client.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers=get_groq_headers(),
-                json=payload
-            )
-            r.raise_for_status()
-            code = r.json()["choices"][0]["message"]["content"]
-        
-        result = {
-            "language": language,
-            "generated_code": code,
-            "user_id": user_id
-        }
-        
-      #  // Run code if requested
-        if run_flag:
-            lang_id = JUDGE0_LANGUAGES.get(language, 71)
-            execution = await run_code_judge0(code, lang_id)
-            result["execution"] = execution
-        
-   #     // Save code generation record
-        try:
-            supabase.table("code_generations").insert({
-                "id": str(uuid.uuid4()),
-                "user_id": user_id,
-                "language": language,
-                "prompt": prompt,
-                "code": code,
-                "created_at": datetime.now().isoformat()
-            }).execute()
-        except Exception as e:
-            logger.error(f"Failed to save code generation record: {e}")
-        
-        return result
-
 async def search_handler(prompt: str, user_id: str, stream: bool = False):
     """Handle web search requests"""
  #   // Extract query from prompt
@@ -6020,10 +5902,6 @@ async def chat_with_tools(user_id: str, messages: list) -> str:
 # -------------------------
 async def check_user_memory(user_id: str, last_message: str):
     return None  # Replace with Supabase or Redis memory lookup
-
-async def call_groq_api(payload: dict, headers: dict) -> str:
-    await asyncio.sleep(0.1)  # simulate async call
-    return "Hello! This is a safe assistant reply."
 
     # -------------------------
     # CALL GROQ
