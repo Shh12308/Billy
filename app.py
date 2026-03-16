@@ -65,6 +65,10 @@ from fastapi import Request
 from fastapi.responses import StreamingResponse
 import asyncio
 
+logger = logging.getLogger(__name__)
+
+scheduler = AsyncIOScheduler()
+
 async def cleanup_old_tasks():
     # your async cleanup code here
     print("Cleaning old tasks...")
@@ -125,6 +129,11 @@ async def stop_scheduler():
     if scheduler.state == STATE_RUNNING:
         scheduler.shutdown(wait=False)  # wait=False avoids blocking shutdown
         logger.info("Scheduler shut down.")
+
+@app.post("/cleanup-now")
+async def cleanup_now():
+    asyncio.create_task(cleanup_old_tasks())  # safe here because inside running loop
+    return {"status": "cleanup scheduled"}
 
 # ---------- CONFIG & LOGGING ----------
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
@@ -5977,42 +5986,65 @@ async def stop_handler(prompt: str, user_id: str, stream: bool = False):
             return {"stopped": False}
 
 
-async def chat_with_tools(user_id: str, messages: list):
+async def chat_with_tools(user_id: str, messages: list) -> str:
+    """
+    Safe chat function that ensures all messages have 'content'
+    and integrates Groq or other AI tools.
+    """
+    # -------------------------
+    # Ensure last message content exists
+    # -------------------------
+    last_message = next((m["content"] for m in reversed(messages) if "content" in m), "")
 
     # -------------------------
-    # CHECK USER MEMORY
+    # Check user memory (async)
     # -------------------------
-    last_message = messages[-1]["content"] if messages else ""
-
     user_memory = await check_user_memory(user_id, last_message)
-
     if user_memory:
         system_prompt = f"User information: {user_memory['context']}"
-
-        messages = [
-            {"role": "system", "content": system_prompt}
-        ] + messages
+        messages = [{"role": "system", "content": system_prompt}] + messages
 
     # -------------------------
-    # SANITIZE MESSAGES
+    # Sanitize messages: ensure every message has 'content'
     # -------------------------
-    messages = sanitize_messages(messages)
+    sanitized = []
+    for msg in messages:
+        if "content" not in msg and "files" in msg:
+            msg["content"] = json.dumps({"files": msg["files"]})
+        elif "content" not in msg:
+            msg["content"] = ""
+        sanitized.append(msg)
+    messages = sanitized
 
     # -------------------------
-    # BUILD PAYLOAD
+    # Build payload
     # -------------------------
     payload = {
         "model": CHAT_MODEL,
         "messages": messages,
         "max_tokens": 1500
     }
-
-    # Only add tools if defined
     if TOOLS:
         payload["tools"] = TOOLS
         payload["tool_choice"] = "auto"
 
     headers = get_groq_headers()
+
+    # -------------------------
+    # Call AI API asynchronously (pseudo-code)
+    # -------------------------
+    response_text = await call_groq_api(payload, headers)
+    return response_text
+
+# -------------------------
+# Dummy memory & Groq calls (replace with your real implementations)
+# -------------------------
+async def check_user_memory(user_id: str, last_message: str):
+    return None  # Replace with Supabase or Redis memory lookup
+
+async def call_groq_api(payload: dict, headers: dict) -> str:
+    await asyncio.sleep(0.1)  # simulate async call
+    return "Hello! This is a safe assistant reply."
 
     # -------------------------
     # CALL GROQ
