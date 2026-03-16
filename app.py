@@ -13,7 +13,6 @@ import asyncio
 import logging
 import subprocess
 import tempfile
-import cv2
 import requests
 import random
 import imageio
@@ -59,17 +58,11 @@ import plotly.graph_objects as go
 import plotly.express as px
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.schedulers.base import STATE_RUNNING
-import asyncio
-import json
-import logging
-
-logger = logging.getLogger(__name__)
 
 scheduler = AsyncIOScheduler()
 
 async def cleanup_old_tasks():
     print("Cleaning old tasks...")
-    # your cleanup logic here
 
 # schedule the async function directly
 scheduler.add_job(cleanup_old_tasks, "interval", minutes=10)
@@ -79,11 +72,6 @@ scheduler.start()
 async def stream():
     data = {"message": "hello"}
     yield json.dumps(data)
-    
-app = FastAPI(
-    title="ZyNaraAI1.0 Multimodal Server",
-    redirect_slashes=False
-)
 
 app.add_middleware(
     CORSMiddleware,
@@ -108,16 +96,6 @@ def sse(data: dict) -> str:
     """
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
     
-# Add jobs here if needed
-# scheduler.add_job(example_job, "interval", seconds=60)
-
-# 2️⃣ Startup event
-@app.on_event("startup")
-async def start_scheduler():
-    if scheduler.state != STATE_RUNNING:
-        scheduler.add_job(cleanup_old_tasks, "interval", minutes=10)
-        scheduler.start()
-        logger.info("Scheduler started.")
 # 3️⃣ Shutdown event
 @app.on_event("shutdown")
 async def stop_scheduler():
@@ -8937,17 +8915,6 @@ async def share_chat(id: str):
 
     return {"share_url": f"/share/{token}"}
 
-#// ----------------------------------
-#// VIEW SHARED CHAT (READ ONLY)
-#// ----------------------------------
-@app.get("/share/{token}")
-async def view_shared_chat(token: str):
-   # // In a real implementation, you would store share tokens in the database
-   # // For now, we'll return a placeholder
-    return {
-        "title": "Shared Chat",
-        "messages": []
-    }
 
 #// Example FastAPI endpoint that fires AI response in the background
 from fastapi.responses import StreamingResponse
