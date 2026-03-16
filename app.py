@@ -58,6 +58,7 @@ import networkx as nx
 import plotly.graph_objects as go
 import plotly.express as px
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.schedulers.base import STATE_RUNNING
 import asyncio
 import json
 import logging
