@@ -350,10 +350,15 @@ def create_session_token() -> str:
 # -----------------------------
 # Get or Create Anonymous User
 # -----------------------------
-async def get_or_create_user(request: Request, response: Response) -> Tuple[dict, bool]:
+async def get_or_create_user(request: Request, response: Response) -> dict:
+    """
+    Get a user by session cookie, or create an anonymous user if not found.
+    Returns the user dictionary.
+    """
 
     session_token = request.cookies.get(COOKIE_NAME)
 
+    # Try to find existing user by session token
     if session_token:
         try:
             user_resp = await run_in_threadpool(
@@ -365,12 +370,12 @@ async def get_or_create_user(request: Request, response: Response) -> Tuple[dict
             )
 
             if user_resp.data:
-                return user_resp.data[0], False
+                return user_resp.data[0]  # return dict directly
 
         except Exception as e:
             logger.error(f"User lookup failed: {e}")
 
-    # Create new anonymous user
+    # If no user, create a new anonymous user
     anonymous_id = str(uuid.uuid4())
     new_session_token = create_session_token()
 
@@ -389,6 +394,7 @@ async def get_or_create_user(request: Request, response: Response) -> Tuple[dict
 
         logger.info(f"Created new anonymous user: {anonymous_id}")
 
+        # Set session cookie
         response.set_cookie(
             key=COOKIE_NAME,
             value=new_session_token,
@@ -399,12 +405,12 @@ async def get_or_create_user(request: Request, response: Response) -> Tuple[dict
             samesite="lax"
         )
 
-        return user_data, True
+        return user_data
 
     except Exception as e:
         logger.error(f"Failed to create anonymous user: {e}")
         raise HTTPException(status_code=500, detail="User session creation failed")
-
+        
 
 # -----------------------------
 # Get Current User
@@ -8758,8 +8764,8 @@ async def speech_to_text(file: UploadFile = File(...)):
 
 @app.post("/chat/new")
 async def new_chat(req: Request, res: Response):
-    user = await get_or_create_user(req, res)
-    user_id = user.id
+    user, _ = await get_or_create_user(req, res)
+    user_id = user["id"]
     cid = str(uuid.uuid4())
 
     try:
