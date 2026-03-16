@@ -2259,26 +2259,35 @@ async def decay_memories(user_id):
         logger.error(f"Failed to decay memories: {e}")
 
 def get_groq_headers():
-    """Constructs the headers for the Groq API, ensuring the token is valid."""
-    api_key = os.getenv("GROQ_API_KEY")
-    if not api_key:
-        # This should not happen in production if the server starts, but it's a good safeguard.
-        logger.error("GROQ_API_KEY is not set in the environment.")
-        raise HTTPException(status_code=500, detail="Server configuration error: Groq API key is missing.")
 
-    # Strip any accidental whitespace from the key
+    api_key = os.getenv("GROQ_API_KEY")
+
+    if not api_key:
+        raise RuntimeError("GROQ_API_KEY missing")
+
     api_key = api_key.strip()
-    
-    if not api_key.startswith("gsk_"):
-        logger.error(f"Invalid GROQ_API_KEY format detected. It should start with 'gsk_'.")
-        # Don't expose the key, just log the error type.
-        raise HTTPException(status_code=500, detail="Server configuration error: Groq API key is invalid.")
 
     return {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
     }
+    
+def sanitize_messages(messages: list):
+    clean = []
 
+    for m in messages:
+        content = m.get("content", "")
+
+        if isinstance(content, dict):
+            content = content.get("text", "")
+
+        clean.append({
+            "role": m.get("role", "user"),
+            "content": str(content)
+        })
+
+    return clean
+    
 # Fix: Complete the run_code_safely function
 async def run_code_safely(prompt: str):
     """Helper for streaming /ask/universal."""
@@ -5969,31 +5978,67 @@ async def stop_handler(prompt: str, user_id: str, stream: bool = False):
 
 
 async def chat_with_tools(user_id: str, messages: list):
-    """
-    Handles a chat conversation with tool calling capabilities.
-    Makes an initial call, checks if the AI wants to use a tool,
-    executes the tool, and then makes a final call to synthesize the answer.
-    """
-    # Check if the query is about the user
+
+    # -------------------------
+    # CHECK USER MEMORY
+    # -------------------------
     last_message = messages[-1]["content"] if messages else ""
+
     user_memory = await check_user_memory(user_id, last_message)
-    
+
     if user_memory:
-        # If we found relevant user information, add it to the system prompt
-        system_prompt = f"User information: {user_memory['context']}. Please refer to this information in your response."
-        messages.insert(0, {"role": "system", "content": system_prompt})
-    
-    # Initial payload with tools enabled
+        system_prompt = f"User information: {user_memory['context']}"
+
+        messages = [
+            {"role": "system", "content": system_prompt}
+        ] + messages
+
+    # -------------------------
+    # SANITIZE MESSAGES
+    # -------------------------
+    messages = sanitize_messages(messages)
+
+    # -------------------------
+    # BUILD PAYLOAD
+    # -------------------------
     payload = {
         "model": CHAT_MODEL,
         "messages": messages,
-        "tools": TOOLS,  # Your updated TOOLS list
-        "tool_choice": "auto",  # Let the AI decide when to use a tool
-        "max_tokens": 1500,
+        "max_tokens": 1500
     }
+
+    # Only add tools if defined
+    if TOOLS:
+        payload["tools"] = TOOLS
+        payload["tool_choice"] = "auto"
 
     headers = get_groq_headers()
 
+    # -------------------------
+    # CALL GROQ
+    # -------------------------
+    async with httpx.AsyncClient(timeout=60) as client:
+
+        r = await client.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers=headers,
+            json=payload
+        )
+
+        # Debug logging
+        if r.status_code != 200:
+            print("GROQ PAYLOAD:", json.dumps(payload, indent=2))
+            print("GROQ ERROR:", r.text)
+
+        r.raise_for_status()
+
+    data = r.json()
+
+    # -------------------------
+    # RETURN RESPONSE
+    # -------------------------
+    return data["choices"][0]["message"]["content"]
+    
     # --- First API Call ---
     async with httpx.AsyncClient(timeout=30) as client:
         r = await client.post(GROQ_URL, headers=headers, json=payload)
