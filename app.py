@@ -72,8 +72,8 @@ async def cleanup_old_tasks():
 scheduler = AsyncIOScheduler()
 
 def run_cleanup():
-    asyncio.create_task(cleanup_old_tasks())
-
+    asyncio.run(cleanup_old_tasks())
+    
 scheduler.add_job(run_cleanup, "interval", minutes=10)
 scheduler.start()
 
