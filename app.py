@@ -446,7 +446,7 @@ async def get_current_user_optional(
             logger.warning(f"JWT validation failed: {e}")
 
     # fallback to anonymous session
-    user, _ = await get_or_create_user(request, response)
+    user = await get_or_create_user(request, response)
     return user
 
 
@@ -8764,7 +8764,7 @@ async def speech_to_text(file: UploadFile = File(...)):
 
 @app.post("/chat/new")
 async def new_chat(req: Request, res: Response):
-    user, _ = await get_or_create_user(req, res)
+    user = await get_or_create_user(request, response)
     user_id = user["id"]
     cid = str(uuid.uuid4())
 
