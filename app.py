@@ -57,34 +57,28 @@ from sklearn.metrics.pairwise import cosine_similarity
 import networkx as nx
 import plotly.graph_objects as go
 import plotly.express as px
-from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.schedulers.base import STATE_RUNNING
-import json
-from fastapi import Request
-from fastapi.responses import StreamingResponse
 import asyncio
+import json
+import logging
 
 logger = logging.getLogger(__name__)
 
 scheduler = AsyncIOScheduler()
 
 async def cleanup_old_tasks():
-    # your async cleanup code here
     print("Cleaning old tasks...")
+    # your cleanup logic here
 
-scheduler = AsyncIOScheduler()
+# schedule the async function directly
+scheduler.add_job(cleanup_old_tasks, "interval", minutes=10)
 
-def run_cleanup():
-    asyncio.run(cleanup_old_tasks())
-    
-scheduler.add_job(run_cleanup, "interval", minutes=10)
 scheduler.start()
 
 async def stream():
     data = {"message": "hello"}
     yield json.dumps(data)
-
+    
 app = FastAPI(
     title="ZyNaraAI1.0 Multimodal Server",
     redirect_slashes=False
