@@ -1167,7 +1167,7 @@ logger.info(f"RunwayML key present: {bool(RUNWAYML_API_KEY)}")
 # -------------------
 # Models
 # -------------------
-CHAT_MODEL = os.getenv("CHAT_MODEL", "llama3-70b-8192")  # normal chat
+CHAT_MODEL = os.getenv("CHAT_MODEL", "llama-3.3-70b-versatile")  # normal chat
 CODE_MODEL = os.getenv("CODE_MODEL", "gpt-5-mini")           # code generation only
 
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
