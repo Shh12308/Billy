@@ -7102,38 +7102,38 @@ async def ask_universal(
         # -------------------------
         if stream:
             async def generator():
-                # Start the stream
                 yield sse({"type": "starting"})
 
-                full_text = ""
-                async for token in chat_with_tools_stream(user_id, messages):
-                    full_text += token
-                    yield sse({"type": "token", "text": token})
+        full_text = ""
 
-                # Save AI response AFTER streaming completes
-                await asyncio.to_thread(
-                    lambda: supabase.table("messages").insert({
-                        "id": str(uuid.uuid4()),
-                        "conversation_id": conversation_id,
-                        "user_id": user_id,
-                        "role": "assistant",
-                        "content": full_text,
-                        "created_at": datetime.utcnow().isoformat()
-                    }).execute()
-                )
+        async for token in chat_with_tools_stream(user_id, messages):
+            full_text += token
+            yield sse({"type": "token", "text": token})
 
-                # Done
-                yield sse({"type": "done"})
+        # Save after streaming completes
+        await asyncio.to_thread(
+            lambda: supabase.table("messages").insert({
+                "id": str(uuid.uuid4()),
+                "conversation_id": conversation_id,
+                "user_id": user_id,
+                "role": "assistant",
+                "content": full_text,
+                "created_at": datetime.utcnow().isoformat()
+            }).execute()
+        )
 
-            return StreamingResponse(
-                generator(),
-                media_type="text/event-stream",
-                headers={
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
-                    "X-Accel-Buffering": "no"
-                }
-            )
+        yield sse({"type": "done"})
+
+    # Streaming response returned outside the generator function
+    return StreamingResponse(
+        generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
         else:
             # Non-streaming fallback
             ai_response = await chat_with_tools(user_id, messages)
