@@ -7152,7 +7152,7 @@ async def ask_universal(
         # -------------------------
         elif intent == "image":
     sample_match = re.search(r'(\d+)\s+(image|images)', prompt.lower())
-    # rest of your code indented here    num_samples = min(int(sample_match.group(1)), 4) if sample_match else samples
+    num_samples = min(int(sample_match.group(1)), 4) if sample_match else samples
 
     async def generate_images():
         try:
@@ -7171,8 +7171,11 @@ async def ask_universal(
                 yield sse({"type": "done"})
             except Exception as e:
                 yield sse({"type": "error", "message": str(e)})
-        return StreamingResponse(event_generator(), media_type="text/event-stream",
-                                 headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"})
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"}
+        )
     else:
         return await generate_images()
         
