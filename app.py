@@ -7171,7 +7171,7 @@ async def ask_universal(
                 raise HTTPException(status_code=500, detail="Chat processing failed")
 
             # --- STREAMING RESPONSE ---
-            try:
+try:
     if stream:
         async def generator():
             yield sse({"type": "starting"})
