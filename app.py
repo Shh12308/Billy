@@ -81,6 +81,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+    groq_client = httpx.AsyncClient(
+    base_url="https://api.groq.com/openai/v1",
+    timeout=60
+)
+
 # 1️⃣ Create scheduler (do NOT start here)
 
 ACCESS_TOKEN_EXPIRE_MINUTES = 60  # or whatever you want
@@ -5976,6 +5981,15 @@ async def chat_with_tools(user_id: str, messages: list) -> str:
         # No tool call was needed, just return the AI's direct response
         return response_message["content"]
 
+async def call_groq(payload):
+    r = await groq_client.post(
+        "/chat/completions",
+        headers=get_groq_headers(),
+        json=payload
+    )
+
+    r.raise_for_status()
+    return r.json()
 
 async def vision_history_handler(prompt: str, user_id: str, stream: bool = False):
     """Handle getting vision history"""
