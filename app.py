@@ -7154,8 +7154,8 @@ async def ask_universal(
 
             # --- STREAMING RESPONSE ---
             if stream:
-    async def generator():
-        yield sse({"type": "starting"})
+                async def generator():
+                    yield sse({"type": "starting"})
 
         full_text = ""
 
