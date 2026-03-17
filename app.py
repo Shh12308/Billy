@@ -1377,14 +1377,17 @@ def extract_keywords(text, num_keywords=10):
 
 # Add these endpoints to help debug the frontend connection
 
-    def trim_messages(messages, max_chars=12000):
+def trim_messages(messages, max_chars=12000):
     total = 0
     trimmed = []
 
     for m in reversed(messages):
-        total += len(m.get("content", ""))
+        content = m.get("content", "")
+        total += len(content)
+
         if total > max_chars:
             break
+
         trimmed.insert(0, m)
 
     return trimmed
