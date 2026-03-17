@@ -6999,69 +6999,46 @@ async def ask_universal(
     current_user: dict = Depends(get_current_user_optional)
 ):
     try:
-        # -------------------------
-        # BODY
-        # -------------------------
         body = await request.json()
         prompt = body.get("prompt", "").strip()
         conversation_id = body.get("conversation_id")
         files = body.get("files", [])
-        stream = body.get("stream", True)  # <-- respect stream flag
+        stream = body.get("stream", True)
 
         if not prompt and not files:
             raise HTTPException(status_code=400, detail="prompt or files required")
 
-        # -------------------------
-        # USER HANDLING
-        # -------------------------
+        # --- User handling ---
         identity = current_user or {}
-        user_id = identity.get("user_id")
-
-        if not user_id:
-            user_id = request.cookies.get("guest_id") or str(uuid.uuid4())
+        user_id = identity.get("user_id") or request.cookies.get("guest_id") or str(uuid.uuid4())
+        if not identity.get("user_id") and not request.cookies.get("guest_id"):
             response.set_cookie(
                 key="guest_id",
                 value=user_id,
                 httponly=True,
                 secure=False,
                 samesite="Lax",
-                max_age=60 * 60 * 24 * 7
+                max_age=60*60*24*7
             )
 
-        # -------------------------
-        # CONVERSATION ID FIX
-        # -------------------------
         if not conversation_id:
             conversation_id = str(uuid.uuid4())
 
-        # -------------------------
-        # ENSURE CONVERSATION EXISTS
-        # -------------------------
-        try:
-            conv = await asyncio.to_thread(
-                lambda: supabase.table("conversations")
-                .select("id")
-                .eq("id", conversation_id)
-                .execute()
+        # --- Load conversation & messages ---
+        conv = await asyncio.to_thread(
+            lambda: supabase.table("conversations").select("id").eq("id", conversation_id).execute()
+        )
+        if not conv.data:
+            await asyncio.to_thread(
+                lambda: supabase.table("conversations").insert({
+                    "id": conversation_id,
+                    "user_id": user_id,
+                    "title": prompt[:50] or "New Chat",
+                    "created_at": datetime.utcnow().isoformat(),
+                    "updated_at": datetime.utcnow().isoformat()
+                }).execute()
             )
-            if not conv.data:
-                await asyncio.to_thread(
-                    lambda: supabase.table("conversations")
-                    .insert({
-                        "id": conversation_id,
-                        "user_id": user_id,
-                        "title": prompt[:50] or "New Chat",
-                        "created_at": datetime.utcnow().isoformat(),
-                        "updated_at": datetime.utcnow().isoformat()
-                    })
-                    .execute()
-                )
-        except Exception as e:
-            logger.error(f"Conversation error: {e}")
 
-        # -------------------------
-        # LOAD HISTORY
-        # -------------------------
         history_res = await asyncio.to_thread(
             lambda: supabase.table("messages")
             .select("role, content")
@@ -7072,20 +7049,11 @@ async def ask_universal(
         )
         messages = history_res.data if history_res.data else []
 
-        # -------------------------
-        # APPEND USER MESSAGE
-        # -------------------------
         if files:
             prompt += f"\n\nFiles: {json.dumps(files)}"
 
-        messages.append({
-            "role": "user",
-            "content": prompt
-        })
+        messages.append({"role": "user", "content": prompt})
 
-        # -------------------------
-        # SAVE USER MESSAGE
-        # -------------------------
         await asyncio.to_thread(
             lambda: supabase.table("messages").insert({
                 "id": str(uuid.uuid4()),
@@ -7097,43 +7065,39 @@ async def ask_universal(
             }).execute()
         )
 
-        # -------------------------
-        # STREAM OR NON-STREAM RESPONSE
-        # -------------------------
-         try:
-    if stream:
-        async def generator():
-            yield sse({"type": "starting"})
+        # --- Streaming path ---
+        if stream:
+            async def generator():
+                yield sse({"type": "starting"})
+                full_text = ""
+                async for token in chat_with_tools_stream(user_id, messages):
+                    full_text += token
+                    yield sse({"type": "token", "text": token})
 
-            full_text = ""
-            async for token in chat_with_tools_stream(user_id, messages):
-                full_text += token
-                yield sse({"type": "token", "text": token})
+                # Save after streaming
+                await asyncio.to_thread(
+                    lambda: supabase.table("messages").insert({
+                        "id": str(uuid.uuid4()),
+                        "conversation_id": conversation_id,
+                        "user_id": user_id,
+                        "role": "assistant",
+                        "content": full_text,
+                        "created_at": datetime.utcnow().isoformat()
+                    }).execute()
+                )
+                yield sse({"type": "done"})
 
-            # save AFTER streaming completes
-            await asyncio.to_thread(
-                lambda: supabase.table("messages").insert({
-                    "id": str(uuid.uuid4()),
-                    "conversation_id": conversation_id,
-                    "user_id": user_id,
-                    "role": "assistant",
-                    "content": full_text,
-                    "created_at": datetime.utcnow().isoformat()
-                }).execute()
+            return StreamingResponse(
+                generator(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no"
+                }
             )
 
-            yield sse({"type": "done"})
-
-        return StreamingResponse(
-            generator(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no"
-            }
-        )
-    else:
+        # --- Non-streaming path ---
         assistant_reply = await chat_with_tools(user_id, messages)
         await asyncio.to_thread(
             lambda: supabase.table("messages").insert({
@@ -7152,9 +7116,11 @@ async def ask_universal(
             "user_id": user_id,
             "type": "chat"
         }
-except Exception as e:
-    logger.error(f"ask_universal error: {e}")
-    raise HTTPException(status_code=500, detail=str(e))
+
+    except Exception as e:
+        logger.error(f"ask_universal error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+        
     
         # -------------------------
         # INTENT DETECTION
