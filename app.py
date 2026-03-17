@@ -7006,7 +7006,7 @@ async def ask_universal(
         prompt = body.get("prompt", "").strip()
         conversation_id = body.get("conversation_id")
         files = body.get("files", [])
-        stream = body.get("stream", True) 
+        stream = body.get("stream", True)  # <-- respect stream flag
 
         if not prompt and not files:
             raise HTTPException(status_code=400, detail="prompt or files required")
@@ -7015,15 +7015,10 @@ async def ask_universal(
         # USER HANDLING
         # -------------------------
         identity = current_user or {}
-
         user_id = identity.get("user_id")
 
-        if user_id:
-            pass
-        elif request.cookies.get("guest_id"):
-            user_id = request.cookies.get("guest_id")
-        else:
-            user_id = str(uuid.uuid4())
+        if not user_id:
+            user_id = request.cookies.get("guest_id") or str(uuid.uuid4())
             response.set_cookie(
                 key="guest_id",
                 value=user_id,
@@ -7049,7 +7044,6 @@ async def ask_universal(
                 .eq("id", conversation_id)
                 .execute()
             )
-
             if not conv.data:
                 await asyncio.to_thread(
                     lambda: supabase.table("conversations")
@@ -7076,7 +7070,6 @@ async def ask_universal(
             .limit(20)
             .execute()
         )
-
         messages = history_res.data if history_res.data else []
 
         # -------------------------
@@ -7105,31 +7098,56 @@ async def ask_universal(
         )
 
         # -------------------------
-        # CALL AI
+        # STREAM OR NON-STREAM RESPONSE
         # -------------------------
-        ai_response = await chat_with_tools(user_id, messages)
+        if stream:
+            async def generator():
+                # Start the stream
+                yield sse({"type": "starting"})
 
-        # -------------------------
-        # SAVE AI RESPONSE
-        # -------------------------
-        await asyncio.to_thread(
-            lambda: supabase.table("messages").insert({
-                "id": str(uuid.uuid4()),
-                "conversation_id": conversation_id,
-                "user_id": user_id,
-                "role": "assistant",
-                "content": ai_response,
-                "created_at": datetime.utcnow().isoformat()
-            }).execute()
-        )
+                full_text = ""
+                async for token in chat_with_tools_stream(user_id, messages):
+                    full_text += token
+                    yield sse({"type": "token", "text": token})
 
-        # -------------------------
-        # RETURN
-        # -------------------------
-        return {
-            "response": ai_response,
-            "conversation_id": conversation_id
-        }
+                # Save AI response AFTER streaming completes
+                await asyncio.to_thread(
+                    lambda: supabase.table("messages").insert({
+                        "id": str(uuid.uuid4()),
+                        "conversation_id": conversation_id,
+                        "user_id": user_id,
+                        "role": "assistant",
+                        "content": full_text,
+                        "created_at": datetime.utcnow().isoformat()
+                    }).execute()
+                )
+
+                # Done
+                yield sse({"type": "done"})
+
+            return StreamingResponse(
+                generator(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no"
+                }
+            )
+        else:
+            # Non-streaming fallback
+            ai_response = await chat_with_tools(user_id, messages)
+            await asyncio.to_thread(
+                lambda: supabase.table("messages").insert({
+                    "id": str(uuid.uuid4()),
+                    "conversation_id": conversation_id,
+                    "user_id": user_id,
+                    "role": "assistant",
+                    "content": ai_response,
+                    "created_at": datetime.utcnow().isoformat()
+                }).execute()
+            )
+            return {"response": ai_response, "conversation_id": conversation_id}
 
     except Exception as e:
         logger.error(f"ask_universal error: {e}")
