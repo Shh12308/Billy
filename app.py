@@ -5862,44 +5862,37 @@ async def check_user_memory(user_id: str, last_message: str):
 
 async def chat_with_tools(user_id: str, messages: list) -> str:
 
+    # -------------------------
+    # Clean messages
+    # -------------------------
     clean_messages = []
+    for m in messages:
+        clean_messages.append({
+            "role": m.get("role", "user"),
+            "content": m.get("content", "")
+        })
 
-for m in messages:
-    clean_messages.append({
-        "role": m.get("role", "user"),
-        "content": m.get("content", "")
-    })
-
-messages = clean_messages
-
-    # -------------------------
-    # Ensure last message content exists
-    # -------------------------
-    last_message = next((m.get("content","") for m in reversed(messages)), "")
+    messages = clean_messages
 
     # -------------------------
-    # Check user memory
+    # Get last message
+    # -------------------------
+    last_message = next(
+        (m.get("content", "") for m in reversed(messages)),
+        ""
+    )
+
+    # -------------------------
+    # Check memory
     # -------------------------
     user_memory = await check_user_memory(user_id, last_message)
 
     if user_memory:
-        system_prompt = f"User information: {user_memory['context']}"
-        messages = [{"role": "system", "content": system_prompt}] + messages
-
-    # -------------------------
-    # Sanitize messages
-    # -------------------------
-    sanitized = []
-
-    for msg in messages:
-        if "content" not in msg and "files" in msg:
-            msg["content"] = json.dumps({"files": msg["files"]})
-        elif "content" not in msg:
-            msg["content"] = ""
-
-        sanitized.append(msg)
-
-    messages = sanitized
+        system_prompt = f"User info: {user_memory['context']}"
+        messages.insert(0, {
+            "role": "system",
+            "content": system_prompt
+        })
 
     # -------------------------
     # Build payload
@@ -5907,16 +5900,15 @@ messages = clean_messages
     payload = {
         "model": CHAT_MODEL,
         "messages": messages,
-        "max_tokens": 81500
+        "max_tokens": 2000  # ✅ SAFE VALUE
     }
 
     headers = get_groq_headers()
 
     # -------------------------
-    # CALL GROQ
+    # FIRST CALL
     # -------------------------
     async with httpx.AsyncClient(timeout=60) as client:
-
         r = await client.post(
             "https://api.groq.com/openai/v1/chat/completions",
             headers=headers,
@@ -5927,73 +5919,65 @@ messages = clean_messages
             print("GROQ ERROR:", r.text)
 
         r.raise_for_status()
-
         data = r.json()
 
     response_message = data["choices"][0]["message"]
 
-    return response_message["content"]
-    
-    # --- First API Call ---
-    async with httpx.AsyncClient(timeout=30) as client:
-        r = await client.post(GROQ_URL, headers=headers, json=payload)
-        r.raise_for_status()
-        response_data = r.json()
-
-    response_message = response_data["choices"][0]["message"]
-    
-    # Check if the model wants to call a tool
+    # -------------------------
+    # TOOL HANDLING
+    # -------------------------
     if response_message.get("tool_calls"):
-        # Append the assistant's response (which includes the tool call request) to the message history
+
         messages.append(response_message)
 
-        # Execute each tool call the AI requested
         for tool_call in response_message["tool_calls"]:
-            function_name = tool_call["function"]["name"]
-            function_args = json.loads(tool_call["function"]["arguments"])
+            name = tool_call["function"]["name"]
+            args = json.loads(tool_call["function"]["arguments"])
 
-            if function_name == "web_search":
-                # Execute the search
-                result = await duckduckgo_search(function_args["query"])
-            elif function_name == "run_code":
-                # Execute the code
-                result = await run_code_safely(function_args["task"])
-            elif function_name == "solve_math":
-                # Solve the math problem
-                result = await solve_math(function_args["problem"])
-            elif function_name == "tell_joke":
-                # Tell a joke
-                result = await tell_joke(function_args.get("category", "general"))
+            if name == "web_search":
+                result = await duckduckgo_search(args["query"])
+            elif name == "run_code":
+                result = await run_code_safely(args["task"])
+            elif name == "solve_math":
+                result = await solve_math(args["problem"])
+            elif name == "tell_joke":
+                result = await tell_joke(args.get("category", "general"))
             else:
-                result = {"error": f"Unknown tool: {function_name}"}
+                result = {"error": f"Unknown tool: {name}"}
 
-            # Append the result of the tool execution back to the message history
             messages.append({
                 "tool_call_id": tool_call["id"],
                 "role": "tool",
-                "name": function_name,
-                "content": json.dumps(result) # Tool results must be a string
+                "name": name,
+                "content": json.dumps(result)
             })
 
-        # --- Second API Call ---
-        # Now, send the entire conversation history (including the tool results) back to the AI
-        # to get the final, synthesized answer.
+        # -------------------------
+        # SECOND CALL (final answer)
+        # -------------------------
         final_payload = {
             "model": CHAT_MODEL,
             "messages": messages,
-            "max_tokens": 1500, 
+            "max_tokens": 1500
         }
-        
-        async with httpx.AsyncClient(timeout=60) as client: # Longer timeout for the final call
-            r = await client.post(GROQ_URL, headers=headers, json=final_payload)
+
+        async with httpx.AsyncClient(timeout=60) as client:
+            r = await client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers=headers,
+                json=final_payload
+            )
+
             r.raise_for_status()
-            final_response_data = r.json()
+            final_data = r.json()
 
-        return final_response_data["choices"][0]["message"]["content"]
-    else:
-        # No tool call was needed, just return the AI's direct response
-        return response_message["content"]
+        return final_data["choices"][0]["message"]["content"]
 
+    # -------------------------
+    # NO TOOLS → RETURN DIRECT
+    # -------------------------
+    return response_message.get("content", "")
+    
 async def call_groq(payload):
     r = await groq_client.post(
         "/chat/completions",
