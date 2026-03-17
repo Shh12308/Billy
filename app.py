@@ -1163,7 +1163,9 @@ WATERMARK_OPACITY = float(os.getenv("WATERMARK_OPACITY", "0.7"))
 # Quick log so you can confirm key presence without printing the key itself
 logger.info(f"GROQ key present: {bool(GROQ_API_KEY)}")
 logger.info(f"RunwayML key present: {bool(RUNWAYML_API_KEY)}")
-
+max_tokens = 1000          # AI response
+user_input_limit = 1000    # tokens (~750 words)
+history_limit = 3000       # tokens
 # -------------------
 # Models
 # -------------------
@@ -1375,6 +1377,18 @@ def extract_keywords(text, num_keywords=10):
 
 # Add these endpoints to help debug the frontend connection
 
+    def trim_messages(messages, max_chars=12000):
+    total = 0
+    trimmed = []
+
+    for m in reversed(messages):
+        total += len(m.get("content", ""))
+        if total > max_chars:
+            break
+        trimmed.insert(0, m)
+
+    return trimmed
+    
 @app.get("/debug/frontend-config")
 async def debug_frontend_config():
     """Debug endpoint to check frontend configuration"""
