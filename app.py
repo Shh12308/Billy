@@ -7150,43 +7150,32 @@ async def ask_universal(
         # -------------------------
         # IMAGE GENERATION
         # -------------------------
-        elif intent == "image":
-            # Extract sample count from prompt
-            sample_match = re.search(r'(\d+)\s+(image|images)', prompt.lower())
-            if sample_match:
-                num_samples = min(int(sample_match.group(1)), 4)  # Cap at 4 images
-            else:
-                num_samples = samples  # Use provided samples or default to 1
-            
-            if stream:
-                async def event_generator():
-                    yield sse({"type": "starting", "message": "Generating image..."})
-                    try:
-                        # Generate the image
-                        result = await _generate_image_core(prompt, num_samples, user_id, return_base64=False)
-                        
-                        yield sse({
-                            "type": "images",
-                            "provider": result["provider"],
-                            "images": result["images"]  # Already in the correct format
-                        })
-                        yield sse({"type": "done"})
-                    except Exception as e:
-                        logger.error(f"Image generation failed: {e}")
-                        yield sse({"type": "error", "message": str(e)})
-                
-                return StreamingResponse(
-                    event_generator(),
-                    media_type="text/event-stream",
-                    headers={
-                        "Cache-Control": "no-cache",
-                        "Connection": "keep-alive",
-                        "X-Accel-Buffering": "no"
-                    }
-                )
-            else:
-                # Non-streaming version
-                return await _generate_image_core(prompt, num_samples, user_id, return_base64=False)
+elif intent == "image":
+    # Determine number of images
+    sample_match = re.search(r'(\d+)\s+(image|images)', prompt.lower())
+    num_samples = min(int(sample_match.group(1)), 4) if sample_match else samples
+
+    async def generate_images():
+        try:
+            result = await _generate_image_core(prompt, num_samples, user_id, return_base64=False)
+            return result
+        except Exception as e:
+            logger.error(f"Image generation failed: {e}")
+            raise HTTPException(status_code=500, detail="Image generation failed")
+
+    if stream:
+        async def event_generator():
+            yield sse({"type": "starting", "message": "Generating images..."})
+            try:
+                result = await generate_images()
+                yield sse({"type": "images", "provider": result["provider"], "images": result["images"]})
+                yield sse({"type": "done"})
+            except Exception as e:
+                yield sse({"type": "error", "message": str(e)})
+        return StreamingResponse(event_generator(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"})
+    else:
+        return await generate_images()
 
         # -------------------------
         # MATH SOLVING
@@ -7318,42 +7307,40 @@ async def ask_universal(
         # VIDEO GENERATION (Fixed indentation)
         # -------------------------
         elif intent == "video":
-            # Extract sample count from prompt
-            sample_match = re.search(r'(\d+)\s+(video|videos)', prompt.lower())
-            if sample_match:
-                num_samples = min(int(sample_match.group(1)), 2)  # Cap at 2 videos to manage cost/time
-            else:
-                num_samples = 1  # Default to 1 video
-            
-            if stream:
-                async def event_generator():
-                    yield sse({"type": "starting", "message": "Generating video with Pixverse..."})
-                    try:
-                        # Call our new helper function
-                        result = await _generate_video_with_pixverse_replicate(prompt, num_samples)
-                        
-                        yield sse({
-                            "type": "videos",
-                            "provider": result["provider"],
-                            "videos": result["videos"]
-                        })
-                        yield sse({"type": "done"})
-                    except Exception as e:
-                        logger.error(f"Video generation with Pixverse failed: {e}")
-                        yield sse({"type": "error", "message": str(e)})
-                
-                return StreamingResponse(
-                    event_generator(),
-                    media_type="text/event-stream",
-                    headers={
-                        "Cache-Control": "no-cache",
-                        "Connection": "keep-alive",
-                        "X-Accel-Buffering": "no"
-                    }
-                )
-            else:
-                # Non-streaming version
-                return await _generate_video_with_pixverse_replicate(prompt, num_samples)
+    # Determine number of videos to generate
+    sample_match = re.search(r'(\d+)\s+(video|videos)', prompt.lower())
+    num_samples = min(int(sample_match.group(1)), 2) if sample_match else 1
+
+    async def generate_videos():
+        try:
+            # Call your Replicate helper
+            result = await _generate_video_with_replicate(prompt, num_samples)
+            # result should be a dict: {"provider": "replicate", "videos": [...]}
+            return result
+        except Exception as e:
+            logger.error(f"Replicate video generation failed: {e}")
+            raise HTTPException(status_code=500, detail="Video generation failed")
+
+    if stream:
+        async def event_generator():
+            yield sse({"type": "starting", "message": "Generating video with Replicate..."})
+            try:
+                result = await generate_videos()
+                yield sse({"type": "videos", "provider": result["provider"], "videos": result["videos"]})
+                yield sse({"type": "done"})
+            except Exception as e:
+                yield sse({"type": "error", "message": str(e)})
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
+    else:
+        return await generate_videos()
                 
         # -------------------------
         # VISION ANALYSIS (Fixed file handling)
@@ -7456,101 +7443,50 @@ async def ask_universal(
         # IMG2VID (IMAGE TO VIDEO) (Fixed file handling)
         # -------------------------
         elif intent == "img2vid" and files:
-            if not files or len(files) == 0:
-                raise HTTPException(400, "No files provided for img2vid")
-            
-            # Get the first image file
-            image_file = files[0]
-            image_url = image_file.get("url")
-            
-            if not image_url:
-                raise HTTPException(400, "Invalid image file")
-            
-            # Extract duration from prompt if specified
-            duration = 4  # Default duration
-            duration_match = re.search(r'duration[:\s]+(\d+)', prompt.lower())
-            if duration_match:
-                duration = min(max(int(duration_match.group(1)), 1), 14)  # Between 1-14 seconds
-            
-            if stream:
-                async def event_generator():
-                    yield sse({"type": "starting", "message": "Creating video from image..."})
-                    temp_path = None
-                    try:
-                        # Download the image from the URL
-                        async with httpx.AsyncClient(timeout=30) as client:
-                            response = await client.get(image_url)
-                            response.raise_for_status()
-                            image_bytes = response.content
-                        
-                        # Create a temporary file
-                        with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as temp_file:
-                            temp_file.write(image_bytes)
-                            temp_path = temp_file.name
-                        
-                        # Create a mock UploadFile object
-                        from fastapi import UploadFile
-                        image_upload = UploadFile(filename="image.png", file=open(temp_path, "rb"))
-                        
-                        # Generate video from image
-                        result = await img2vid(request, image_upload, prompt, duration)
-                        
-                        # Close the file before cleanup
-                        image_upload.file.close()
-                        
-                        yield sse({
-                            "type": "video_result",
-                            "provider": result.get("provider", "runwayml-gen2-img2vid"),
-                            "video": result.get("video", {})
-                        })
-                        yield sse({"type": "done"})
-                    except Exception as e:
-                        logger.error(f"Img2vid failed: {e}")
-                        yield sse({"type": "error", "message": str(e)})
-                    finally:
-                        # Clean up the temporary file
-                        if temp_path and os.path.exists(temp_path):
-                            os.unlink(temp_path)
-                
-                return StreamingResponse(
-                    event_generator(),
-                    media_type="text/event-stream",
-                    headers={
-                        "Cache-Control": "no-cache",
-                        "Connection": "keep-alive",
-                        "X-Accel-Buffering": "no"
-                    }
-                )
-            else:
-                # Non-streaming version
-                temp_path = None
-                try:
-                    # Download the image from the URL
-                    async with httpx.AsyncClient(timeout=30) as client:
-                        response = await client.get(image_url)
-                        response.raise_for_status()
-                        image_bytes = response.content
-                    
-                    # Create a temporary file
-                    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as temp_file:
-                        temp_file.write(image_bytes)
-                        temp_path = temp_file.name
-                    
-                    # Create a mock UploadFile object
-                    from fastapi import UploadFile
-                    image_upload = UploadFile(filename="image.png", file=open(temp_path, "rb"))
-                    
-                    # Generate video from image
-                    result = await img2vid(request, image_upload, prompt, duration)
-                    
-                    # Close the file before cleanup
-                    image_upload.file.close()
-                    
-                    return result
-                finally:
-                    # Clean up the temporary file
-                    if temp_path and os.path.exists(temp_path):
-                        os.unlink(temp_path)
+    if not files:
+        raise HTTPException(400, "No files provided for img2vid")
+
+    image_url = files[0].get("url")
+    if not image_url:
+        raise HTTPException(400, "Invalid image file")
+
+    duration_match = re.search(r'duration[:\s]+(\d+)', prompt.lower())
+    duration = min(max(int(duration_match.group(1)), 1), 14) if duration_match else 4
+
+    async def generate_img2vid():
+        temp_path = None
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.get(image_url)
+                resp.raise_for_status()
+                image_bytes = resp.content
+
+            with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
+                tmp.write(image_bytes)
+                temp_path = tmp.name
+
+            from fastapi import UploadFile
+            image_upload = UploadFile(filename="image.png", file=open(temp_path, "rb"))
+            result = await img2vid(request, image_upload, prompt, duration)
+            image_upload.file.close()
+            return result
+        finally:
+            if temp_path and os.path.exists(temp_path):
+                os.unlink(temp_path)
+
+    if stream:
+        async def event_generator():
+            yield sse({"type": "starting", "message": "Creating video from image..."})
+            try:
+                result = await generate_img2vid()
+                yield sse({"type": "video_result", "provider": result.get("provider"), "video": result.get("video")})
+                yield sse({"type": "done"})
+            except Exception as e:
+                yield sse({"type": "error", "message": str(e)})
+        return StreamingResponse(event_generator(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"})
+    else:
+        return await generate_img2vid()
 
         # -------------------------
         # CODE GENERATION
