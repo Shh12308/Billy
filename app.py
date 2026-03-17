@@ -7147,67 +7147,32 @@ async def ask_universal(
                 "type": "chat"
             }
 
-        # -------------------------
+              # -------------------------
         # IMAGE GENERATION
         # -------------------------
         elif intent == "image":
-    # Determine number of images
-             sample_match = re.search(r'(\d+)\s+(image|images)', prompt.lower())
-             num_samples = min(int(sample_match.group(1)), 4) if sample_match else samples
+            # Determine number of images
+            sample_match = re.search(r'(\d+)\s+(image|images)', prompt.lower())
+            num_samples = min(int(sample_match.group(1)), 4) if sample_match else samples
 
-    async def generate_images():
-        try:
-            result = await _generate_image_core(prompt, num_samples, user_id, return_base64=False)
-            return result
-        except Exception as e:
-            logger.error(f"Image generation failed: {e}")
-            raise HTTPException(status_code=500, detail="Image generation failed")
+            async def generate_images():
+                try:
+                    result = await _generate_image_core(prompt, num_samples, user_id, return_base64=False)
+                    return result
+                except Exception as e:
+                    logger.error(f"Image generation failed: {e}")
+                    raise HTTPException(status_code=500, detail="Image generation failed")
 
-    if stream:
-        async def event_generator():
-            yield sse({"type": "starting", "message": "Generating images..."})
-            try:
-                result = await generate_images()
-                yield sse({"type": "images", "provider": result["provider"], "images": result["images"]})
-                yield sse({"type": "done"})
-            except Exception as e:
-                yield sse({"type": "error", "message": str(e)})
-
-        return StreamingResponse(
-            event_generator(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no"
-            }
-        )
-    else:
-        return await generate_images()
-        
-        # -------------------------
-        # MATH SOLVING
-        # -------------------------
-        elif intent == "math":
             if stream:
                 async def event_generator():
-                    yield sse({"type": "starting", "message": "Solving math problem..."})
+                    yield sse({"type": "starting", "message": "Generating images..."})
                     try:
-                        # Extract the math problem from the prompt
-                        problem = prompt
-                        result = await solve_math(problem)
-                        
-                        yield sse({
-                            "type": "math_result",
-                            "problem": result.get("problem"),
-                            "result": result.get("result"),
-                            "steps": result.get("steps", [])
-                        })
+                        result = await generate_images()
+                        yield sse({"type": "images", "provider": result["provider"], "images": result["images"]})
                         yield sse({"type": "done"})
                     except Exception as e:
-                        logger.error(f"Math solving failed: {e}")
                         yield sse({"type": "error", "message": str(e)})
-                
+
                 return StreamingResponse(
                     event_generator(),
                     media_type="text/event-stream",
@@ -7218,7 +7183,39 @@ async def ask_universal(
                     }
                 )
             else:
-                # Non-streaming version
+                return await generate_images()
+
+        # -------------------------
+        # MATH SOLVING
+        # -------------------------
+        elif intent == "math":
+            if stream:
+                async def event_generator():
+                    yield sse({"type": "starting", "message": "Solving math problem..."})
+                    try:
+                        problem = prompt
+                        result = await solve_math(problem)
+                        yield sse({
+                            "type": "math_result",
+                            "problem": result.get("problem"),
+                            "result": result.get("result"),
+                            "steps": result.get("steps", [])
+                        })
+                        yield sse({"type": "done"})
+                    except Exception as e:
+                        logger.error(f"Math solving failed: {e}")
+                        yield sse({"type": "error", "message": str(e)})
+
+                return StreamingResponse(
+                    event_generator(),
+                    media_type="text/event-stream",
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive",
+                        "X-Accel-Buffering": "no"
+                    }
+                )
+            else:
                 result = await solve_math(prompt)
                 return {
                     "problem": result.get("problem"),
