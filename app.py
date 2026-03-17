@@ -5994,7 +5994,39 @@ async def chat_with_tools(user_id: str, messages: list) -> str:
     # NO TOOLS → RETURN DIRECT
     # -------------------------
     return response_message.get("content", "")
-    
+
+async def chat_with_tools_stream(user_id, messages):
+    payload = {
+        "model": CHAT_MODEL,
+        "messages": messages,
+        "stream": True
+    }
+
+    async with httpx.AsyncClient(timeout=60) as client:
+        async with client.stream(
+            "POST",
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers=get_groq_headers(),
+            json=payload
+        ) as response:
+
+            async for line in response.aiter_lines():
+                if not line.startswith("data:"):
+                    continue
+
+                data = line.replace("data:", "").strip()
+
+                if data == "[DONE]":
+                    break
+
+                try:
+                    json_data = json.loads(data)
+                    delta = json_data["choices"][0]["delta"]
+                    if "content" in delta:
+                        yield delta["content"]
+                except:
+                    continue
+                    
 async def call_groq(payload):
     r = await groq_client.post(
         "/chat/completions",
@@ -7122,22 +7154,38 @@ async def ask_universal(
 
             # --- STREAMING RESPONSE ---
             if stream:
-                async def generator():
-                    yield sse({"type": "starting"})
-                    for char in assistant_reply:
-                        yield sse({"type": "token", "text": char})
-                        await asyncio.sleep(0.005)
-                    yield sse({"type": "done"})
+    async def generator():
+        yield sse({"type": "starting"})
 
-                return StreamingResponse(
-                    generator(),
-                    media_type="text/event-stream",
-                    headers={
-                        "Cache-Control": "no-cache",
-                        "Connection": "keep-alive",
-                        "X-Accel-Buffering": "no"
-                    }
-                )
+        full_text = ""
+
+        async for token in chat_with_tools_stream(user_id, messages):
+            full_text += token
+            yield sse({"type": "token", "text": token})
+
+        # save AFTER streaming completes
+        await asyncio.to_thread(
+            lambda: supabase.table("messages").insert({
+                "id": str(uuid.uuid4()),
+                "conversation_id": conversation_id,
+                "user_id": user_id,
+                "role": "assistant",
+                "content": full_text,
+                "created_at": datetime.utcnow().isoformat()
+            }).execute()
+        )
+
+        yield sse({"type": "done"})
+
+    return StreamingResponse(
+        generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
 
             # --- NON-STREAMING RESPONSE ---
             return {
