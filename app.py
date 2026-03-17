@@ -7313,8 +7313,8 @@ async def ask_universal(
         # -------------------------
         elif intent == "video":
     # Determine number of videos to generate
-    sample_match = re.search(r'(\d+)\s+(video|videos)', prompt.lower())
-    num_samples = min(int(sample_match.group(1)), 2) if sample_match else 1
+             sample_match = re.search(r'(\d+)\s+(video|videos)', prompt.lower())
+             num_samples = min(int(sample_match.group(1)), 2) if sample_match else 1
 
     async def generate_videos():
         try:
@@ -7448,8 +7448,8 @@ async def ask_universal(
         # IMG2VID (IMAGE TO VIDEO) (Fixed file handling)
         # -------------------------
         elif intent == "img2vid" and files:
-    if not files:
-        raise HTTPException(400, "No files provided for img2vid")
+             if not files:
+             raise HTTPException(400, "No files provided for img2vid")
 
     image_url = files[0].get("url")
     if not image_url:
