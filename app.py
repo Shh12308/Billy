@@ -7151,9 +7151,8 @@ async def ask_universal(
         # IMAGE GENERATION
         # -------------------------
         elif intent == "image":
-    # Determine number of images
     sample_match = re.search(r'(\d+)\s+(image|images)', prompt.lower())
-    num_samples = min(int(sample_match.group(1)), 4) if sample_match else samples
+    # rest of your code indented here    num_samples = min(int(sample_match.group(1)), 4) if sample_match else samples
 
     async def generate_images():
         try:
