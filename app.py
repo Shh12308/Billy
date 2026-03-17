@@ -6965,47 +6965,32 @@ async def ask_universal(
 ):
     try:
         # -------------------------
-        # BODY & STREAM FLAG
+        # BODY
         # -------------------------
         body = await request.json()
         prompt = body.get("prompt", "").strip()
         conversation_id = body.get("conversation_id")
-        stream = body.get("stream", False)
         files = body.get("files", [])
-        tts = body.get("tts", False)
-        samples = max(1, int(body.get("samples", 1)))
 
         if not prompt and not files:
             raise HTTPException(status_code=400, detail="prompt or files required")
 
-                         # -------------------------
-        # USER & CONVERSATION
+        # -------------------------
+        # USER HANDLING
         # -------------------------
         identity = current_user or {}
 
-        is_authenticated = identity.get("is_authenticated", False)
         user_id = identity.get("user_id")
-        is_guest = identity.get("is_guest", False)
-        guest_id = identity.get("guest_id")
 
-        # If authenticated user exists → use it
         if user_id:
             pass
-
-        # If guest → use guest_id as user_id
-        elif is_guest and guest_id:
-            user_id = guest_id
-
-        # If nothing exists → create new guest id
+        elif request.cookies.get("guest_id"):
+            user_id = request.cookies.get("guest_id")
         else:
             user_id = str(uuid.uuid4())
-            guest_id = user_id
-            is_guest = True
-
-        if is_guest and guest_id:
             response.set_cookie(
                 key="guest_id",
-                value=guest_id,
+                value=user_id,
                 httponly=True,
                 secure=False,
                 samesite="Lax",
@@ -7015,63 +7000,105 @@ async def ask_universal(
         # -------------------------
         # CONVERSATION ID FIX
         # -------------------------
-        if conversation_id:
-            uuid_pattern = re.compile(
-                r'^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$',
-                re.IGNORECASE
-            )
-            if not uuid_pattern.match(conversation_id):
-                conversation_id = str(uuid.uuid4())
-        else:
+        if not conversation_id:
             conversation_id = str(uuid.uuid4())
 
         # -------------------------
         # ENSURE CONVERSATION EXISTS
         # -------------------------
         try:
-            conv_response = await asyncio.to_thread(
+            conv = await asyncio.to_thread(
                 lambda: supabase.table("conversations")
-                .select("id, title")
+                .select("id")
                 .eq("id", conversation_id)
                 .execute()
             )
 
-            if not conv_response.data:
+            if not conv.data:
                 await asyncio.to_thread(
                     lambda: supabase.table("conversations")
                     .insert({
                         "id": conversation_id,
                         "user_id": user_id,
-                        "title": prompt[:50] if len(prompt) > 50 else "New Chat",
+                        "title": prompt[:50] or "New Chat",
                         "created_at": datetime.utcnow().isoformat(),
                         "updated_at": datetime.utcnow().isoformat()
                     })
                     .execute()
                 )
-
         except Exception as e:
-            logger.error(f"Failed to check/create conversation: {e}")
+            logger.error(f"Conversation error: {e}")
+
+        # -------------------------
+        # LOAD HISTORY
+        # -------------------------
+        history_res = await asyncio.to_thread(
+            lambda: supabase.table("messages")
+            .select("role, content")
+            .eq("conversation_id", conversation_id)
+            .order("created_at")
+            .limit(20)
+            .execute()
+        )
+
+        messages = history_res.data if history_res.data else []
+
+        # -------------------------
+        # APPEND USER MESSAGE
+        # -------------------------
+        if files:
+            prompt += f"\n\nFiles: {json.dumps(files)}"
+
+        messages.append({
+            "role": "user",
+            "content": prompt
+        })
+
         # -------------------------
         # SAVE USER MESSAGE
         # -------------------------
-        message_content = prompt
-        if files:
-            # If files are provided, include them in the message
-            message_content = json.dumps({
-                "text": prompt,
-                "files": files
-            })
-
         await asyncio.to_thread(
             lambda: supabase.table("messages").insert({
                 "id": str(uuid.uuid4()),
                 "conversation_id": conversation_id,
                 "user_id": user_id,
                 "role": "user",
-                "content": message_content,
+                "content": prompt,
                 "created_at": datetime.utcnow().isoformat()
             }).execute()
         )
+
+        # -------------------------
+        # CALL AI
+        # -------------------------
+        ai_response = await chat_with_tools(user_id, messages)
+
+        # -------------------------
+        # SAVE AI RESPONSE
+        # -------------------------
+        await asyncio.to_thread(
+            lambda: supabase.table("messages").insert({
+                "id": str(uuid.uuid4()),
+                "conversation_id": conversation_id,
+                "user_id": user_id,
+                "role": "assistant",
+                "content": ai_response,
+                "created_at": datetime.utcnow().isoformat()
+            }).execute()
+        )
+
+        # -------------------------
+        # RETURN
+        # -------------------------
+        return {
+            "response": ai_response,
+            "conversation_id": conversation_id
+        }
+
+    except Exception as e:
+        logger.error(f"ask_universal error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+        
 
         # -------------------------
         # INTENT DETECTION
