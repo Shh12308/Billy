@@ -7157,11 +7157,11 @@ async def ask_universal(
                 async def generator():
                     yield sse({"type": "starting"})
 
-        full_text = ""
+                    full_text = ""
 
-        async for token in chat_with_tools_stream(user_id, messages):
-            full_text += token
-            yield sse({"type": "token", "text": token})
+                    async for token in chat_with_tools_stream(user_id, messages):
+                        full_text += token
+                        yield sse({"type": "token", "text": token})
 
         # save AFTER streaming completes
         await asyncio.to_thread(
