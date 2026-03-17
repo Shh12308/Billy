@@ -7172,16 +7172,18 @@ async def ask_universal(
 
             # --- STREAMING RESPONSE ---
             if stream:
-                async def generator():
-                    yield sse({"type": "starting"})
+    async def generator():
+        # Initial "starting" event
+        yield sse({"type": "starting"})
 
-                    full_text = ""
+        full_text = ""
 
-                    async for token in chat_with_tools_stream(user_id, messages):
-                        full_text += token
-                        yield sse({"type": "token", "text": token})
+        # Stream tokens from chat_with_tools_stream
+        async for token in chat_with_tools_stream(user_id, messages):
+            full_text += token
+            yield sse({"type": "token", "text": token})
 
-        # save AFTER streaming completes
+        # Save AFTER streaming completes
         await asyncio.to_thread(
             lambda: supabase.table("messages").insert({
                 "id": str(uuid.uuid4()),
@@ -7193,8 +7195,10 @@ async def ask_universal(
             }).execute()
         )
 
+        # Final "done" event
         yield sse({"type": "done"})
 
+    # Return the streaming response outside the generator function
     return StreamingResponse(
         generator(),
         media_type="text/event-stream",
@@ -7205,14 +7209,27 @@ async def ask_universal(
         }
     )
 
-            # --- NON-STREAMING RESPONSE ---
-            return {
-                "status": "completed",
-                "reply": assistant_reply,
-                "conversation_id": conversation_id,
-                "user_id": user_id,
-                "type": "chat"
-            }
+# --- NON-STREAMING RESPONSE ---
+else:
+    assistant_reply = await chat_with_tools(user_id, messages)
+    await asyncio.to_thread(
+        lambda: supabase.table("messages").insert({
+            "id": str(uuid.uuid4()),
+            "conversation_id": conversation_id,
+            "user_id": user_id,
+            "role": "assistant",
+            "content": assistant_reply,
+            "created_at": datetime.utcnow().isoformat()
+        }).execute()
+    )
+
+    return {
+        "status": "completed",
+        "reply": assistant_reply,
+        "conversation_id": conversation_id,
+        "user_id": user_id,
+        "type": "chat"
+    }
 
         # -------------------------
         # IMAGE GENERATION
