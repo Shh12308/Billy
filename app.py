@@ -7351,99 +7351,82 @@ async def ask_universal(
         # VISION ANALYSIS (Fixed file handling)
         # -------------------------
         elif intent == "vision" and files:
-             if not files or len(files) == 0:
-                raise HTTPException(400, "No files provided for vision analysis")
-            
-            # Get the first image file
-            image_file = files[0]
-            image_url = image_file.get("url")
-            
-            if not image_url:
-                raise HTTPException(400, "Invalid image file")
-            
-            if stream:
-                async def event_generator():
-                    yield sse({"type": "starting", "message": "Analyzing image..."})
-                    temp_path = None
-                    try:
-                        # Download the image from the URL
-                        async with httpx.AsyncClient(timeout=30) as client:
-                            response = await client.get(image_url)
-                            response.raise_for_status()
-                            image_bytes = response.content
-                        
-                        # Create a temporary file
-                        with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as temp_file:
-                            temp_file.write(image_bytes)
-                            temp_path = temp_file.name
-                        
-                        # Create a mock UploadFile object
-                        from fastapi import UploadFile
-                        image_upload = UploadFile(filename="image.png", file=open(temp_path, "rb"))
-                        
-                        # Analyze the image
-                        result = await vision_analyze(request, image_upload)
-                        
-                        # Close the file before cleanup
-                        image_upload.file.close()
-                        
-                        yield sse({
-                            "type": "vision_result",
-                            "objects": result.get("objects", []),
-                            "faces_detected": result.get("faces_detected", 0),
-                            "dominant_colors": result.get("dominant_colors", []),
-                            "image_url": result.get("image_url", ""),
-                            "annotated_image_url": result.get("annotated_image_url", "")
-                        })
-                        yield sse({"type": "done"})
-                    except Exception as e:
-                        logger.error(f"Vision analysis failed: {e}")
-                        yield sse({"type": "error", "message": str(e)})
-                    finally:
-                        # Clean up the temporary file
-                        if temp_path and os.path.exists(temp_path):
-                            os.unlink(temp_path)
-                
-                return StreamingResponse(
-                    event_generator(),
-                    media_type="text/event-stream",
-                    headers={
-                        "Cache-Control": "no-cache",
-                        "Connection": "keep-alive",
-                        "X-Accel-Buffering": "no"
-                    }
-                )
-            else:
-                # Non-streaming version
-                temp_path = None
-                try:
-                    # Download the image from the URL
-                    async with httpx.AsyncClient(timeout=30) as client:
-                        response = await client.get(image_url)
-                        response.raise_for_status()
-                        image_bytes = response.content
-                    
-                    # Create a temporary file
-                    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as temp_file:
-                        temp_file.write(image_bytes)
-                        temp_path = temp_file.name
-                    
-                    # Create a mock UploadFile object
-                    from fastapi import UploadFile
-                    image_upload = UploadFile(filename="image.png", file=open(temp_path, "rb"))
-                    
-                    # Analyze the image
-                    result = await vision_analyze(request, image_upload)
-                    
-                    # Close the file before cleanup
-                    image_upload.file.close()
-                    
-                    return result
-                finally:
-                    # Clean up the temporary file
-                    if temp_path and os.path.exists(temp_path):
-                        os.unlink(temp_path)
+    if not files or len(files) == 0:
+        raise HTTPException(400, "No files provided for vision analysis")
 
+    image_file = files[0]
+    image_url = image_file.get("url")
+
+    if not image_url:
+        raise HTTPException(400, "Invalid image file")
+
+    if stream:
+        async def event_generator():
+            yield sse({"type": "starting", "message": "Analyzing image..."})
+            temp_path = None
+            try:
+                async with httpx.AsyncClient(timeout=30) as client:
+                    response = await client.get(image_url)
+                    response.raise_for_status()
+                    image_bytes = response.content
+
+                with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as temp_file:
+                    temp_file.write(image_bytes)
+                    temp_path = temp_file.name
+
+                from fastapi import UploadFile
+                image_upload = UploadFile(filename="image.png", file=open(temp_path, "rb"))
+                result = await vision_analyze(request, image_upload)
+                image_upload.file.close()
+
+                yield sse({
+                    "type": "vision_result",
+                    "objects": result.get("objects", []),
+                    "faces_detected": result.get("faces_detected", 0),
+                    "dominant_colors": result.get("dominant_colors", []),
+                    "image_url": result.get("image_url", ""),
+                    "annotated_image_url": result.get("annotated_image_url", "")
+                })
+                yield sse({"type": "done"})
+            except Exception as e:
+                logger.error(f"Vision analysis failed: {e}")
+                yield sse({"type": "error", "message": str(e)})
+            finally:
+                if temp_path and os.path.exists(temp_path):
+                    os.unlink(temp_path)
+
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
+
+    else:
+        temp_path = None
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                response = await client.get(image_url)
+                response.raise_for_status()
+                image_bytes = response.content
+
+            with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as temp_file:
+                temp_file.write(image_bytes)
+                temp_path = temp_file.name
+
+            from fastapi import UploadFile
+            image_upload = UploadFile(filename="image.png", file=open(temp_path, "rb"))
+            result = await vision_analyze(request, image_upload)
+            image_upload.file.close()
+            return result
+
+        finally:
+            if temp_path and os.path.exists(temp_path):
+                os.unlink(temp_path)
+                
         # -------------------------
         # IMG2VID (IMAGE TO VIDEO) (Fixed file handling)
         # -------------------------
