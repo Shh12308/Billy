@@ -7191,7 +7191,7 @@ except Exception as e:
         # -------------------------
         # IMAGE GENERATION
         # -------------------------
-        elif intent == "image":
+    elif intent == "image":
             # Extract sample count from prompt
             sample_match = re.search(r'(\d+)\s+(image|images)', prompt.lower())
             if sample_match:
