@@ -81,16 +81,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-clean_messages = []
-
-for m in messages:
-    clean_messages.append({
-        "role": m.get("role", "user"),
-        "content": m.get("content", "")
-    })
-
-messages = clean_messages
-
 async def get_groq_client():
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
@@ -5871,6 +5861,16 @@ async def check_user_memory(user_id: str, last_message: str):
     return None
 
 async def chat_with_tools(user_id: str, messages: list) -> str:
+
+    clean_messages = []
+
+for m in messages:
+    clean_messages.append({
+        "role": m.get("role", "user"),
+        "content": m.get("content", "")
+    })
+
+messages = clean_messages
 
     # -------------------------
     # Ensure last message content exists
