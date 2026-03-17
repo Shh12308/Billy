@@ -7100,7 +7100,7 @@ async def ask_universal(
         # -------------------------
         # STREAM OR NON-STREAM RESPONSE
         # -------------------------
-try:
+         try:
     if stream:
         async def generator():
             yield sse({"type": "starting"})
@@ -7134,7 +7134,6 @@ try:
             }
         )
     else:
-        # non-stream fallback
         assistant_reply = await chat_with_tools(user_id, messages)
         await asyncio.to_thread(
             lambda: supabase.table("messages").insert({
@@ -7153,11 +7152,10 @@ try:
             "user_id": user_id,
             "type": "chat"
         }
-
 except Exception as e:
     logger.error(f"ask_universal error: {e}")
     raise HTTPException(status_code=500, detail=str(e))
-
+    
         # -------------------------
         # INTENT DETECTION
         # -------------------------
