@@ -7100,59 +7100,63 @@ async def ask_universal(
         # -------------------------
         # STREAM OR NON-STREAM RESPONSE
         # -------------------------
-        if stream:
-            async def generator():
-                yield sse({"type": "starting"})
+try:
+    if stream:
+        async def generator():
+            yield sse({"type": "starting"})
 
-        full_text = ""
+            full_text = ""
+            async for token in chat_with_tools_stream(user_id, messages):
+                full_text += token
+                yield sse({"type": "token", "text": token})
 
-        async for token in chat_with_tools_stream(user_id, messages):
-            full_text += token
-            yield sse({"type": "token", "text": token})
-
-        # Save after streaming completes
-        await asyncio.to_thread(
-            lambda: supabase.table("messages").insert({
-                "id": str(uuid.uuid4()),
-                "conversation_id": conversation_id,
-                "user_id": user_id,
-                "role": "assistant",
-                "content": full_text,
-                "created_at": datetime.utcnow().isoformat()
-            }).execute()
-        )
-
-        yield sse({"type": "done"})
-
-    # Streaming response returned outside the generator function
-    return StreamingResponse(
-        generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"
-        }
-    )
-        else:
-            # Non-streaming fallback
-            ai_response = await chat_with_tools(user_id, messages)
+            # save AFTER streaming completes
             await asyncio.to_thread(
                 lambda: supabase.table("messages").insert({
                     "id": str(uuid.uuid4()),
                     "conversation_id": conversation_id,
                     "user_id": user_id,
                     "role": "assistant",
-                    "content": ai_response,
+                    "content": full_text,
                     "created_at": datetime.utcnow().isoformat()
                 }).execute()
             )
-            return {"response": ai_response, "conversation_id": conversation_id}
 
-    except Exception as e:
-        logger.error(f"ask_universal error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-        
+            yield sse({"type": "done"})
+
+        return StreamingResponse(
+            generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
+    else:
+        # non-stream fallback
+        assistant_reply = await chat_with_tools(user_id, messages)
+        await asyncio.to_thread(
+            lambda: supabase.table("messages").insert({
+                "id": str(uuid.uuid4()),
+                "conversation_id": conversation_id,
+                "user_id": user_id,
+                "role": "assistant",
+                "content": assistant_reply,
+                "created_at": datetime.utcnow().isoformat()
+            }).execute()
+        )
+        return {
+            "status": "completed",
+            "reply": assistant_reply,
+            "conversation_id": conversation_id,
+            "user_id": user_id,
+            "type": "chat"
+        }
+
+except Exception as e:
+    logger.error(f"ask_universal error: {e}")
+    raise HTTPException(status_code=500, detail=str(e))
 
         # -------------------------
         # INTENT DETECTION
