@@ -7350,9 +7350,9 @@ async def ask_universal(
         # -------------------------
         # VISION ANALYSIS (Fixed file handling)
         # -------------------------
-        elif intent == "vision" and files:
-             if not files or len(files) == 0:
-             raise HTTPException(400, "No files provided for vision analysis")
+     elif intent == "vision" and files:
+          if not files or len(files) == 0:
+          raise HTTPException(400, "No files provided for vision analysis")
 
     image_file = files[0]
     image_url = image_file.get("url")
