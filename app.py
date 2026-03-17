@@ -6974,7 +6974,7 @@ async def ask_universal(
         prompt = body.get("prompt", "").strip()
         conversation_id = body.get("conversation_id")
         files = body.get("files", [])
-        stream = body.get("stream", False) 
+        stream = body.get("stream", True) 
 
         if not prompt and not files:
             raise HTTPException(status_code=400, detail="prompt or files required")
