@@ -81,12 +81,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-    # Correct: no extra indentation at top level
-groq_client = httpx.AsyncClient(
-    base_url="https://api.groq.com",
-    headers=headers,
-    timeout=60
-)
+async def get_groq_client():
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    client = httpx.AsyncClient(
+        base_url="https://api.groq.com",
+        headers=headers,
+        timeout=60
+    )
+    return client
 
 # 1️⃣ Create scheduler (do NOT start here)
 
