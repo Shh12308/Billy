@@ -81,8 +81,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-    groq_client = httpx.AsyncClient(
-    base_url="https://api.groq.com/openai/v1",
+    # Correct: no extra indentation at top level
+groq_client = httpx.AsyncClient(
+    base_url="https://api.groq.com",
+    headers=headers,
     timeout=60
 )
 
