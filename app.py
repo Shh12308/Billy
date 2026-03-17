@@ -5845,36 +5845,38 @@ async def stop_handler(prompt: str, user_id: str, stream: bool = False):
             )
         else:
             return {"stopped": False}
-
+async def check_user_memory(user_id: str, last_message: str):
+    return None
 
 async def chat_with_tools(user_id: str, messages: list) -> str:
-    """
-    Safe chat function that ensures all messages have 'content'
-    and integrates Groq or other AI tools.
-    """
+
     # -------------------------
     # Ensure last message content exists
     # -------------------------
-    last_message = next((m["content"] for m in reversed(messages) if "content" in m), "")
+    last_message = next((m.get("content","") for m in reversed(messages)), "")
 
     # -------------------------
-    # Check user memory (async)
+    # Check user memory
     # -------------------------
     user_memory = await check_user_memory(user_id, last_message)
+
     if user_memory:
         system_prompt = f"User information: {user_memory['context']}"
         messages = [{"role": "system", "content": system_prompt}] + messages
 
     # -------------------------
-    # Sanitize messages: ensure every message has 'content'
+    # Sanitize messages
     # -------------------------
     sanitized = []
+
     for msg in messages:
         if "content" not in msg and "files" in msg:
             msg["content"] = json.dumps({"files": msg["files"]})
         elif "content" not in msg:
             msg["content"] = ""
+
         sanitized.append(msg)
+
     messages = sanitized
 
     # -------------------------
@@ -5885,23 +5887,12 @@ async def chat_with_tools(user_id: str, messages: list) -> str:
         "messages": messages,
         "max_tokens": 1500
     }
+
     if TOOLS:
         payload["tools"] = TOOLS
         payload["tool_choice"] = "auto"
 
     headers = get_groq_headers()
-
-    # -------------------------
-    # Call AI API asynchronously (pseudo-code)
-    # -------------------------
-    response_text = await call_groq_api(payload, headers)
-    return response_text
-
-# -------------------------
-# Dummy memory & Groq calls (replace with your real implementations)
-# -------------------------
-async def check_user_memory(user_id: str, last_message: str):
-    return None  # Replace with Supabase or Redis memory lookup
 
     # -------------------------
     # CALL GROQ
@@ -5914,19 +5905,16 @@ async def check_user_memory(user_id: str, last_message: str):
             json=payload
         )
 
-        # Debug logging
         if r.status_code != 200:
-            print("GROQ PAYLOAD:", json.dumps(payload, indent=2))
             print("GROQ ERROR:", r.text)
 
         r.raise_for_status()
 
-    data = r.json()
+        data = r.json()
 
-    # -------------------------
-    # RETURN RESPONSE
-    # -------------------------
-    return data["choices"][0]["message"]["content"]
+    response_message = data["choices"][0]["message"]
+
+    return response_message["content"]
     
     # --- First API Call ---
     async with httpx.AsyncClient(timeout=30) as client:
