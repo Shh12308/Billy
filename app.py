@@ -7077,10 +7077,6 @@ async def ask_universal(
             "reply": assistant_reply,
             "conversation_id": conversation_id
         }
-
-    except Exception as e:
-        logger.error(f"ask_universal error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
         
 
         # -------------------------
