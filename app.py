@@ -7729,6 +7729,10 @@ async def ask_universal(
         }
     )  
 
+    except Exception as e:
+    logger.error(f"Streaming setup failed: {e}")
+    raise HTTPException(status_code=500, detail="Streaming setup failed")
+
         # --- NON-STREAM ---
         else:
             assistant_reply = await chat_with_tools(user_id, messages)
