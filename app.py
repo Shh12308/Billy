@@ -7698,7 +7698,8 @@ async def ask_universal(
     
         # --- STREAMING ---
         if stream:
-            async def generator():
+    async def generator():
+        # everything inside the function must be indented
         yield sse({"type": "starting"})
         full_text = ""
 
@@ -7727,7 +7728,7 @@ async def ask_universal(
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no"
         }
-    )  
+    )
 
 except Exception as e:
     logger.error(f"Streaming setup failed: {e}")
