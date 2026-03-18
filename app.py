@@ -7729,7 +7729,7 @@ async def ask_universal(
         }
     )  
 
-    except Exception as e:
+except Exception as e:
     logger.error(f"Streaming setup failed: {e}")
     raise HTTPException(status_code=500, detail="Streaming setup failed")
 
