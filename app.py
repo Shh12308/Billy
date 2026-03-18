@@ -7697,11 +7697,10 @@ async def ask_universal(
              messages = [{"role": "user", "content": prompt}]
     
         # --- STREAMING ---
-        if stream:
-    async def generator():
-        # everything inside the function must be indented
-        yield sse({"type": "starting"})
-        full_text = ""
+      if stream:
+          async def generator():
+              yield sse({"type": "starting"})
+              full_text = ""
 
         async for token in chat_with_tools_stream(user_id, messages):
             full_text += token
