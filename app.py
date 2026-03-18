@@ -7041,7 +7041,7 @@ async def ask_universal(
         # -------------------------
         # IMAGE GENERATION
         # -------------------------
-        elif intent == "image":
+        if intent == "image":
             # Extract sample count from prompt
             sample_match = re.search(r'(\d+)\s+(image|images)', prompt.lower())
             if sample_match:
