@@ -7694,13 +7694,13 @@ async def ask_universal(
         # -------------------------
         else:
     # Default to chat for any unrecognized intent
-    messages = [{"role": "user", "content": prompt}]
-    try:
+             messages = [{"role": "user", "content": prompt}]
+             try:
         # --- STREAMING ---
-        if stream:
-            async def generator():
-                yield sse({"type": "starting"})
-                full_text = ""
+                 if stream:
+                     async def generator():
+                         yield sse({"type": "starting"})
+                         full_text = ""
 
                 async for token in chat_with_tools_stream(user_id, messages):
                     full_text += token
