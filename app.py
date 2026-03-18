@@ -7077,7 +7077,8 @@ async def ask_universal(
             "reply": assistant_reply,
             "conversation_id": conversation_id
         }
-        
+
+        intent = detect_intent(prompt)
 
         # -------------------------
         # IMAGE GENERATION
