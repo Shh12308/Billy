@@ -7698,28 +7698,27 @@ async def ask_universal(
              try:
         # --- STREAMING ---
                  if stream:
-                     async def generator():
-                         yield sse({"type": "starting"})
-                         full_text = ""
+    async def generator():
+        yield sse({"type": "starting"})
+        full_text = ""
 
-                async for token in chat_with_tools_stream(user_id, messages):
-                    full_text += token
-                    yield sse({"type": "token", "text": token})
+        async for token in chat_with_tools_stream(user_id, messages):
+            full_text += token
+            yield sse({"type": "token", "text": token})
 
-                # Save assistant reply to DB
-                await asyncio.to_thread(
-                    lambda: supabase.table("messages").insert({
-                        "id": str(uuid.uuid4()),
-                        "conversation_id": conversation_id,
-                        "user_id": user_id,
-                        "role": "assistant",
-                        "content": full_text,
-                        "created_at": datetime.utcnow().isoformat()
-                    }).execute()
-                )
+        await asyncio.to_thread(
+            lambda: supabase.table("messages").insert({
+                "id": str(uuid.uuid4()),
+                "conversation_id": conversation_id,
+                "user_id": user_id,
+                "role": "assistant",
+                "content": full_text,
+                "created_at": datetime.utcnow().isoformat()
+            }).execute()
+        )
 
-                yield sse({"type": "done"})
-
+        yield sse({"type": "done"})
+        
             return StreamingResponse(
                 generator(),
                 media_type="text/event-stream",
