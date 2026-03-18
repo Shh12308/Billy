@@ -7697,8 +7697,8 @@ async def ask_universal(
              messages = [{"role": "user", "content": prompt}]
              try:
         # --- STREAMING ---
-                 if stream:
-    async def generator():
+        if stream:
+            async def generator():
         yield sse({"type": "starting"})
         full_text = ""
 
@@ -7718,16 +7718,16 @@ async def ask_universal(
         )
 
         yield sse({"type": "done"})
-        
-            return StreamingResponse(
-                generator(),
-                media_type="text/event-stream",
-                headers={
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
-                    "X-Accel-Buffering": "no"
-                }
-            )
+
+    return StreamingResponse(
+        generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )  
 
         # --- NON-STREAM ---
         else:
