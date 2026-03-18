@@ -7605,7 +7605,7 @@ async def ask_universal(
         # -------------------------
         # TEXT-TO-SPEECH
         # -------------------------
-        elif intent == "tts" or tts:
+        elif intent == "tts":
             # Extract text to speak
             text = prompt
             if "say" in prompt.lower():
