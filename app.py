@@ -7008,9 +7008,9 @@ async def ask_universal(
         if not prompt and not files:
             raise HTTPException(status_code=400, detail="prompt or files required")
 
-        # --- User handling ---
         identity = current_user or {}
         user_id = identity.get("user_id") or request.cookies.get("guest_id") or str(uuid.uuid4())
+
         if not identity.get("user_id") and not request.cookies.get("guest_id"):
             response.set_cookie(
                 key="guest_id",
@@ -7024,21 +7024,6 @@ async def ask_universal(
         if not conversation_id:
             conversation_id = str(uuid.uuid4())
 
-        # --- Load conversation & messages ---
-        conv = await asyncio.to_thread(
-            lambda: supabase.table("conversations").select("id").eq("id", conversation_id).execute()
-        )
-        if not conv.data:
-            await asyncio.to_thread(
-                lambda: supabase.table("conversations").insert({
-                    "id": conversation_id,
-                    "user_id": user_id,
-                    "title": prompt[:50] or "New Chat",
-                    "created_at": datetime.utcnow().isoformat(),
-                    "updated_at": datetime.utcnow().isoformat()
-                }).execute()
-            )
-
         history_res = await asyncio.to_thread(
             lambda: supabase.table("messages")
             .select("role, content")
@@ -7049,32 +7034,18 @@ async def ask_universal(
         )
         messages = history_res.data if history_res.data else []
 
-        if files:
-            prompt += f"\n\nFiles: {json.dumps(files)}"
-
         messages.append({"role": "user", "content": prompt})
 
-        await asyncio.to_thread(
-            lambda: supabase.table("messages").insert({
-                "id": str(uuid.uuid4()),
-                "conversation_id": conversation_id,
-                "user_id": user_id,
-                "role": "user",
-                "content": prompt,
-                "created_at": datetime.utcnow().isoformat()
-            }).execute()
-        )
-
-        # --- Streaming path ---
+        # --- STREAMING ---
         if stream:
             async def generator():
                 yield sse({"type": "starting"})
                 full_text = ""
+
                 async for token in chat_with_tools_stream(user_id, messages):
                     full_text += token
                     yield sse({"type": "token", "text": token})
 
-                # Save after streaming
                 await asyncio.to_thread(
                     lambda: supabase.table("messages").insert({
                         "id": str(uuid.uuid4()),
@@ -7085,6 +7056,7 @@ async def ask_universal(
                         "created_at": datetime.utcnow().isoformat()
                     }).execute()
                 )
+
                 yield sse({"type": "done"})
 
             return StreamingResponse(
@@ -7097,96 +7069,19 @@ async def ask_universal(
                 }
             )
 
-        # --- Non-streaming path ---
+        # --- NON-STREAM ---
         assistant_reply = await chat_with_tools(user_id, messages)
-        await asyncio.to_thread(
-            lambda: supabase.table("messages").insert({
-                "id": str(uuid.uuid4()),
-                "conversation_id": conversation_id,
-                "user_id": user_id,
-                "role": "assistant",
-                "content": assistant_reply,
-                "created_at": datetime.utcnow().isoformat()
-            }).execute()
-        )
+
         return {
             "status": "completed",
             "reply": assistant_reply,
-            "conversation_id": conversation_id,
-            "user_id": user_id,
-            "type": "chat"
+            "conversation_id": conversation_id
         }
 
     except Exception as e:
         logger.error(f"ask_universal error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
         
-    
-        # -------------------------
-        # INTENT DETECTION
-        # -------------------------
-        intent = detect_intent(prompt)
-
-        # -------------------------
-        # PROCESS INTENT
-        # -------------------------
-        if intent == "chat":
-            messages = [{"role": "user", "content": prompt}]
-            try:
-                assistant_reply = await chat_with_tools(user_id, messages)
-            except Exception as e:
-                logger.error(f"Chat processing failed: {e}")
-                raise HTTPException(status_code=500, detail="Chat processing failed")
-
-            # --- STREAMING RESPONSE ---
-try:
-    if stream:
-        async def generator():
-            yield sse({"type": "starting"})
-
-            full_text = ""
-
-            async for token in chat_with_tools_stream(user_id, messages):
-                full_text += token
-                yield sse({"type": "token", "text": token})
-
-            # save AFTER streaming completes
-            await asyncio.to_thread(
-                lambda: supabase.table("messages").insert({
-                    "id": str(uuid.uuid4()),
-                    "conversation_id": conversation_id,
-                    "user_id": user_id,
-                    "role": "assistant",
-                    "content": full_text,
-                    "created_at": datetime.utcnow().isoformat()
-                }).execute()
-            )
-
-            yield sse({"type": "done"})
-
-        return StreamingResponse(
-            generator(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no"
-            }
-        )
-    else:
-        # --- NON-STREAMING RESPONSE ---
-        return {
-            "status": "completed",
-            "reply": ai_response,
-            "conversation_id": conversation_id,
-            "user_id": user_id,
-            "type": "chat"
-        }
-
-except Exception as e:
-    logger.error(f"ask_universal error: {e}")
-    raise HTTPException(status_code=500, detail=str(e))
-
 
         # -------------------------
         # IMAGE GENERATION
