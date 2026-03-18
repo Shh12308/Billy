@@ -7693,15 +7693,10 @@ async def ask_universal(
         # DEFAULT: CHAT
         # -------------------------
         else:
-            # Default to chat for any unrecognized intent
-            messages = [{"role": "user", "content": prompt}]
-            try:
-                assistant_reply = await chat_with_tools(user_id, messages)
-            except Exception as e:
-                logger.error(f"Chat processing failed: {e}")
-                raise HTTPException(status_code=500, detail="Chat processing failed")
-
-            # --- STREAMING ---
+    # Default to chat for any unrecognized intent
+    messages = [{"role": "user", "content": prompt}]
+    try:
+        # --- STREAMING ---
         if stream:
             async def generator():
                 yield sse({"type": "starting"})
@@ -7711,6 +7706,7 @@ async def ask_universal(
                     full_text += token
                     yield sse({"type": "token", "text": token})
 
+                # Save assistant reply to DB
                 await asyncio.to_thread(
                     lambda: supabase.table("messages").insert({
                         "id": str(uuid.uuid4()),
@@ -7735,19 +7731,30 @@ async def ask_universal(
             )
 
         # --- NON-STREAM ---
-        assistant_reply = await chat_with_tools(user_id, messages)
+        else:
+            assistant_reply = await chat_with_tools(user_id, messages)
 
-        return {
-            "status": "completed",
-            "reply": assistant_reply,
-            "conversation_id": conversation_id
-        }
+            # Save assistant reply to DB
+            await asyncio.to_thread(
+                lambda: supabase.table("messages").insert({
+                    "id": str(uuid.uuid4()),
+                    "conversation_id": conversation_id,
+                    "user_id": user_id,
+                    "role": "assistant",
+                    "content": assistant_reply,
+                    "created_at": datetime.utcnow().isoformat()
+                }).execute()
+            )
 
-    except HTTPException:
-        raise
+            return {
+                "status": "completed",
+                "reply": assistant_reply,
+                "conversation_id": conversation_id
+            }
+
     except Exception as e:
-        logger.error(f"/ask/universal failed: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        logger.error(f"Chat processing failed: {e}")
+        raise HTTPException(status_code=500, detail="Chat processing failed")
         
 @app.post("/migrate-guest")
 async def migrate_guest(
