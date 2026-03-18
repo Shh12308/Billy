@@ -7695,7 +7695,7 @@ async def ask_universal(
         else:
     # Default to chat for any unrecognized intent
              messages = [{"role": "user", "content": prompt}]
-             try:
+    try:
         # --- STREAMING ---
         if stream:
             async def generator():
