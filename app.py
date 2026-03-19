@@ -7033,16 +7033,19 @@ async def ask_universal(
         )
 
         try:
-            history_res = await asyncio.to_thread(
-                lambda: supabase.table("messages")
-                .select("role, content")
-                .eq("conversation_id", conversation_id)
-                .order("created_at")
-                .limit(20)
-                .execute()
-        )
+    history_res = await asyncio.to_thread(
+        lambda: supabase.table("messages")
+        .select("role, content")
+        .eq("conversation_id", conversation_id)
+        .order("created_at")
+        .limit(20)
+        .execute()
+    )
+except Exception as e:
+    logger.error(f"Failed to fetch history: {e}")
+    history_res = None
 
-messages = history_res.data or []
+messages = history_res.data if history_res and history_res.data else []
 messages.append({"role": "user", "content": prompt})
 
 intent = detect_intent(prompt)
