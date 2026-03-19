@@ -7024,6 +7024,14 @@ async def ask_universal(
         if not conversation_id:
             conversation_id = str(uuid.uuid4())
 
+        await asyncio.to_thread(
+            lambda: supabase.table("conversations").upsert({
+                "id": conversation_id,
+                "user_id": user_id,
+                "created_at": datetime.utcnow().isoformat()
+           }).execute()
+       )
+        
         history_res = await asyncio.to_thread(
             lambda: supabase.table("messages")
             .select("role, content")
