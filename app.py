@@ -7032,14 +7032,15 @@ async def ask_universal(
             }).execute()
         )
 
-        history_res = await asyncio.to_thread(
-    lambda: supabase.table("messages")
-    .select("role, content")
-    .eq("conversation_id", conversation_id)
-    .order("created_at")
-    .limit(20)
-    .execute()
-)
+        try:
+            history_res = await asyncio.to_thread(
+                lambda: supabase.table("messages")
+                .select("role, content")
+                .eq("conversation_id", conversation_id)
+                .order("created_at")
+                .limit(20)
+                .execute()
+        )
 
 messages = history_res.data or []
 messages.append({"role": "user", "content": prompt})
