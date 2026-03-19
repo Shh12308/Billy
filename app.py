@@ -7696,15 +7696,41 @@ async def ask_universal(
     # Default to chat for any unrecognized intent
              messages = [{"role": "user", "content": prompt}]
     
-        # --- STREAMING ---
-      if stream:
-          async def generator():
-              yield sse({"type": "starting"})
-              full_text = ""
+        # ================= STREAM =================
+        if stream:
+            async def generator():
+                yield sse({"type": "starting"})
+                full_text = ""
 
-        async for token in chat_with_tools_stream(user_id, messages):
-            full_text += token
-            yield sse({"type": "token", "text": token})
+                async for token in chat_with_tools_stream(user_id, messages):
+                    full_text += token
+                    yield sse({"type": "token", "text": token})
+
+                await asyncio.to_thread(
+                    lambda: supabase.table("messages").insert({
+                        "id": str(uuid.uuid4()),
+                        "conversation_id": conversation_id,
+                        "user_id": user_id,
+                        "role": "assistant",
+                        "content": full_text,
+                        "created_at": datetime.utcnow().isoformat()
+                    }).execute()
+                )
+
+                yield sse({"type": "done"})
+
+            return StreamingResponse(
+                generator(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no"
+                }
+            )
+
+        # ================= NON-STREAM =================
+        assistant_reply = await chat_with_tools(user_id, messages)
 
         await asyncio.to_thread(
             lambda: supabase.table("messages").insert({
@@ -7712,52 +7738,23 @@ async def ask_universal(
                 "conversation_id": conversation_id,
                 "user_id": user_id,
                 "role": "assistant",
-                "content": full_text,
+                "content": assistant_reply,
                 "created_at": datetime.utcnow().isoformat()
             }).execute()
         )
 
-        yield sse({"type": "done"})
-
-    return StreamingResponse(
-        generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"
+        return {
+            "status": "completed",
+            "reply": assistant_reply,
+            "conversation_id": conversation_id
         }
-    )
 
-except Exception as e:
-    logger.error(f"Streaming setup failed: {e}")
-    raise HTTPException(status_code=500, detail="Streaming setup failed")
-
-        # --- NON-STREAM ---
-        else:
-            assistant_reply = await chat_with_tools(user_id, messages)
-
-            # Save assistant reply to DB
-            await asyncio.to_thread(
-                lambda: supabase.table("messages").insert({
-                    "id": str(uuid.uuid4()),
-                    "conversation_id": conversation_id,
-                    "user_id": user_id,
-                    "role": "assistant",
-                    "content": assistant_reply,
-                    "created_at": datetime.utcnow().isoformat()
-                }).execute()
-            )
-
-            return {
-                "status": "completed",
-                "reply": assistant_reply,
-                "conversation_id": conversation_id
-            }
-
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Chat processing failed: {e}")
-        raise HTTPException(status_code=500, detail="Chat processing failed")
+        logger.error(f"/ask/universal failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+        
         
 @app.post("/migrate-guest")
 async def migrate_guest(
