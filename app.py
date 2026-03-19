@@ -7018,7 +7018,7 @@ async def ask_universal(
                 httponly=True,
                 secure=False,
                 samesite="Lax",
-                max_age=60*60*24*7
+                max_age=60 * 60 * 24 * 7
             )
 
         if not conversation_id:
@@ -7029,9 +7029,9 @@ async def ask_universal(
                 "id": conversation_id,
                 "user_id": user_id,
                 "created_at": datetime.utcnow().isoformat()
-           }).execute()
-       )
-        
+            }).execute()
+        )
+
         history_res = await asyncio.to_thread(
             lambda: supabase.table("messages")
             .select("role, content")
@@ -7040,11 +7040,11 @@ async def ask_universal(
             .limit(20)
             .execute()
         )
-        messages = history_res.data if history_res.data else []
 
+        messages = history_res.data if history_res.data else []
         messages.append({"role": "user", "content": prompt})
 
-        intent = detect_intent(prompt)
+        intent = detect_intent(prompt
 
         # -------------------------
         # IMAGE GENERATION
@@ -7053,38 +7053,33 @@ async def ask_universal(
             # Extract sample count from prompt
             sample_match = re.search(r'(\d+)\s+(image|images)', prompt.lower())
             if sample_match:
-                num_samples = min(int(sample_match.group(1)), 4)  # Cap at 4 images
+                num_samples = min(int(sample_match.group(1)), 4)
             else:
-                num_samples = samples  # Use provided samples or default to 1
-            
+                num_samples = 1
+
             if stream:
                 async def event_generator():
                     yield sse({"type": "starting", "message": "Generating image..."})
                     try:
-                        # Generate the image
-                        result = await _generate_image_core(prompt, num_samples, user_id, return_base64=False)
-                        
+                        result = await _generate_image_core(
+                            prompt, num_samples, user_id, return_base64=False
+                        )
+
                         yield sse({
                             "type": "images",
                             "provider": result["provider"],
-                            "images": result["images"]  # Already in the correct format
+                            "images": result["images"]
                         })
                         yield sse({"type": "done"})
                     except Exception as e:
                         logger.error(f"Image generation failed: {e}")
                         yield sse({"type": "error", "message": str(e)})
-                
+
                 return StreamingResponse(
                     event_generator(),
-                    media_type="text/event-stream",
-                    headers={
-                        "Cache-Control": "no-cache",
-                        "Connection": "keep-alive",
-                        "X-Accel-Buffering": "no"
-                    }
+                    media_type="text/event-stream"
                 )
             else:
-                # Non-streaming version
                 return await _generate_image_core(prompt, num_samples, user_id, return_base64=False)
 
         # -------------------------
@@ -7701,10 +7696,8 @@ async def ask_universal(
         # DEFAULT: CHAT
         # -------------------------
         else:
-    # Default to chat for any unrecognized intent
-             messages = [{"role": "user", "content": prompt}]
-    
-        # ================= STREAM =================
+            messages = [{"role": "user", "content": prompt}]
+
         if stream:
             async def generator():
                 yield sse({"type": "starting"})
@@ -7727,17 +7720,8 @@ async def ask_universal(
 
                 yield sse({"type": "done"})
 
-            return StreamingResponse(
-                generator(),
-                media_type="text/event-stream",
-                headers={
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
-                    "X-Accel-Buffering": "no"
-                }
-            )
+            return StreamingResponse(generator(), media_type="text/event-stream")
 
-        # ================= NON-STREAM =================
         assistant_reply = await chat_with_tools(user_id, messages)
 
         await asyncio.to_thread(
