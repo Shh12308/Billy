@@ -7033,7 +7033,7 @@ async def ask_universal(
         )
 
         try:
-    history_res = await asyncio.to_thread(
+            history_res = await asyncio.to_thread(
         lambda: supabase.table("messages")
         .select("role, content")
         .eq("conversation_id", conversation_id)
