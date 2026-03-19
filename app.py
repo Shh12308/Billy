@@ -7046,6 +7046,7 @@ async def ask_universal(
             history_res = None
 
         messages = history_res.data if history_res and history_res.data else []
+            
 messages.append({"role": "user", "content": prompt})
 
 intent = detect_intent(prompt)
