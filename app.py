@@ -7033,54 +7033,73 @@ async def ask_universal(
         )
 
         history_res = await asyncio.to_thread(
-            lambda: supabase.table("messages")
-            .select("role, content")
-            .eq("conversation_id", conversation_id)
-            .order("created_at")
-            .limit(20)
-            .execute()
+    lambda: supabase.table("messages")
+    .select("role, content")
+    .eq("conversation_id", conversation_id)
+    .order("created_at")
+    .limit(20)
+    .execute()
+)
+
+messages = history_res.data or []
+messages.append({"role": "user", "content": prompt})
+
+intent = detect_intent(prompt)
+
+# -------------------------
+# IMAGE GENERATION
+# -------------------------
+if intent == "image":
+    # Extract sample count from prompt
+    sample_match = re.search(r'(\d+)\s+(image|images)', prompt.lower())
+    if sample_match:
+        num_samples = min(int(sample_match.group(1)), 4)  # Cap at 4
+    else:
+        num_samples = 1  # ✅ FIXED (was undefined "samples")
+
+    if stream:
+        async def event_generator():
+            yield sse({"type": "starting", "message": "Generating image..."})
+            try:
+                result = await _generate_image_core(
+                    prompt,
+                    num_samples,
+                    user_id,
+                    return_base64=False
+                )
+
+                yield sse({
+                    "type": "images",
+                    "provider": result.get("provider"),
+                    "images": result.get("images", [])
+                })
+
+                yield sse({"type": "done"})
+
+            except Exception as e:
+                logger.error(f"Image generation failed: {e}")
+                yield sse({
+                    "type": "error",
+                    "message": str(e)
+                })
+
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
         )
 
-        messages = history_res.data if history_res.data else []
-        messages.append({"role": "user", "content": prompt})
-
-        intent = detect_intent(prompt
-
-        # -------------------------
-        # IMAGE GENERATION
-        # -------------------------
-        if intent == "image":
-            # Extract sample count from prompt
-            sample_match = re.search(r'(\d+)\s+(image|images)', prompt.lower())
-            if sample_match:
-                num_samples = min(int(sample_match.group(1)), 4)
-            else:
-                num_samples = 1
-
-            if stream:
-                async def event_generator():
-                    yield sse({"type": "starting", "message": "Generating image..."})
-                    try:
-                        result = await _generate_image_core(
-                            prompt, num_samples, user_id, return_base64=False
-                        )
-
-                        yield sse({
-                            "type": "images",
-                            "provider": result["provider"],
-                            "images": result["images"]
-                        })
-                        yield sse({"type": "done"})
-                    except Exception as e:
-                        logger.error(f"Image generation failed: {e}")
-                        yield sse({"type": "error", "message": str(e)})
-
-                return StreamingResponse(
-                    event_generator(),
-                    media_type="text/event-stream"
-                )
-            else:
-                return await _generate_image_core(prompt, num_samples, user_id, return_base64=False)
+    else:
+        return await _generate_image_core(
+            prompt,
+            num_samples,
+            user_id,
+            return_base64=False
+        )
 
         # -------------------------
         # MATH SOLVING
