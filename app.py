@@ -414,7 +414,7 @@ async def get_or_create_user(request: Request, response: Response) -> dict:
             path="/",
             secure=True,
             httponly=True,
-            samesite="lax"
+            samesite="none"
         )
 
         return user_data
