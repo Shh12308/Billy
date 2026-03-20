@@ -412,6 +412,7 @@ async def get_or_create_user(request: Request, response: Response) -> dict:
             value=new_session_token,
             max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
             path="/",
+            domain=".heloxai.xyz",
             secure=True,
             httponly=True,
             samesite="none"
