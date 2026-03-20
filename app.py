@@ -7058,84 +7058,35 @@ async def ask_universal(
         logger.error(f"Request failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
         
-# -------------------------
-# IMAGE GENERATION
-# -------------------------
-  if intent == "image":
-    # Extract sample count from prompt
-          sample_match = re.search(r'(\d+)\s+(image|images)', prompt.lower())
-          if sample_match:
-              num_samples = min(int(sample_match.group(1)), 4)  
-          else:
-              num_samples = 1  
-
-    if stream:
-        async def event_generator():
-            yield sse({"type": "starting", "message": "Generating image..."})
-            try:
-                result = await _generate_image_core(
-                    prompt,
-                    num_samples,
-                    user_id,
-                    return_base64=False
-                )
-
-                yield sse({
-                    "type": "images",
-                    "provider": result.get("provider"),
-                    "images": result.get("images", [])
-                })
-
-                yield sse({"type": "done"})
-
-            except Exception as e:
-                logger.error(f"Image generation failed: {e}")
-                yield sse({
-                    "type": "error",
-                    "message": str(e)
-                })
-
-        return StreamingResponse(
-            event_generator(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no"
-            }
-        )
-
-    else:
-        return await _generate_image_core(
-            prompt,
-            num_samples,
-            user_id,
-            return_base64=False
-        )
-
         # -------------------------
-        # MATH SOLVING
+        # IMAGE GENERATION
         # -------------------------
-        elif intent == "math":
+        if intent == "image":
+            sample_match = re.search(r'(\d+)\s+(image|images)', prompt.lower())
+            num_samples = min(int(sample_match.group(1)), 4) if sample_match else 1
+
             if stream:
                 async def event_generator():
-                    yield sse({"type": "starting", "message": "Solving math problem..."})
+                    yield sse({"type": "starting", "message": "Generating image..."})
                     try:
-                        # Extract the math problem from the prompt
-                        problem = prompt
-                        result = await solve_math(problem)
-                        
+                        result = await _generate_image_core(
+                            prompt,
+                            num_samples,
+                            user_id,
+                            return_base64=False
+                        )
+
                         yield sse({
-                            "type": "math_result",
-                            "problem": result.get("problem"),
-                            "result": result.get("result"),
-                            "steps": result.get("steps", [])
+                            "type": "images",
+                            "provider": result.get("provider"),
+                            "images": result.get("images", [])
                         })
+
                         yield sse({"type": "done"})
                     except Exception as e:
-                        logger.error(f"Math solving failed: {e}")
+                        logger.error(f"Image generation failed: {e}")
                         yield sse({"type": "error", "message": str(e)})
-                
+
                 return StreamingResponse(
                     event_generator(),
                     media_type="text/event-stream",
@@ -7145,14 +7096,20 @@ async def ask_universal(
                         "X-Accel-Buffering": "no"
                     }
                 )
-            else:
-                # Non-streaming version
-                result = await solve_math(prompt)
-                return {
-                    "problem": result.get("problem"),
-                    "result": result.get("result"),
-                    "steps": result.get("steps", [])
-                }
+
+            return await _generate_image_core(
+                prompt,
+                num_samples,
+                user_id,
+                return_base64=False
+            )
+
+        # -------------------------
+        # MATH SOLVING
+        # -------------------------
+        elif intent == "math":
+            result = await solve_math(prompt)
+            return result
 
         # -------------------------
         # JOKE TELLING
