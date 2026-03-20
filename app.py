@@ -7061,13 +7061,13 @@ async def ask_universal(
 # -------------------------
 # IMAGE GENERATION
 # -------------------------
-if intent == "image":
+      if intent == "image":
     # Extract sample count from prompt
-    sample_match = re.search(r'(\d+)\s+(image|images)', prompt.lower())
-    if sample_match:
-        num_samples = min(int(sample_match.group(1)), 4)  # Cap at 4
+          sample_match = re.search(r'(\d+)\s+(image|images)', prompt.lower())
+          if sample_match:
+        num_samples = min(int(sample_match.group(1)), 4)  
     else:
-        num_samples = 1  # ✅ FIXED (was undefined "samples")
+        num_samples = 1  
 
     if stream:
         async def event_generator():
