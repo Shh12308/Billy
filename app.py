@@ -7032,6 +7032,7 @@ async def ask_universal(
             }).execute()
         )
 
+        # ✅ Fetch history safely
         try:
             history_res = await asyncio.to_thread(
                 lambda: supabase.table("messages")
@@ -7041,20 +7042,22 @@ async def ask_universal(
                 .limit(20)
                 .execute()
             )
+            messages = history_res.data or []
         except Exception as e:
             logger.error(f"Failed to fetch history: {e}")
-            history_res = None
+            messages = []
 
-        messages = history_res.data if history_res and history_res.data else []
-            
-except Exception as e:
-    logger.error(f"Failed to fetch history: {e}")
-    messages = []
+        # ✅ Outside try/except
+        messages.append({"role": "user", "content": prompt})
 
-messages.append({"role": "user", "content": prompt})
+        intent = detect_intent(prompt)
 
-intent = detect_intent(prompt)
+        return {"status": "ok", "intent": intent}
 
+    except Exception as e:
+        logger.error(f"Request failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+        
 # -------------------------
 # IMAGE GENERATION
 # -------------------------
