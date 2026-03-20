@@ -7047,6 +7047,10 @@ async def ask_universal(
 
         messages = history_res.data if history_res and history_res.data else []
             
+except Exception as e:
+    logger.error(f"Failed to fetch history: {e}")
+    messages = []
+
 messages.append({"role": "user", "content": prompt})
 
 intent = detect_intent(prompt)
