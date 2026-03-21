@@ -7334,13 +7334,13 @@ return StreamingResponse(test_stream(), media_type="text/event-stream")
                         image_upload.file.close()
                         
                         yield f"data: {json.dumps({
-    'type': 'vision_result',
-    'objects': result.get('objects', []),
-    'faces_detected': result.get('faces_detected', 0),
-    'dominant_colors': result.get('dominant_colors', []),
-    'image_url': result.get('image_url', ''),
-    'annotated_image_url': result.get('annotated_image_url', '')
-})}\n\n"
+                           'type': 'vision_result',
+                           'objects': result.get('objects', []),
+                           'faces_detected': result.get('faces_detected', 0),
+                           'dominant_colors': result.get('dominant_colors', []),
+                           'image_url': result.get('image_url', ''), 
+                           'annotated_image_url': result.get('annotated_image_url', '')
+                        })}\n\n"
                         yield f"data: {json.dumps({'type': 'done'})}\n\n"
                     except Exception as e:
                         logger.error(f"Vision analysis failed: {e}")
