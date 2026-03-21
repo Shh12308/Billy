@@ -1417,7 +1417,7 @@ async def debug_frontend_config():
     """Debug endpoint to check frontend configuration"""
     return {
         "backend_url": "http://0.0.0.0:8080",  # Or whatever your backend URL is
-        "cors_origins": ["http://localhost:9898", "https://zynara.xyz", "https://www.zynara.xyz"],
+        "cors_origins": ["http://localhost:9898", "https://heloxai.xyz", "https://www.heloxai.xyz"],
         "supabase_url": SUPABASE_URL,
         "frontend_supabase_url": FRONTEND_SUPABASE_URL,
         "has_frontend_supabase": frontend_supabase is not None
