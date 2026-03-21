@@ -7083,9 +7083,9 @@ async def ask_universal(
 
         intent = detect_intent(prompt)
 
-   try:
-       if not stream:
-           return {
+        try:
+            if not stream:
+               return {
                "status": "ok",
                "intent": intent
            }
