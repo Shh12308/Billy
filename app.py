@@ -48,6 +48,7 @@ from ultralytics import YOLO
 from torchvision import models, transforms
 import matplotlib.pyplot as plt
 import seaborn as sns
+from fastapi.responses import StreamingResponse
 import replicate
 import pandas as pd
 from transformers import pipeline, AutoTokenizer, AutoModelForSequenceClassification
@@ -7089,8 +7090,6 @@ async def ask_universal(
                "status": "ok",
                "intent": intent
            }
-
-    from fastapi.responses import StreamingResponse
 
     async def test_stream():
         yield "data: {\"type\": \"starting\"}\n\n"
