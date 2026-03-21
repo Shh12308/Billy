@@ -7111,8 +7111,12 @@ return StreamingResponse(test_stream(), media_type="text/event-stream")
 
     if stream:
         async def event_generator():
-            # ✅ ALWAYS start with valid SSE
-            yield f"data: {json.dumps({'type': 'starting', 'message': 'Generating image...'})}\n\n"
+            # starting
+            payload = {
+                "type": "starting",
+                "message": "Generating image..."
+            }
+            yield f"data: {json.dumps(payload)}\n\n"
 
             try:
                 result = await _generate_image_core(
@@ -7122,21 +7126,23 @@ return StreamingResponse(test_stream(), media_type="text/event-stream")
                     return_base64=False
                 )
 
-                yield f"data: {json.dumps({
-                    'type': 'images',
-                    'provider': result.get('provider'),
-                    'images': result.get('images', [])
-                })}\n\n"
+                payload = {
+                    "type": "images",
+                    "provider": result.get("provider"),
+                    "images": result.get("images", [])
+                }
+                yield f"data: {json.dumps(payload)}\n\n"
 
                 yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
             except Exception as e:
                 logger.error(f"Image generation failed: {e}")
 
-                yield f"data: {json.dumps({
-                    'type': 'error',
-                    'message': str(e)
-                })}\n\n"
+                payload = {
+                    "type": "error",
+                    "message": str(e)
+                }
+                yield f"data: {json.dumps(payload)}\n\n"
 
         return StreamingResponse(
             event_generator(),
@@ -7148,7 +7154,7 @@ return StreamingResponse(test_stream(), media_type="text/event-stream")
             }
         )
 
-    # ✅ Non-streaming (unchanged but safe)
+    # Non-streaming
     try:
         return await _generate_image_core(
             prompt,
@@ -7159,6 +7165,7 @@ return StreamingResponse(test_stream(), media_type="text/event-stream")
     except Exception as e:
         logger.error(f"Image generation failed: {e}")
         raise HTTPException(500, "Image generation failed")
+        
         
         # -------------------------
         # MATH SOLVING
