@@ -59,70 +59,58 @@ import plotly.express as px
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.schedulers.base import STATE_RUNNING
 
+logger = logging.getLogger(HeloxAi)
+
+# =========================
+# GLOBALS
+# =========================
 scheduler = AsyncIOScheduler()
+active_tasks = {}
 
-async def cleanup_old_tasks():
-    print("Cleaning old tasks...")
-
-# schedule the async function directly
-scheduler.add_job(cleanup_old_tasks, "interval", minutes=10)
-
-scheduler.start()
-
-async def stream():
-    data = {"message": "hello"}
-    yield json.dumps(data)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:9898", "https://heloxai.xyz", "https://www.heloxai.xyz"],
-    allow_credentials=True, 
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-async def get_groq_client():
-    headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    client = httpx.AsyncClient(
-        base_url="https://api.groq.com",
-        headers=headers,
-        timeout=60
-    )
-    return client
-
-# 1️⃣ Create scheduler (do NOT start here)
-
-ACCESS_TOKEN_EXPIRE_MINUTES = 60  # or whatever you want
+ACCESS_TOKEN_EXPIRE_MINUTES = 60
 COOKIE_NAME = "session_token"
 
-# Example job (optional)
-async def example_job():
-    logger.info("Scheduled job running...")
+# =========================
+# CLEANUP TASK
+# =========================
+async def cleanup_old_tasks():
+    to_delete = []
 
-def sse(data: dict) -> str:
-    """
-    Formats a dict as a Server-Sent Event (SSE) message.
-    """
-    return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
-    
-# 3️⃣ Shutdown event
+    for user_id, task in active_tasks.items():
+        if task.done():
+            to_delete.append(user_id)
+
+    for user_id in to_delete:
+        del active_tasks[user_id]
+
+    logger.info(f"Cleaned {len(to_delete)} completed tasks")
+
+# =========================
+# STARTUP / SHUTDOWN EVENTS
+# =========================
+@app.on_event("startup")
+async def start_scheduler():
+    scheduler.add_job(cleanup_old_tasks, "interval", minutes=10)
+    scheduler.start()
+    logger.info("Scheduler started.")
+
 @app.on_event("shutdown")
 async def stop_scheduler():
-    if scheduler.state == STATE_RUNNING:
-        scheduler.shutdown(wait=False)  # wait=False avoids blocking shutdown
+    if scheduler.running:
+        scheduler.shutdown(wait=False)
         logger.info("Scheduler shut down.")
 
+# =========================
+# MANUAL CLEANUP ENDPOINT
+# =========================
 @app.post("/cleanup-now")
 async def cleanup_now():
-    asyncio.create_task(cleanup_old_tasks())  # safe here because inside running loop
+    asyncio.create_task(cleanup_old_tasks())
     return {"status": "cleanup scheduled"}
 
 # ---------- CONFIG & LOGGING ----------
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
-logger = logging.getLogger("zynara-server")
+
 
 # Configure logging to prevent duplicate logs
 logging.getLogger("apscheduler").setLevel(logging.WARNING)
@@ -211,6 +199,29 @@ def generate_device_fingerprint(request: Request) -> str:
     # simple + stable fingerprint
     return request.headers.get("user-agent", "unknown-device")
 
+async def get_groq_client():
+    return httpx.AsyncClient(
+        base_url="https://api.groq.com",
+        headers={
+            "Authorization": f"Bearer {GROQ_API_KEY}",
+            "Content-Type": "application/json"
+        },
+        timeout=60
+    )
+
+# =========================
+# SSE FORMATTER
+# =========================
+def sse(data: dict) -> str:
+    return f"event: message\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+# =========================
+# SIMPLE STREAM EXAMPLE
+# =========================
+async def stream():
+    data = {"message": "hello"}
+    yield sse(data)
+    
 # -----------------------------
 # Background task system
 # -----------------------------
@@ -1182,7 +1193,7 @@ CREATOR_INFO = {
     "age": 17,
     "country": "England",
     "projects": ["MZ", "LS", "SX", "CB"],
-    "socials": { "discord":"@nexisphere123_89431", "twitter":"@NexiSphere"},
+    "socials": { "discord":"@helox321", "twitter":"@Helox"},
     "bio": "Created by GoldBoy (17, England). Projects: MZ, LS, SX, CB. Socials: Discord @nexisphere123_89431 Twitter @NexiSphere."
 }
 
