@@ -59,7 +59,7 @@ import plotly.express as px
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.schedulers.base import STATE_RUNNING
 
-logger = logging.getLogger(HeloxAi)
+logger = logging.getLogger("HeloxAi")
 
 # =========================
 # GLOBALS
