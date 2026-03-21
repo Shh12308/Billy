@@ -547,7 +547,7 @@ async def merge_anonymous_session(
             path="/",
             secure=True,
             httponly=True,
-            samesite="lax"
+            samesite="none"
         )
 
         return {"status": "success"}
