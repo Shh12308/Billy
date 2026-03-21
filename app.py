@@ -74,8 +74,7 @@ app.add_middleware(
     allow_origins=[
         "https://www.heloxai.xyz",
         "https://heloxai.xyz",# your frontend domain
-        "http://localhost:3000"      # if testing locally
-    ],
+        "http://localhost:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
