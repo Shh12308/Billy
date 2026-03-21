@@ -7047,8 +7047,8 @@ async def ask_universal(
                 key="guest_id",
                 value=user_id,
                 httponly=True,
-                secure=False,
-                samesite="Lax",
+                secure=True,
+                samesite="none",
                 max_age=60 * 60 * 24 * 7
             )
 
@@ -7083,7 +7083,20 @@ async def ask_universal(
 
         intent = detect_intent(prompt)
 
-        return {"status": "ok", "intent": intent}
+    if not stream:
+    return {
+        "status": "ok",
+        "intent": intent,
+        "message": "Non-stream response working"
+    }
+
+from fastapi.responses import StreamingResponse
+
+async def test_stream():
+    yield "data: {\"type\":\"starting\"}\n\n"
+    yield "data: {\"type\":\"done\"}\n\n"
+
+return StreamingResponse(test_stream(), media_type="text/event-stream")
 
     except Exception as e:
         logger.error(f"Request failed: {e}")
@@ -7093,48 +7106,60 @@ async def ask_universal(
         # IMAGE GENERATION
         # -------------------------
         if intent == "image":
-            sample_match = re.search(r'(\d+)\s+(image|images)', prompt.lower())
-            num_samples = min(int(sample_match.group(1)), 4) if sample_match else 1
+    sample_match = re.search(r'(\d+)\s+(image|images)', prompt.lower())
+    num_samples = min(int(sample_match.group(1)), 4) if sample_match else 1
 
-            if stream:
-                async def event_generator():
-                    yield sse({"type": "starting", "message": "Generating image..."})
-                    try:
-                        result = await _generate_image_core(
-                            prompt,
-                            num_samples,
-                            user_id,
-                            return_base64=False
-                        )
+    if stream:
+        async def event_generator():
+            # ✅ ALWAYS start with valid SSE
+            yield f"data: {json.dumps({'type': 'starting', 'message': 'Generating image...'})}\n\n"
 
-                        yield sse({
-                            "type": "images",
-                            "provider": result.get("provider"),
-                            "images": result.get("images", [])
-                        })
-
-                        yield sse({"type": "done"})
-                    except Exception as e:
-                        logger.error(f"Image generation failed: {e}")
-                        yield sse({"type": "error", "message": str(e)})
-
-                return StreamingResponse(
-                    event_generator(),
-                    media_type="text/event-stream",
-                    headers={
-                        "Cache-Control": "no-cache",
-                        "Connection": "keep-alive",
-                        "X-Accel-Buffering": "no"
-                    }
+            try:
+                result = await _generate_image_core(
+                    prompt,
+                    num_samples,
+                    user_id,
+                    return_base64=False
                 )
 
-            return await _generate_image_core(
-                prompt,
-                num_samples,
-                user_id,
-                return_base64=False
-            )
+                yield f"data: {json.dumps({
+                    'type': 'images',
+                    'provider': result.get('provider'),
+                    'images': result.get('images', [])
+                })}\n\n"
 
+                yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+            except Exception as e:
+                logger.error(f"Image generation failed: {e}")
+
+                yield f"data: {json.dumps({
+                    'type': 'error',
+                    'message': str(e)
+                })}\n\n"
+
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
+
+    # ✅ Non-streaming (unchanged but safe)
+    try:
+        return await _generate_image_core(
+            prompt,
+            num_samples,
+            user_id,
+            return_base64=False
+        )
+    except Exception as e:
+        logger.error(f"Image generation failed: {e}")
+        raise HTTPException(500, "Image generation failed")
+        
         # -------------------------
         # MATH SOLVING
         # -------------------------
@@ -7148,7 +7173,7 @@ async def ask_universal(
         elif intent == "joke":
             if stream:
                 async def event_generator():
-                    yield sse({"type": "starting", "message": "Finding a joke..."})
+                    yield f"data: {json.dumps({...})}\n\n"
                     try:
                         # Extract category from prompt if specified
                         category = "general"
@@ -7203,11 +7228,11 @@ async def ask_universal(
 
             if stream:
                 async def generator():
-                    yield sse({"type": "starting"})
+                    yield f"data: {json.dumps({'type': 'starting'})}\n\n"
                     for char in assistant_reply:
                         yield sse({"type": "token", "text": char})
                         await asyncio.sleep(0.005)
-                    yield sse({"type": "done"})
+                    yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
                 return StreamingResponse(
                     generator(),
@@ -7240,7 +7265,7 @@ async def ask_universal(
             
             if stream:
                 async def event_generator():
-                    yield sse({"type": "starting", "message": "Generating video with Pixverse..."})
+                    yield f"data: {json.dumps({'type': 'starting', 'message': 'Generating video with Pixverse...'})}\n\n"
                     try:
                         # Call our new helper function
                         result = await _generate_video_with_pixverse_replicate(prompt, num_samples)
@@ -7253,7 +7278,7 @@ async def ask_universal(
                         yield sse({"type": "done"})
                     except Exception as e:
                         logger.error(f"Video generation with Pixverse failed: {e}")
-                        yield sse({"type": "error", "message": str(e)})
+                        yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
                 
                 return StreamingResponse(
                     event_generator(),
@@ -7284,7 +7309,7 @@ async def ask_universal(
             
             if stream:
                 async def event_generator():
-                    yield sse({"type": "starting", "message": "Analyzing image..."})
+                    yield f"data: {json.dumps({'type': 'starting', 'message': 'Analyzing image...'})}\n\n"
                     temp_path = None
                     try:
                         # Download the image from the URL
@@ -7308,15 +7333,15 @@ async def ask_universal(
                         # Close the file before cleanup
                         image_upload.file.close()
                         
-                        yield sse({
-                            "type": "vision_result",
-                            "objects": result.get("objects", []),
-                            "faces_detected": result.get("faces_detected", 0),
-                            "dominant_colors": result.get("dominant_colors", []),
-                            "image_url": result.get("image_url", ""),
-                            "annotated_image_url": result.get("annotated_image_url", "")
-                        })
-                        yield sse({"type": "done"})
+                        yield f"data: {json.dumps({
+    'type': 'vision_result',
+    'objects': result.get('objects', []),
+    'faces_detected': result.get('faces_detected', 0),
+    'dominant_colors': result.get('dominant_colors', []),
+    'image_url': result.get('image_url', ''),
+    'annotated_image_url': result.get('annotated_image_url', '')
+})}\n\n"
+                        yield f"data: {json.dumps({'type': 'done'})}\n\n"
                     except Exception as e:
                         logger.error(f"Vision analysis failed: {e}")
                         yield sse({"type": "error", "message": str(e)})
@@ -7387,7 +7412,7 @@ async def ask_universal(
             
             if stream:
                 async def event_generator():
-                    yield sse({"type": "starting", "message": "Creating video from image..."})
+                    yield f"data: {json.dumps({'type': 'starting', 'message': 'Creating video from image...'})}\n\n"
                     temp_path = None
                     try:
                         # Download the image from the URL
@@ -7498,21 +7523,22 @@ async def ask_universal(
                             r.raise_for_status()
                             code = r.json()["choices"][0]["message"]["content"]
                         
-                        yield sse({
-                            "type": "code",
-                            "language": language,
-                            "code": code
-                        })
+                        yield f"data: {json.dumps({
+    'type': 'code',
+    'language': language,
+    'code': code
+})}\n\n"
                         
                         # Run code if requested
                         if run_flag:
-                            yield sse({"type": "progress", "message": "Running code..."})
-                            execution = await run_code_online(code, language)
-                            yield sse({
-                                "type": "execution",
-                                "result": execution
-                            })
-                        
+                            yield f"data: {json.dumps({'type': 'progress', 'message': 'Running code...'})}\n\n"
+
+execution = await run_code_online(code, language)
+
+yield f"data: {json.dumps({
+    'type': 'execution',
+    'result': execution
+})}\n\n"
                         # Save code generation record
                         try:
                             supabase.table("code_generations").insert({
@@ -7526,10 +7552,10 @@ async def ask_universal(
                         except Exception as e:
                             logger.error(f"Failed to save code generation record: {e}")
                         
-                        yield sse({"type": "done"})
-                    except Exception as e:
-                        logger.error(f"Code generation failed: {e}")
-                        yield sse({"type": "error", "message": str(e)})
+                   yield f"data: {json.dumps({'type': 'done'})}\n\n"
+except Exception as e:
+    logger.error(f"Code generation failed: {e}")
+    yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
                 
                 return StreamingResponse(
                     event_generator(),
@@ -7598,18 +7624,23 @@ async def ask_universal(
             
             if stream:
                 async def event_generator():
-                    yield sse({"type": "starting", "message": "Searching..."})
-                    try:
-                        result = await duckduckgo_search(query)
-                        yield sse({
-                            "type": "search_results",
-                            "query": query,
-                            "results": result
-                        })
-                        yield sse({"type": "done"})
-                    except Exception as e:
-                        logger.error(f"Search failed: {e}")
-                        yield sse({"type": "error", "message": str(e)})
+                    yield f"data: {json.dumps({'type': 'starting', 'message': 'Searching...'})}\n\n"
+
+try:
+    result = await duckduckgo_search(query)
+
+    yield f"data: {json.dumps({
+        'type': 'search_results',
+        'query': query,
+        'results': result
+    })}\n\n"
+
+    yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+except Exception as e:
+    logger.error(f"Search failed: {e}")
+    yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+    
                 
                 return StreamingResponse(
                     event_generator(),
