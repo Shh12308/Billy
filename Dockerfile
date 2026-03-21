@@ -15,9 +15,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
+# Copy requirements first (for caching)
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
 
+# Upgrade pip + install torch separately (more stable) + install rest
+RUN pip install --upgrade pip && \
+    pip install --no-cache-dir --timeout 1000 --retries 10 torch==2.1.0 --index-url https://download.pytorch.org/whl/cpu && \
+    pip install --no-cache-dir --timeout 1000 --retries 10 -r requirements.txt
+
+# Copy the rest of the app
 COPY . .
 
 EXPOSE 8080
