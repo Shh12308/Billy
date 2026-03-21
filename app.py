@@ -7090,16 +7090,12 @@ async def ask_universal(
                "status": "ok",
                "intent": intent
            }
-
 async def test_stream():
     yield "data: {\"type\": \"starting\"}\n\n"
     yield "data: {\"type\": \"done\"}\n\n"
 
 return StreamingResponse(test_stream(), media_type="text/event-stream")
 
-except Exception as e:
-    logger.error(f"Error: {e}")
-    raise HTTPException(status_code=500, detail="Internal server error")
         
         # -------------------------
         # IMAGE GENERATION
