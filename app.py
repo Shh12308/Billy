@@ -58,6 +58,14 @@ import plotly.graph_objects as go
 import plotly.express as px
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.schedulers.base import STATE_RUNNING
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.executors.asyncio import AsyncIOExecutor
+
+executors = {
+    "default": AsyncIOExecutor()
+}
+
+scheduler = AsyncIOScheduler(executors=executors)
 
 logger = logging.getLogger("HeloxAi")
 
