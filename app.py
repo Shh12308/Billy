@@ -7922,40 +7922,25 @@ async def stream_endpoint(request: Request):
 @app.post("/stop")
 async def stop_generation(request: Request):
     try:
-        # ✅ Safely parse JSON, fallback to empty dict
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-
+        body = await request.json()
         user_identifier = body.get("user_id")
 
         if not user_identifier:
-            return JSONResponse(
-                status_code=400,
-                content={"error": "user_id required"}
-            )
+            raise HTTPException(status_code=400, detail="user_id required")
 
-        # If your user function returns (user, created)
         user_result = get_or_create_user(user_identifier)
-
-        if isinstance(user_result, tuple):
-            user, _ = user_result
-        else:
-            user = user_result
-
+        user = user_result[0] if isinstance(user_result, tuple) else user_result
         user_id = getattr(user, "id", user)
 
-        # Cancel active task if exists
         task = active_tasks.get(user_id)
 
-        if task:
+        if task and not task.done():
             task.cancel()
             del active_tasks[user_id]
             logging.info(f"Cancelled task for user {user_id}")
             return {"status": "stopped"}
-        else:
-            return {"status": "no active task"}
+
+        return {"status": "no active task"}
 
     except Exception as e:
         logging.error(f"/stop failed: {str(e)}")
@@ -8928,114 +8913,6 @@ async def get_user_info(req: Request, res: Response):
             "anonymous": user.anonymous,
             "error": "Failed to get additional user data"
         }
-
-#// Add a new endpoint to merge anonymous user data with logged-in user@app.post("/user/merge")
-async def merge_user_data(req: Request, response: Response):
-    """
-    Merges an anonymous user's data into a logged-in user's account.
-    """
-
-    session_token = req.cookies.get("session_token")
-    if not session_token:
-        raise HTTPException(400, "No session token found.")
-
-    # 1️⃣ Find anonymous user
-    try:
-        anonymous_user_id = session_token
-
-        user_resp = await asyncio.to_thread(
-            lambda: supabase.table("users")
-            .select("*")
-            .eq("session_token", session_token)
-            .limit(1)
-            .execute()
-        )
-
-        if not user_resp.data:
-            raise HTTPException(404, "Anonymous user not found.")
-
-    except Exception as e:
-        logger.error(f"Error finding anonymous user: {e}")
-        raise HTTPException(404, "Anonymous user not found.")
-
-    # 2️⃣ Get logged-in user from JWT
-    auth_header = req.headers.get("authorization")
-    if not auth_header or not auth_header.startswith("Bearer "):
-        raise HTTPException(401, "No authorization token found.")
-
-    token = auth_header.split("Bearer ")[1]
-
-    try:
-        if not frontend_supabase:
-            raise HTTPException(500, "Frontend Supabase not configured.")
-
-        user_resp = await asyncio.to_thread(
-            lambda: frontend_supabase.auth.get_user(token)
-        )
-
-        if not user_resp.user:
-            raise HTTPException(401, "Invalid or expired token.")
-
-        logged_in_id = user_resp.user.id
-
-    except Exception as e:
-        logger.error(f"Auth validation failed: {e}")
-        raise HTTPException(401, "Invalid or expired token.")
-
-    # 3️⃣ Perform the merge
-    try:
-        # Move conversations
-        await asyncio.to_thread(
-            lambda: supabase.table("conversations")
-            .update({"user_id": logged_in_id})
-            .eq("user_id", anonymous_user_id)
-            .execute()
-        )
-
-        # Move messages
-        await asyncio.to_thread(
-            lambda: supabase.table("messages")
-            .update({"user_id": logged_in_id})
-            .eq("user_id", anonymous_user_id)
-            .execute()
-        )
-
-        # Delete anonymous user
-        await asyncio.to_thread(
-            lambda: supabase.table("users")
-            .delete()
-            .eq("id", anonymous_user_id)
-            .execute()
-        )
-
-        logger.info(
-            f"Merged anonymous user {anonymous_user_id} into {logged_in_id}"
-        )
-
-    except Exception as e:
-        logger.error(f"Merge failed: {e}")
-        raise HTTPException(500, "Failed to merge user data.")
-
-    # 4️⃣ Update cookie
-    response.set_cookie(
-        key="session_token",
-        value=logged_in_id,
-        max_age=60 * 60 * 24 * 30,
-        path="/",
-        secure=True,
-        httponly=True,
-        samesite="lax",
-    )
-
-    return {"status": "success", "message": "User data merged successfully."}
-
-# Find this function in your code:
-def run_check():
-    return {"status": "ok", "message": "System check passed"}
-
-# And replace it with this (no change needed here, but showing for context):
-def run_check():
-    return {"status": "ok", "message": "System check passed"}
 
 @app.get("/core-skills")
 async def get_core_skills():
