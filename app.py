@@ -7057,22 +7057,24 @@ async def ask_universal(
             conversation_id = str(uuid.uuid4())
 
         await asyncio.to_thread(
-            lambda: supabase.table("conversations").upsert({
-                "id": conversation_id,
-                "user_id": user_id,
-                "created_at": datetime.utcnow().isoformat()
-            }).execute()
-        )
+    lambda: supabase.table("conversations").upsert({
+        "id": conversation_id,
+        "user_id": user_id,
+        "created_at": datetime.utcnow().isoformat()
+    }).execute()
+)
 
 # ✅ Fetch history safely
-         try:
-             history_res = await asyncio.to_thread(
-             lambda: supabase.table("messages")
-             .select("role, content")
-             .eq("conversation_id", conversation_id)
-             .order("created_at")
-             .limit(20)
-             .execute()
+try:
+    history_res = await asyncio.to_thread(
+        lambda: (
+            supabase.table("messages")
+            .select("role, content")
+            .eq("conversation_id", conversation_id)
+            .order("created_at")
+            .limit(20)
+            .execute()
+        )
     )
     messages = history_res.data or []
 except Exception as e:
@@ -7084,7 +7086,7 @@ messages.append({"role": "user", "content": prompt})
 
 intent = detect_intent(prompt)
 
-# ✅ Separate logic block
+# ✅ Non-stream response
 if not stream:
     return {
         "status": "ok",
@@ -7098,7 +7100,6 @@ async def test_stream():
     yield "data: {\"type\": \"done\"}\n\n"
 
 return StreamingResponse(test_stream(), media_type="text/event-stream")
-
         
         # -------------------------
         # IMAGE GENERATION
