@@ -7084,7 +7084,7 @@ async def ask_universal(
     # ✅ Outside try
     messages.append({"role": "user", "content": prompt})
 
-    intent = detect_intent(prompt)
+        intent = detect_intent(prompt)
 
     if not stream:
         return {
