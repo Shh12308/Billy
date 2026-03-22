@@ -7056,57 +7056,50 @@ async def ask_universal(
         if not conversation_id:
             conversation_id = str(uuid.uuid4())
 
+        # ✅ conversations upsert
         await asyncio.to_thread(
-    lambda: supabase.table("conversations").upsert({
-        "id": conversation_id,
-        "user_id": user_id,
-        "created_at": datetime.utcnow().isoformat()
-    }).execute()
-)
+            lambda: supabase.table("conversations").upsert({
+                "id": conversation_id,
+                "user_id": user_id,
+                "created_at": datetime.utcnow().isoformat()
+            }).execute()
+        )
 
+        # ✅ messages fetch
+        history_res = await asyncio.to_thread(
+            lambda: supabase.table("messages")
+            .select("role, content")
+            .eq("conversation_id", conversation_id)
+            .order("created_at")
+            .limit(20)
+            .execute()
+        )
 
-try:
-    await asyncio.to_thread(
-        lambda: supabase.table("conversations")
-        .upsert({...})
-        .execute()
-    )
+        messages = history_res.data or []
 
-    history_res = await asyncio.to_thread(
-        lambda: supabase.table("messages")
-        .select("role, content")
-        .eq("conversation_id", conversation_id)
-        .order("created_at")
-        .limit(20)
-        .execute()
-    )
+    except Exception as e:
+        print("ERROR:", e)
+        raise HTTPException(status_code=500, detail=str(e))
 
-    messages = history_res.data or []
+    # ✅ Outside try
+    messages.append({"role": "user", "content": prompt})
 
-except Exception as e:
-    print(e)
+    intent = detect_intent(prompt)
 
+    if not stream:
+        return {
+            "status": "ok",
+            "intent": intent
+        }
 
-# ✅ Outside try/except
-messages.append({"role": "user", "content": prompt})
+    from fastapi.responses import StreamingResponse
 
-intent = detect_intent(prompt)
+    async def test_stream():
+        yield "data: {\"type\": \"starting\"}\n\n"
+        yield "data: {\"type\": \"done\"}\n\n"
 
-# ✅ Non-stream response
-if not stream:
-    return {
-        "status": "ok",
-        "intent": intent
-    }
-
-from fastapi.responses import StreamingResponse
-
-async def test_stream():
-    yield "data: {\"type\": \"starting\"}\n\n"
-    yield "data: {\"type\": \"done\"}\n\n"
-
-return StreamingResponse(test_stream(), media_type="text/event-stream")
-        
+    return StreamingResponse(test_stream(), media_type="text/event-stream")
+    
         # -------------------------
         # IMAGE GENERATION
         # -------------------------
