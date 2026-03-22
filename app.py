@@ -7064,32 +7064,35 @@ async def ask_universal(
             }).execute()
         )
 
-        # ✅ Fetch history safely
-        try:
-            history_res = await asyncio.to_thread(
-                lambda: supabase.table("messages")
-                .select("role, content")
-                .eq("conversation_id", conversation_id)
-                .order("created_at")
-                .limit(20)
-                .execute()
-            )
-            messages = history_res.data or []
-        except Exception as e:
-            logger.error(f"Failed to fetch history: {e}")
-            messages = []
+# ✅ Fetch history safely
+try:
+    history_res = await asyncio.to_thread(
+        lambda: supabase.table("messages")
+        .select("role, content")
+        .eq("conversation_id", conversation_id)
+        .order("created_at")
+        .limit(20)
+        .execute()
+    )
+    messages = history_res.data or []
+except Exception as e:
+    logger.error(f"Failed to fetch history: {e}")
+    messages = []
 
-        # ✅ Outside try/except
-        messages.append({"role": "user", "content": prompt})
+# ✅ Outside try/except
+messages.append({"role": "user", "content": prompt})
 
-        intent = detect_intent(prompt)
+intent = detect_intent(prompt)
 
-        try:
-            if not stream:
-               return {
-               "status": "ok",
-               "intent": intent
-           }
+# ✅ Separate logic block
+if not stream:
+    return {
+        "status": "ok",
+        "intent": intent
+    }
+
+from fastapi.responses import StreamingResponse
+
 async def test_stream():
     yield "data: {\"type\": \"starting\"}\n\n"
     yield "data: {\"type\": \"done\"}\n\n"
