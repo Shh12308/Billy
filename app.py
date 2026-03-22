@@ -7616,7 +7616,7 @@ except Exception as e:
         # -------------------------
         # WEB SEARCH
         # -------------------------
-        elif intent == "search":
+    elif intent == "search":
             # Extract query from prompt
             query = prompt
             if "search for" in prompt.lower():
@@ -7662,7 +7662,7 @@ except Exception as e:
         # -------------------------
         # TEXT-TO-SPEECH
         # -------------------------
-        elif intent == "tts":
+    elif intent == "tts":
             # Extract text to speak
             text = prompt
             if "say" in prompt.lower():
@@ -7749,8 +7749,8 @@ except Exception as e:
         # -------------------------
         # DEFAULT: CHAT
         # -------------------------
-        else:
-            messages = [{"role": "user", "content": prompt}]
+    else:
+         messages = [{"role": "user", "content": prompt}]
 
         if stream:
             async def generator():
