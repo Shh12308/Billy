@@ -7065,9 +7065,11 @@ async def ask_universal(
 )
 
 
-    try:
+try:
     await asyncio.to_thread(
-        lambda: supabase.table("conversations").upsert({...}).execute()
+        lambda: supabase.table("conversations")
+        .upsert({...})
+        .execute()
     )
 
     history_res = await asyncio.to_thread(
@@ -7081,7 +7083,7 @@ async def ask_universal(
 
     messages = history_res.data or []
 
-    except Exception as e:
+except Exception as e:
     print(e)
 
 
