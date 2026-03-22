@@ -7081,7 +7081,7 @@ async def ask_universal(
 
     messages = history_res.data or []
 
-except Exception as e:
+    except Exception as e:
     print(e)
 
 
