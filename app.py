@@ -7104,8 +7104,8 @@ async def ask_universal(
         # IMAGE GENERATION
         # -------------------------
     if intent == "image":
-      sample_match = re.search(r'(\d+)\s+(image|images)', prompt.lower())
-      num_samples = min(int(sample_match.group(1)), 4) if sample_match else 1
+        sample_match = re.search(r'(\d+)\s+(image|images)', prompt.lower())
+        num_samples = min(int(sample_match.group(1)), 4) if sample_match else 1
 
     if stream:
         async def event_generator():
@@ -7168,7 +7168,7 @@ async def ask_universal(
         # -------------------------
         # MATH SOLVING
         # -------------------------
-        elif intent == "math":
+    elif intent == "math":
             result = await solve_math(prompt)
             return result
 
@@ -7221,7 +7221,7 @@ async def ask_universal(
         # -------------------------
         # PERSONAL INFORMATION
         # -------------------------
-        elif intent == "personal":
+    elif intent == "personal":
             # This will be handled by the enhanced chat_with_tools function
             # which now checks user memory first
             messages = [{"role": "user", "content": prompt}]
@@ -7260,7 +7260,7 @@ async def ask_universal(
         # -------------------------
         # VIDEO GENERATION (Fixed indentation)
         # -------------------------
-        elif intent == "video":
+    elif intent == "video":
             # Extract sample count from prompt
             sample_match = re.search(r'(\d+)\s+(video|videos)', prompt.lower())
             if sample_match:
@@ -7301,7 +7301,7 @@ async def ask_universal(
         # -------------------------
         # VISION ANALYSIS (Fixed file handling)
         # -------------------------
-        elif intent == "vision" and files:
+    elif intent == "vision" and files:
             if not files or len(files) == 0:
                 raise HTTPException(400, "No files provided for vision analysis")
             
@@ -7397,7 +7397,7 @@ yield f"data: {json.dumps({'type': 'done'})}\n\n"
         # -------------------------
         # IMG2VID (IMAGE TO VIDEO) (Fixed file handling)
         # -------------------------
-        elif intent == "img2vid" and files:
+    elif intent == "img2vid" and files:
             if not files or len(files) == 0:
                 raise HTTPException(400, "No files provided for img2vid")
             
@@ -7497,7 +7497,7 @@ yield f"data: {json.dumps({'type': 'done'})}\n\n"
         # -------------------------
         # CODE GENERATION
         # -------------------------
-        elif intent == "code":
+    elif intent == "code":
             # Extract language from prompt
             language = "python"
             lang_match = re.search(r'(python|javascript|java|c\+\+|c#|php|ruby|go|rust|swift|kotlin)\s+code', prompt.lower())
