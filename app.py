@@ -7175,7 +7175,7 @@ async def ask_universal(
         # -------------------------
         # JOKE TELLING
         # -------------------------
-        elif intent == "joke":
+    elif intent == "joke":
             if stream:
                 async def event_generator():
                     yield f"data: {json.dumps({...})}\n\n"
