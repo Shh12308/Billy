@@ -7064,8 +7064,7 @@ async def ask_universal(
     }).execute()
 )
 
-# ✅ Fetch history safely
-try:
+
     history_res = await asyncio.to_thread(
         lambda: (
             supabase.table("messages")
@@ -7077,9 +7076,7 @@ try:
         )
     )
     messages = history_res.data or []
-except Exception as e:
-    logger.error(f"Failed to fetch history: {e}")
-    messages = []
+
 
 # ✅ Outside try/except
 messages.append({"role": "user", "content": prompt})
