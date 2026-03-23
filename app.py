@@ -7158,10 +7158,10 @@ async def ask_universal(
             logger.error(f"Image generation failed: {e}")
             raise HTTPException(500, "Image generation failed")
 
-# ✅ NOW THIS IS VALID
-elif intent == "math":
-    result = await solve_math(prompt)
-    return result
+
+    elif intent == "math":
+        result = await solve_math(prompt)
+        return result
 
         # -------------------------
         # JOKE TELLING
