@@ -895,9 +895,9 @@ async def generate_video_replicate(prompt: str, samples: int, user_id: str):
             
             # Download the video
            async with httpx.AsyncClient(timeout=120.0) as client:
-    video_response = await client.get(video_url)
-    video_response.raise_for_status()
-    video_bytes = video_response.content
+               video_response = await client.get(video_url)
+               video_response.raise_for_status()
+               video_bytes = video_response.content
             
             # Upload to Supabase
             filename = f"{uuid.uuid4().hex[:8]}.mp4"
