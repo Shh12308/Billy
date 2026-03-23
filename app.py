@@ -7103,13 +7103,12 @@ async def ask_universal(
         # -------------------------
         # IMAGE GENERATION
         # -------------------------
-    if intent == "image":
-        sample_match = re.search(r'(\d+)\s+(image|images)', prompt.lower())
-        num_samples = min(int(sample_match.group(1)), 4) if sample_match else 1
+   if intent == "image":
+    sample_match = re.search(r'(\d+)\s+(image|images)', prompt.lower())
+    num_samples = min(int(sample_match.group(1)), 4) if sample_match else 1
 
     if stream:
         async def event_generator():
-            # starting
             payload = {
                 "type": "starting",
                 "message": "Generating image..."
@@ -7135,12 +7134,7 @@ async def ask_universal(
 
             except Exception as e:
                 logger.error(f"Image generation failed: {e}")
-
-                payload = {
-                    "type": "error",
-                    "message": str(e)
-                }
-                yield f"data: {json.dumps(payload)}\n\n"
+                yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
 
         return StreamingResponse(
             event_generator(),
@@ -7152,22 +7146,19 @@ async def ask_universal(
             }
         )
 
-    # Non-streaming
-    try:
-        return await _generate_image_core(
-            prompt,
-            num_samples,
-            user_id,
-            return_base64=False
-        )
-    except Exception as e:
-        logger.error(f"Image generation failed: {e}")
-        raise HTTPException(500, "Image generation failed")
-        
-        
-        # -------------------------
-        # MATH SOLVING
-        # -------------------------
+    else:
+        try:
+            return await _generate_image_core(
+                prompt,
+                num_samples,
+                user_id,
+                return_base64=False
+            )
+        except Exception as e:
+            logger.error(f"Image generation failed: {e}")
+            raise HTTPException(500, "Image generation failed")
+
+# ✅ NOW THIS IS VALID
 elif intent == "math":
     result = await solve_math(prompt)
     return result
