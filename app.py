@@ -862,17 +862,14 @@ async def generate_video_replicate(prompt: str, samples: int, user_id: str):
     """
     REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
     if not REPLICATE_API_TOKEN:
-        # Return placeholder if no API key
         return await generate_placeholder_video(prompt, samples, user_id)
     
     try:
-        # Set the API token
         os.environ["REPLICATE_API_TOKEN"] = REPLICATE_API_TOKEN
         
         urls = []
         
         for i in range(samples):
-            # Run the model in a thread to avoid blocking
             output = await asyncio.to_thread(
                 replicate.run,
                 "stability-ai/stable-video-diffusion",
@@ -887,19 +884,17 @@ async def generate_video_replicate(prompt: str, samples: int, user_id: str):
                 }
             )
             
-            # The output is typically a URL to the generated video
             video_url = output
             if not video_url:
                 logger.error("No video URL in response")
                 continue
             
-            # Download the video
-           async with httpx.AsyncClient(timeout=120.0) as client:
-               video_response = await client.get(video_url)
-               video_response.raise_for_status()
-               video_bytes = video_response.content
+            # ✅ FIXED INDENTATION
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                video_response = await client.get(video_url)
+                video_response.raise_for_status()
+                video_bytes = video_response.content
             
-            # Upload to Supabase
             filename = f"{uuid.uuid4().hex[:8]}.mp4"
             storage_path = f"anonymous/{filename}"
             
@@ -909,7 +904,6 @@ async def generate_video_replicate(prompt: str, samples: int, user_id: str):
                 file_options={"content-type": "video/mp4"}
             )
             
-            # Save video record
             try:
                 supabase.table("videos").insert({
                     "id": str(uuid.uuid4()),
@@ -922,7 +916,6 @@ async def generate_video_replicate(prompt: str, samples: int, user_id: str):
             except Exception as e:
                 logger.error(f"Failed to save video record: {e}")
             
-            # Get public URL
             public_url = get_public_url("ai-videos", storage_path)
             urls.append(public_url)
         
@@ -933,8 +926,8 @@ async def generate_video_replicate(prompt: str, samples: int, user_id: str):
         
     except Exception as e:
         logger.error(f"Replicate video generation failed: {e}")
-        # Fallback to placeholder
         return await generate_placeholder_video(prompt, samples, user_id)
+        
 
 #// ----------------------------------
 #// PLACEHOLDER VIDEO GENERATION
