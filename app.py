@@ -398,7 +398,6 @@ async def get_or_create_user(request: Request, response: Response) -> dict:
     Get a user by session cookie, or create an anonymous user if not found.
     Returns the user dictionary.
     """
-
     session_token = request.cookies.get(COOKIE_NAME)
 
     # Try to find existing user by session token
@@ -411,10 +410,8 @@ async def get_or_create_user(request: Request, response: Response) -> dict:
                 .limit(1)
                 .execute()
             )
-
             if user_resp.data:
                 return user_resp.data[0]  # return dict directly
-
         except Exception as e:
             logger.error(f"User lookup failed: {e}")
 
@@ -431,19 +428,21 @@ async def get_or_create_user(request: Request, response: Response) -> dict:
     }
 
     try:
+        # Use upsert to prevent duplicates
         await run_in_threadpool(
-            lambda: supabase.table("users").insert(user_data).execute()
+            lambda: supabase.table("users")
+            .upsert(user_data, on_conflict="session_token")
+            .execute()
         )
 
         logger.info(f"Created new anonymous user: {anonymous_id}")
 
-        # Set session cookie
+        # Set session cookie (valid path, secure, httponly)
         response.set_cookie(
             key=COOKIE_NAME,
             value=new_session_token,
             max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
             path="/",
-            domain="/",
             secure=True,
             httponly=True,
             samesite="lax"
@@ -454,7 +453,6 @@ async def get_or_create_user(request: Request, response: Response) -> dict:
     except Exception as e:
         logger.error(f"Failed to create anonymous user: {e}")
         raise HTTPException(status_code=500, detail="User session creation failed")
-        
 
 # -----------------------------
 # Get Current User
@@ -467,14 +465,10 @@ async def get_current_user_optional(
 
     # JWT auth first
     if credentials and credentials.scheme == "Bearer":
-
         try:
             user_jwt = frontend_supabase.auth.get_user(credentials.credentials)
-
             if user_jwt.user:
-
                 user_id = user_jwt.user.id
-
                 user_resp = await run_in_threadpool(
                     lambda: supabase.table("users")
                     .select("*")
@@ -482,17 +476,28 @@ async def get_current_user_optional(
                     .limit(1)
                     .execute()
                 )
-
-                if user_resp.data:
-                    return user_resp.data[0]
-
+                # Auto-create DB user if missing
+                if not user_resp.data:
+                    user_data = {
+                        "id": user_id,
+                        "email": user_jwt.user.email,
+                        "anonymous": False,
+                        "session_token": create_session_token(),
+                        "created_at": datetime.now(timezone.utc).isoformat()
+                    }
+                    await run_in_threadpool(
+                        lambda: supabase.table("users")
+                        .insert(user_data)
+                        .execute()
+                    )
+                    user_resp.data = [user_data]
+                return user_resp.data[0]
         except (JWTError, Exception) as e:
             logger.warning(f"JWT validation failed: {e}")
 
     # fallback to anonymous session
     user = await get_or_create_user(request, response)
     return user
-
 
 # -----------------------------
 # Merge Anonymous Session
@@ -503,20 +508,16 @@ async def merge_anonymous_session(
     response: Response,
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ):
-
     if not credentials or credentials.scheme != "Bearer":
         raise HTTPException(status_code=401, detail="Authorization token required")
 
     try:
         user_jwt = frontend_supabase.auth.get_user(credentials.credentials)
-
         if not user_jwt.user:
             raise HTTPException(status_code=401, detail="Invalid token")
-
         permanent_user_id = user_jwt.user.id
 
         session_token = request.cookies.get(COOKIE_NAME)
-
         if not session_token:
             return {"status": "no_session"}
 
@@ -527,20 +528,17 @@ async def merge_anonymous_session(
             .limit(1)
             .execute()
         )
-
         if not anon_resp.data:
             return {"status": "not_found"}
 
         anonymous_user_id = anon_resp.data[0]["id"]
-
         if anonymous_user_id == permanent_user_id:
             return {"status": "already_merged"}
 
         logger.info(f"Merging {anonymous_user_id} → {permanent_user_id}")
 
-        # merge tables
+        # Merge tables safely
         for table in TABLES_WITH_USER:
-
             try:
                 await run_in_threadpool(
                     lambda: supabase.table(table)
@@ -548,11 +546,10 @@ async def merge_anonymous_session(
                     .eq("user_id", anonymous_user_id)
                     .execute()
                 )
-
             except Exception as e:
                 logger.error(f"Merge failed for {table}: {e}")
 
-        # delete anonymous user
+        # Delete anonymous user
         await run_in_threadpool(
             lambda: supabase.table("users")
             .delete()
@@ -560,14 +557,23 @@ async def merge_anonymous_session(
             .execute()
         )
 
+        # Rotate session token for authenticated user and store in DB
+        new_token = create_session_token()
+        await run_in_threadpool(
+            lambda: supabase.table("users")
+            .update({"session_token": new_token})
+            .eq("id", permanent_user_id)
+            .execute()
+        )
+
         response.set_cookie(
             key=COOKIE_NAME,
-            value=create_session_token(),
+            value=new_token,
             max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
             path="/",
             secure=True,
             httponly=True,
-            samesite="none"
+            samesite="lax"
         )
 
         return {"status": "success"}
@@ -576,40 +582,40 @@ async def merge_anonymous_session(
         logger.error(f"Session merge error: {e}")
         raise HTTPException(status_code=500, detail="Merge failed")
 
-
 # -----------------------------
 # Visitor Merge Helper
 # -----------------------------
-def merge_visitor_to_user(user_id: str, session_token: str):
-
+async def merge_visitor_to_user(user_id: str, session_token: str):
     try:
-
-        visitor_resp = supabase.table("visitor_users") \
-            .select("id") \
-            .eq("session_token", session_token) \
-            .limit(1) \
+        visitor_resp = await run_in_threadpool(
+            lambda: supabase.table("visitor_users")
+            .select("id")
+            .eq("session_token", session_token)
+            .limit(1)
             .execute()
-
+        )
         if not visitor_resp.data:
             return
 
         visitor_id = visitor_resp.data[0]["id"]
 
-        supabase.table("conversations") \
-            .update({"user_id": user_id}) \
-            .eq("user_id", visitor_id) \
+        await run_in_threadpool(
+            lambda: supabase.table("conversations")
+            .update({"user_id": user_id})
+            .eq("user_id", visitor_id)
             .execute()
-
-        supabase.table("visitor_users") \
-            .delete() \
-            .eq("id", visitor_id) \
+        )
+        await run_in_threadpool(
+            lambda: supabase.table("visitor_users")
+            .delete()
+            .eq("id", visitor_id)
             .execute()
+        )
 
         logger.info(f"Merged visitor {visitor_id} → {user_id}")
-
     except Exception as e:
         logger.error(f"Visitor merge failed: {e}")
-
+        
 
 # -----------------------------
 # Background Scheduler
