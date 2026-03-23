@@ -7169,7 +7169,7 @@ async def ask_universal(
         # MATH SOLVING
         # -------------------------
     elif intent == "math":
-            result = await solve_math(prompt)
+        result = await solve_math(prompt)
             return result
 
         # -------------------------
