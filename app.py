@@ -7159,7 +7159,7 @@ async def ask_universal(
             raise HTTPException(500, "Image generation failed")
 
 
-    elif intent == "math":
+ elif intent == "math":
         result = await solve_math(prompt)
         return result
 
