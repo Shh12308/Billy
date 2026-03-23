@@ -848,10 +848,10 @@ async def _generate_video_with_pixverse_replicate(prompt: str, num_samples: int)
         raise ValueError("Minimax failed to generate any videos.")
 
     return {
-        "provider": "supabase-storage",
-        "model": "minimax-video-01",
-        "videos": generated_videos
-    }
+    "provider": "supabase-storage",
+    "model": "minimax-video-01",
+    "videos": [{"url": v["url"], "type": "video/mp4"} for v in generated_videos]
+}
     
 #// ----------------------------------
 #// VIDEO GENERATION (REPLICATE)
@@ -894,9 +894,10 @@ async def generate_video_replicate(prompt: str, samples: int, user_id: str):
                 continue
             
             # Download the video
-            video_response = await httpx.AsyncClient(timeout=120.0).get(video_url)
-            video_response.raise_for_status()
-            video_bytes = video_response.content
+           async with httpx.AsyncClient(timeout=120.0) as client:
+    video_response = await client.get(video_url)
+    video_response.raise_for_status()
+    video_bytes = video_response.content
             
             # Upload to Supabase
             filename = f"{uuid.uuid4().hex[:8]}.mp4"
@@ -7029,8 +7030,7 @@ def load_conversation_history(user_id: str, limit: int = 20):
 
 #// =========================================================
 #// 🚀 HELPER FUNCTION FOR TOOL-ENABLED CHAT
-#// =========================================================
-@app.post("/ask/universal")
+#// =========================================================@app.post("/ask/universal")
 async def ask_universal(
     request: Request,
     response: Response,
@@ -7038,7 +7038,8 @@ async def ask_universal(
 ):
     try:
         body = await request.json()
-        prompt = body.get("prompt", "").strip()
+
+        prompt = (body.get("prompt") or "").strip()
         conversation_id = body.get("conversation_id")
         files = body.get("files", [])
         stream = body.get("stream", True)
@@ -7047,18 +7048,18 @@ async def ask_universal(
             raise HTTPException(status_code=400, detail="prompt or files required")
 
         # -------------------------
-        # Auth & User Setup
+        # USER / SESSION
         # -------------------------
         identity = current_user or {}
-        user_id = identity.get("user_id") or request.cookies.get("guest_id") or str(uuid.uuid4())
+        user_id = identity.get("id") or request.cookies.get("guest_id") or str(uuid.uuid4())
 
-        if not identity.get("user_id") and not request.cookies.get("guest_id"):
+        if not identity.get("id") and not request.cookies.get("guest_id"):
             response.set_cookie(
                 key="guest_id",
                 value=user_id,
                 httponly=True,
                 secure=True,
-                samesite="none",
+                samesite="lax",
                 max_age=60 * 60 * 24 * 7
             )
 
@@ -7066,7 +7067,7 @@ async def ask_universal(
             conversation_id = str(uuid.uuid4())
 
         # -------------------------
-        # DB: Upsert Conversation
+        # SAVE / UPSERT CONVERSATION
         # -------------------------
         await asyncio.to_thread(
             lambda: supabase.table("conversations").upsert({
@@ -7077,7 +7078,7 @@ async def ask_universal(
         )
 
         # -------------------------
-        # DB: Fetch History
+        # LOAD HISTORY
         # -------------------------
         history_res = await asyncio.to_thread(
             lambda: supabase.table("messages")
@@ -7087,386 +7088,220 @@ async def ask_universal(
             .limit(20)
             .execute()
         )
-        
+
         history_messages = history_res.data or []
 
-        # Detect intent once
+        # -------------------------
+        # INTENT DETECTION
+        # -------------------------
         intent = detect_intent(prompt)
 
         # =========================================================
-        # INTENT: IMAGE GENERATION
+        # IMAGE GENERATION
         # =========================================================
         if intent == "image":
-            sample_match = re.search(r'(\d+)\s+(image|images)', prompt.lower())
-            num_samples = min(int(sample_match.group(1)), 4) if sample_match else 1
+            result = await image_generation_handler(prompt, user_id, stream)
 
             if stream:
-                async def event_generator():
-                    yield sse({"type": "starting", "message": "Generating image..."})
-                    try:
-                        result = await _generate_image_core(prompt, num_samples, user_id, return_base64=False)
-                        yield sse({
-                            "type": "images",
-                            "provider": result.get("provider"),
-                            "images": result.get("images", [])
-                        })
-                        yield sse({"type": "done"})
-                    except Exception as e:
-                        logger.error(f"Image generation failed: {e}")
-                        yield sse({"type": "error", "message": str(e)})
-
-                return StreamingResponse(event_generator(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
-            else:
-                try:
-                    return await _generate_image_core(prompt, num_samples, user_id, return_base64=False)
-                except Exception as e:
-                    logger.error(f"Image generation failed: {e}")
-                    raise HTTPException(500, "Image generation failed")
-
-        # =========================================================
-        # INTENT: VIDEO GENERATION
-        # =========================================================
-        elif intent == "video":
-            sample_match = re.search(r'(\d+)\s+(video|videos)', prompt.lower())
-            num_samples = min(int(sample_match.group(1)), 2) if sample_match else 1
-            
-            if stream:
-                async def event_generator():
-                    yield sse({"type": "starting", "message": "Generating video with Pixverse..."})
-                    try:
-                        result = await _generate_video_with_pixverse_replicate(prompt, num_samples)
-                        yield sse({
-                            "type": "videos",
-                            "provider": result["provider"],
-                            "videos": result["videos"]
-                        })
-                        yield sse({"type": "done"})
-                    except Exception as e:
-                        logger.error(f"Video generation failed: {e}")
-                        yield sse({"type": "error", "message": str(e)})
-                
-                return StreamingResponse(event_generator(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
-            else:
-                return await _generate_video_with_pixverse_replicate(prompt, num_samples)
-
-        # =========================================================
-        # INTENT: VISION ANALYSIS
-        # =========================================================
-        elif intent == "vision" and files:
-            if not files or not files[0].get("url"):
-                raise HTTPException(400, "No valid image file provided for vision analysis")
-            
-            image_url = files[0]["url"]
-
-            async def process_vision():
-                temp_path = None
-                try:
-                    async with httpx.AsyncClient(timeout=30) as client:
-                        resp = await client.get(image_url)
-                        resp.raise_for_status()
-                        image_bytes = resp.content
-                    
-                    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as temp_file:
-                        temp_file.write(image_bytes)
-                        temp_path = temp_file.name
-                    
-                    # Create mock UploadFile
-                    with open(temp_path, "rb") as f:
-                        image_upload = UploadFile(filename="image.png", file=f)
-                        result = await vision_analyze(request, image_upload)
-                    return result
-                finally:
-                    if temp_path and os.path.exists(temp_path):
-                        os.unlink(temp_path)
-
-            if stream:
-                async def event_generator():
-                    yield sse({"type": "starting", "message": "Analyzing image..."})
-                    try:
-                        result = await process_vision()
-                        yield sse({
-                            "type": "vision_result",
-                            "objects": result.get("objects", []),
-                            "faces_detected": result.get("faces_detected", 0),
-                            "dominant_colors": result.get("dominant_colors", []),
-                            "image_url": result.get("image_url", ""),
-                            "annotated_image_url": result.get("annotated_image_url", "")
-                        })
-                        yield sse({"type": "done"})
-                    except Exception as e:
-                        logger.error(f"Vision failed: {e}")
-                        yield sse({"type": "error", "message": str(e)})
-                
-                return StreamingResponse(event_generator(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
-            else:
-                return await process_vision()
-
-        # =========================================================
-        # INTENT: IMG2VID
-        # =========================================================
-        elif intent == "img2vid" and files:
-            if not files or not files[0].get("url"):
-                raise HTTPException(400, "No valid image file provided for img2vid")
-            
-            image_url = files[0]["url"]
-            duration = 4
-            duration_match = re.search(r'duration[:\s]+(\d+)', prompt.lower())
-            if duration_match:
-                duration = min(max(int(duration_match.group(1)), 1), 14)
-
-            async def process_img2vid():
-                temp_path = None
-                try:
-                    async with httpx.AsyncClient(timeout=30) as client:
-                        resp = await client.get(image_url)
-                        resp.raise_for_status()
-                        image_bytes = resp.content
-                    
-                    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as temp_file:
-                        temp_file.write(image_bytes)
-                        temp_path = temp_file.name
-                    
-                    with open(temp_path, "rb") as f:
-                        image_upload = UploadFile(filename="image.png", file=f)
-                        result = await img2vid(request, image_upload, prompt, duration)
-                    return result
-                finally:
-                    if temp_path and os.path.exists(temp_path):
-                        os.unlink(temp_path)
-
-            if stream:
-                async def event_generator():
-                    yield sse({"type": "starting", "message": "Creating video from image..."})
-                    try:
-                        result = await process_img2vid()
-                        yield sse({
-                            "type": "video_result",
-                            "provider": result.get("provider", "runwayml-gen2-img2vid"),
-                            "video": result.get("video", {})
-                        })
-                        yield sse({"type": "done"})
-                    except Exception as e:
-                        logger.error(f"Img2vid failed: {e}")
-                        yield sse({"type": "error", "message": str(e)})
-                
-                return StreamingResponse(event_generator(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
-            else:
-                return await process_img2vid()
-
-        # =========================================================
-        # INTENT: MATH
-        # =========================================================
-        elif intent == "math":
-            result = await solve_math(prompt)
+                return result  # already StreamingResponse
             return result
 
         # =========================================================
-        # INTENT: JOKE
+        # VIDEO GENERATION
         # =========================================================
-        elif intent == "joke":
-            category = "general"
-            if "programming" in prompt.lower(): category = "programming"
-            elif "math" in prompt.lower(): category = "math"
-            elif "science" in prompt.lower(): category = "science"
-
+        elif intent == "video":
             if stream:
                 async def event_generator():
+                    yield sse({"type": "starting", "message": "Generating video..."})
                     try:
-                        result = await tell_joke(category)
+                        result = await generate_video_internal(prompt, samples=1, user_id=user_id)
+
                         yield sse({
-                            "type": "joke",
-                            "joke": result.get("joke"),
-                            "category": result.get("category")
+                            "type": "videos",
+                            "provider": result.get("provider"),
+                            "videos": result.get("videos", [])
                         })
                         yield sse({"type": "done"})
+
                     except Exception as e:
-                        logger.error(f"Joke telling failed: {e}")
+                        logger.error(f"Video generation failed: {e}")
                         yield sse({"type": "error", "message": str(e)})
-                
-                return StreamingResponse(event_generator(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+                return StreamingResponse(
+                    event_generator(),
+                    media_type="text/event-stream",
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive",
+                        "X-Accel-Buffering": "no"
+                    }
+                )
             else:
-                result = await tell_joke(category)
-                return {"joke": result.get("joke"), "category": result.get("category")}
+                return await generate_video_internal(prompt, samples=1, user_id=user_id)
 
         # =========================================================
-        # INTENT: CODE GENERATION
+        # VISION (IMAGE ANALYSIS)
+        # =========================================================
+        elif intent == "vision" and files:
+            if not files[0].get("url"):
+                raise HTTPException(400, "No valid image file provided")
+
+            image_url = files[0]["url"]
+
+            async def process_vision():
+                async with httpx.AsyncClient(timeout=30) as client:
+                    resp = await client.get(image_url)
+                    resp.raise_for_status()
+                    image_bytes = resp.content
+
+                with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                    tmp.write(image_bytes)
+                    temp_path = tmp.name
+
+                try:
+                    with open(temp_path, "rb") as f:
+                        upload = UploadFile(filename="image.png", file=f)
+                        return await vision_analyze(request, upload)
+                finally:
+                    if os.path.exists(temp_path):
+                        os.unlink(temp_path)
+
+            return await process_vision()
+
+        # =========================================================
+        # IMG2VID
+        # =========================================================
+        elif intent == "img2vid" and files:
+            image_url = files[0].get("url")
+            if not image_url:
+                raise HTTPException(400, "Invalid image URL")
+
+            async def process():
+                async with httpx.AsyncClient(timeout=30) as client:
+                    resp = await client.get(image_url)
+                    resp.raise_for_status()
+                    image_bytes = resp.content
+
+                with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                    tmp.write(image_bytes)
+                    temp_path = tmp.name
+
+                try:
+                    with open(temp_path, "rb") as f:
+                        upload = UploadFile(filename="image.png", file=f)
+                        return await img2vid(request, upload, prompt, 4)
+                finally:
+                    if os.path.exists(temp_path):
+                        os.unlink(temp_path)
+
+            return await process()
+
+        # =========================================================
+        # MATH
+        # =========================================================
+        elif intent == "math":
+            return await solve_math(prompt)
+
+        # =========================================================
+        # JOKE
+        # =========================================================
+        elif intent == "joke":
+            return await tell_joke("general")
+
+        # =========================================================
+        # CODE
         # =========================================================
         elif intent == "code":
             language = "python"
-            lang_match = re.search(r'(python|javascript|java|c\+\+|c#|php|ruby|go|rust|swift|kotlin)\s+code', prompt.lower())
-            if lang_match: language = lang_match.group(1)
-            
-            run_flag = "run" in prompt.lower() or "execute" in prompt.lower()
-            code_prompt = f"Write a complete {language} program to: {prompt}"
+            code_prompt = f"Write a {language} program for: {prompt}"
 
-            if stream:
-                async def event_generator():
-                    yield sse({"type": "starting", "message": f"Generating {language} code..."})
-                    try:
-                        payload = {
-                            "model": CODE_MODEL, # Make sure CODE_MODEL is defined
-                            "messages": [{"role": "user", "content": code_prompt}],
-                            "max_tokens": 2048
-                        }
-                        async with httpx.AsyncClient(timeout=60) as client:
-                            r = await client.post(
-                                "https://api.groq.com/openai/v1/chat/completions",
-                                headers=get_groq_headers(),
-                                json=payload
-                            )
-                            r.raise_for_status()
-                            code = r.json()["choices"][0]["message"]["content"]
-                        
-                        yield sse({"type": "code", "language": language, "code": code})
+            payload = {
+                "model": CODE_MODEL,
+                "messages": [{"role": "user", "content": code_prompt}],
+                "max_tokens": 2048
+            }
 
-                        if run_flag:
-                            yield sse({"type": "progress", "message": "Running code..."})
-                            execution = await run_code_online(code, language)
-                            yield sse({"type": "execution", "result": execution})
-                        
-                        # Save record
-                        await asyncio.to_thread(
-                            lambda: supabase.table("code_generations").insert({
-                                "id": str(uuid.uuid4()), "user_id": user_id, "language": language,
-                                "prompt": prompt, "code": code, "created_at": datetime.now().isoformat()
-                            }).execute()
-                        )
+            async with httpx.AsyncClient(timeout=60) as client:
+                r = await client.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers=get_groq_headers(),
+                    json=payload
+                )
+                r.raise_for_status()
+                code = r.json()["choices"][0]["message"]["content"]
 
-                        yield sse({"type": "done"})
-                    except Exception as e:
-                        logger.error(f"Code generation failed: {e}")
-                        yield sse({"type": "error", "message": str(e)})
-
-                return StreamingResponse(event_generator(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
-            else:
-                # Non-streaming logic
-                payload = {"model": CODE_MODEL, "messages": [{"role": "user", "content": code_prompt}], "max_tokens": 2048}
-                async with httpx.AsyncClient(timeout=60) as client:
-                    r = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=get_groq_headers(), json=payload)
-                    r.raise_for_status()
-                    code = r.json()["choices"][0]["message"]["content"]
-                
-                result = {"language": language, "generated_code": code, "user_id": user_id}
-                if run_flag:
-                    result["execution"] = await run_code_online(code, language)
-                return result
+            return {
+                "language": language,
+                "code": code
+            }
 
         # =========================================================
-        # INTENT: SEARCH
+        # SEARCH
         # =========================================================
         elif intent == "search":
             query = prompt
-            # Simple query extraction
             for prefix in ["search for", "look up", "find"]:
                 if prefix in prompt.lower():
                     query = prompt.lower().split(prefix, 1)[1].strip()
                     break
 
-            if stream:
-                async def event_generator():
-                    yield sse({"type": "starting", "message": "Searching..."})
-                    try:
-                        result = await duckduckgo_search(query)
-                        yield sse({"type": "search_results", "query": query, "results": result})
-                        yield sse({"type": "done"})
-                    except Exception as e:
-                        logger.error(f"Search failed: {e}")
-                        yield sse({"type": "error", "message": str(e)})
-                
-                return StreamingResponse(event_generator(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
-            else:
-                return await duckduckgo_search(query)
+            return await duckduckgo_search(query)
 
         # =========================================================
-        # INTENT: TTS
+        # TTS
         # =========================================================
         elif intent == "tts":
             text = prompt
-            for prefix in ["say", "speak", "read"]:
-                if prefix in prompt.lower():
-                    text = prompt.lower().split(prefix, 1)[1].strip()
-                    break
 
-            if stream:
-                async def event_generator():
-                    yield sse({"type": "starting", "message": "Generating speech..."})
-                    try:
-                        headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
-                        payload = {"model": "tts-1", "voice": "alloy", "input": text}
-                        
-                        async with httpx.AsyncClient(timeout=60) as client:
-                            r = await client.post("https://api.openai.com/v1/audio/speech", headers=headers, json=payload)
-                            r.raise_for_status()
-                            audio_b64 = base64.b64encode(r.content).decode()
-                        
-                        yield sse({"type": "audio", "text": text, "audio": audio_b64})
-                        yield sse({"type": "done"})
-                    except Exception as e:
-                        logger.error(f"TTS failed: {e}")
-                        yield sse({"type": "error", "message": str(e)})
+            headers = {
+                "Authorization": f"Bearer {OPENAI_API_KEY}",
+                "Content-Type": "application/json"
+            }
 
-                return StreamingResponse(event_generator(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
-            else:
-                headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
-                payload = {"model": "tts-1", "voice": "alloy", "input": text}
-                async with httpx.AsyncClient(timeout=60) as client:
-                    r = await client.post("https://api.openai.com/v1/audio/speech", headers=headers, json=payload)
-                    r.raise_for_status()
-                    audio_b64 = base64.b64encode(r.content).decode()
-                return {"text": text, "audio": audio_b64}
+            payload = {
+                "model": "tts-1",
+                "voice": "alloy",
+                "input": text
+            }
+
+            async with httpx.AsyncClient(timeout=60) as client:
+                r = await client.post(
+                    "https://api.openai.com/v1/audio/speech",
+                    headers=headers,
+                    json=payload
+                )
+                r.raise_for_status()
+                audio_b64 = base64.b64encode(r.content).decode()
+
+            return {
+                "text": text,
+                "audio": audio_b64
+            }
 
         # =========================================================
-        # DEFAULT: CHAT / PERSONAL
+        # CHAT (DEFAULT)
         # =========================================================
         else:
-            # Construct message list with history
             messages = history_messages
             messages.append({"role": "user", "content": prompt})
 
-            if stream:
-                async def generator():
-                    yield sse({"type": "starting"})
-                    full_text = ""
-                    
-                    # Use the stream generator
-                    async for token in chat_with_tools_stream(user_id, messages):
-                        full_text += token
-                        yield sse({"type": "token", "text": token})
+            reply = await chat_with_tools(user_id, messages)
 
-                    # Save assistant message
-                    await asyncio.to_thread(
-                        lambda: supabase.table("messages").insert({
-                            "id": str(uuid.uuid4()),
-                            "conversation_id": conversation_id,
-                            "user_id": user_id,
-                            "role": "assistant",
-                            "content": full_text,
-                            "created_at": datetime.utcnow().isoformat()
-                        }).execute()
-                    )
-                    yield sse({"type": "done"})
+            await asyncio.to_thread(
+                lambda: supabase.table("messages").insert({
+                    "id": str(uuid.uuid4()),
+                    "conversation_id": conversation_id,
+                    "user_id": user_id,
+                    "role": "assistant",
+                    "content": reply,
+                    "created_at": datetime.utcnow().isoformat()
+                }).execute()
+            )
 
-                return StreamingResponse(generator(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
-            
-            else:
-                assistant_reply = await chat_with_tools(user_id, messages)
-                
-                await asyncio.to_thread(
-                    lambda: supabase.table("messages").insert({
-                        "id": str(uuid.uuid4()),
-                        "conversation_id": conversation_id,
-                        "user_id": user_id,
-                        "role": "assistant",
-                        "content": assistant_reply,
-                        "created_at": datetime.utcnow().isoformat()
-                    }).execute()
-                )
-                
-                return {
-                    "status": "completed",
-                    "reply": assistant_reply,
-                    "conversation_id": conversation_id
-                }
+            return {
+                "reply": reply,
+                "conversation_id": conversation_id
+            }
 
     except HTTPException:
         raise
