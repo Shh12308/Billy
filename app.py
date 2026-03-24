@@ -7276,10 +7276,10 @@ async def ask_universal(
         # CHAT (DEFAULT)
         # =========================================================
         else:
-            async def event_generator():
-                try:
+    async def event_generator():
+        try:
             # send initial status
-                   yield f"data: {json.dumps({'type': 'status', 'status': 'thinking'})}\n\n"
+            yield f"data: {json.dumps({'type': 'status', 'status': 'thinking'})}\n\n"
 
             messages = history_messages.copy()
             messages.append({"role": "user", "content": prompt})
@@ -7295,7 +7295,7 @@ async def ask_universal(
                 yield f"data: {json.dumps({'type': 'token', 'text': char})}\n\n"
                 await asyncio.sleep(0.005)
 
-            # final response save
+            # save final response
             await asyncio.to_thread(
                 lambda: supabase.table("messages").insert({
                     "id": str(uuid.uuid4()),
@@ -7322,13 +7322,7 @@ async def ask_universal(
             "X-Accel-Buffering": "no"
         }
     )
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"/ask/universal failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-        
-        
+       
 @app.post("/migrate-guest")
 async def migrate_guest(
     request: Request,
