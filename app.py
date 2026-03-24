@@ -7276,10 +7276,10 @@ async def ask_universal(
         # CHAT (DEFAULT)
         # =========================================================
         else:
-    async def event_generator():
-        try:
+            async def event_generator():
+                try:
             # send initial status
-            yield f"data: {json.dumps({'type': 'status', 'status': 'thinking'})}\n\n"
+                   yield f"data: {json.dumps({'type': 'status', 'status': 'thinking'})}\n\n"
 
             messages = history_messages.copy()
             messages.append({"role": "user", "content": prompt})
