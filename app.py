@@ -1214,7 +1214,7 @@ CREATOR_INFO = {
     "country": "England",
     "projects": ["MZ", "LS", "SX", "CB"],
     "socials": { "discord":"@helox321", "twitter":"@Helox"},
-    "bio": "Created by GoldBoy (17, England). Projects: MZ, LS, SX, CB. Socials: Discord @nexisphere123_89431 Twitter @NexiSphere."
+    "bio": "Created by GoldBoy (17, England). Projects: MZ, LS, SX, CB. Socials: Discord @helox321 Twitter @helox."
 }
 
 BLOCKED_COMMANDS = [
