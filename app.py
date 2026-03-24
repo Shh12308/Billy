@@ -7276,11 +7276,26 @@ async def ask_universal(
         # CHAT (DEFAULT)
         # =========================================================
         else:
-            messages = history_messages
+    async def event_generator():
+        try:
+            # send initial status
+            yield f"data: {json.dumps({'type': 'status', 'status': 'thinking'})}\n\n"
+
+            messages = history_messages.copy()
             messages.append({"role": "user", "content": prompt})
 
             reply = await chat_with_tools(user_id, messages)
 
+            # stream tokens (simulate token streaming)
+            buffer_text = ""
+
+            for char in reply:
+                buffer_text += char
+
+                yield f"data: {json.dumps({'type': 'token', 'text': char})}\n\n"
+                await asyncio.sleep(0.005)
+
+            # final response save
             await asyncio.to_thread(
                 lambda: supabase.table("messages").insert({
                     "id": str(uuid.uuid4()),
@@ -7292,11 +7307,21 @@ async def ask_universal(
                 }).execute()
             )
 
-            return {
-                "reply": reply,
-                "conversation_id": conversation_id
-            }
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
+        except Exception as e:
+            logger.error(f"Chat streaming failed: {e}")
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
     except HTTPException:
         raise
     except Exception as e:
