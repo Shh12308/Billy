@@ -7278,13 +7278,12 @@ async def ask_universal(
         else:
             async def event_generator():
                 try:
-            # send initial status
                     yield f"data: {json.dumps({'type': 'status', 'status': 'thinking'})}\n\n"
 
-            messages = history_messages.copy()
-            messages.append({"role": "user", "content": prompt})
+                    messages = history_messages.copy()
+                    messages.append({"role": "user", "content": prompt})
 
-            reply = await chat_with_tools(user_id, messages)
+                    reply = await chat_with_tools(user_id, messages)
 
             # stream tokens (simulate token streaming)
             buffer_text = ""
