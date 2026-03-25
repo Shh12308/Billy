@@ -7314,8 +7314,8 @@ async def ask_universal(
                     "Connection": "keep-alive",
                     "X-Accel-Buffering": "no"
                 }
-           )
-       except Exception as e:
+            )
+        except Exception as e:
            print(f"Streaming error: {e}")
            raise
        
