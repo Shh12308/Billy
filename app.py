@@ -7317,9 +7317,9 @@ async def ask_universal(
            )
        
 
-
-@app.post("/migrate-guest")
-async def migrate_guest(
+try:
+    @app.post("/migrate-guest")
+    async def migrate_guest(
     request: Request,
     current_user: dict = Depends(get_current_user_optional)
 ):
