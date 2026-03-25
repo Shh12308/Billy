@@ -7315,14 +7315,9 @@ async def ask_universal(
                     "X-Accel-Buffering": "no"
                 }
            )
-
-                except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"/ask/universal failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
        
+
+
 @app.post("/migrate-guest")
 async def migrate_guest(
     request: Request,
