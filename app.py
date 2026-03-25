@@ -7273,48 +7273,48 @@ async def ask_universal(
             }
 
         # =========================================================
-# CHAT (DEFAULT - STREAMING)
-# =========================================================
-else:
-    async def event_generator():
-        try:
-            yield f"data: {json.dumps({'type': 'status', 'status': 'thinking'})}\n\n"
+        # CHAT (DEFAULT - STREAMING)
+        # =========================================================
+        else:
+            async def event_generator():
+                try:
+                    yield f"data: {json.dumps({'type': 'status', 'status': 'thinking'})}\n\n"
 
-            messages = history_messages.copy()
-            messages.append({"role": "user", "content": prompt})
+                    messages = history_messages.copy()
+                    messages.append({"role": "user", "content": prompt})
 
-            reply = await chat_with_tools(user_id, messages)
+                    reply = await chat_with_tools(user_id, messages)
 
-            for char in reply:
-                yield f"data: {json.dumps({'type': 'token', 'text': char})}\n\n"
-                await asyncio.sleep(0.005)
+                    for char in reply:
+                        yield f"data: {json.dumps({'type': 'token', 'text': char})}\n\n"
+                        await asyncio.sleep(0.005)
 
-            await asyncio.to_thread(
-                lambda: supabase.table("messages").insert({
-                    "id": str(uuid.uuid4()),
-                    "conversation_id": conversation_id,
-                    "user_id": user_id,
-                    "role": "assistant",
-                    "content": reply,
-                    "created_at": datetime.utcnow().isoformat()
-                }).execute()
-            )
+                    await asyncio.to_thread(
+                        lambda: supabase.table("messages").insert({
+                            "id": str(uuid.uuid4()),
+                            "conversation_id": conversation_id,
+                            "user_id": user_id,
+                            "role": "assistant",
+                            "content": reply,
+                            "created_at": datetime.utcnow().isoformat()
+                        }).execute()
+                    )
 
-            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                    yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
-        except Exception as e:
-            logger.error(f"Chat streaming failed: {e}")
-            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+                except Exception as e:
+                    logger.error(f"Chat streaming failed: {e}")
+                    yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
 
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"
-        }
-    )
+            return StreamingResponse(
+                event_generator(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no"
+                }
+           )
        
 @app.post("/migrate-guest")
 async def migrate_guest(
