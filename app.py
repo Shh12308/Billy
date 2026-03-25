@@ -7315,6 +7315,9 @@ async def ask_universal(
                     "X-Accel-Buffering": "no"
                 }
            )
+     except Exception as e:
+        print(f"Streaming error: {e}")
+        raise
        
 @app.post("/migrate-guest")
     async def migrate_guest(
