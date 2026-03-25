@@ -7276,25 +7276,22 @@ async def ask_universal(
         # CHAT (DEFAULT)
         # =========================================================
         else:
-            async def event_generator():
-                try:
-                    yield f"data: {json.dumps({'type': 'status', 'status': 'thinking'})}\n\n"
+    async def event_generator():
+        try:
+            yield f"data: {json.dumps({'type': 'status', 'status': 'thinking'})}\n\n"
 
-                    messages = history_messages.copy()
-                    messages.append({"role": "user", "content": prompt})
+            messages = history_messages.copy()
+            messages.append({"role": "user", "content": prompt})
 
-                    reply = await chat_with_tools(user_id, messages)
+            reply = await chat_with_tools(user_id, messages)
 
-            # stream tokens (simulate token streaming)
             buffer_text = ""
 
             for char in reply:
                 buffer_text += char
-
                 yield f"data: {json.dumps({'type': 'token', 'text': char})}\n\n"
                 await asyncio.sleep(0.005)
 
-            # save final response
             await asyncio.to_thread(
                 lambda: supabase.table("messages").insert({
                     "id": str(uuid.uuid4()),
