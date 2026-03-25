@@ -7273,10 +7273,10 @@ async def ask_universal(
             }
 
         # =========================================================
-        # CHAT (DEFAULT)
-        # =========================================================
-        else:
-            async def event_generator():
+# CHAT (DEFAULT - STREAMING)
+# =========================================================
+else:
+    async def event_generator():
         try:
             yield f"data: {json.dumps({'type': 'status', 'status': 'thinking'})}\n\n"
 
@@ -7285,10 +7285,7 @@ async def ask_universal(
 
             reply = await chat_with_tools(user_id, messages)
 
-            buffer_text = ""
-
             for char in reply:
-                buffer_text += char
                 yield f"data: {json.dumps({'type': 'token', 'text': char})}\n\n"
                 await asyncio.sleep(0.005)
 
