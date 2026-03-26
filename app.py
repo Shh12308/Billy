@@ -7317,9 +7317,9 @@ async def ask_universal(
             )
         
 @app.post("/migrate-guest")
-    async def migrate_guest(
-    request: Request,
-    current_user: dict = Depends(get_current_user_optional)
+async def migrate_guest(
+request: Request,
+current_user: dict = Depends(get_current_user_optional)
 ):
     if not identity["is_authenticated"]:
         raise HTTPException(401, "Must be logged in")
