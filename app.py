@@ -7032,7 +7032,6 @@ async def ask_universal(
 ):
     try:
         body = await request.json()
-
         prompt = (body.get("prompt") or "").strip()
         conversation_id = body.get("conversation_id")
         files = body.get("files", [])
@@ -7082,7 +7081,6 @@ async def ask_universal(
             .limit(20)
             .execute()
         )
-
         history_messages = history_res.data or []
 
         # -------------------------
@@ -7090,37 +7088,31 @@ async def ask_universal(
         # -------------------------
         intent = detect_intent(prompt)
 
-        # =========================================================
+        # -------------------------
         # IMAGE GENERATION
-        # =========================================================
+        # -------------------------
         if intent == "image":
             result = await image_generation_handler(prompt, user_id, stream)
-
-            if stream:
-                return result  # already StreamingResponse
             return result
 
-        # =========================================================
+        # -------------------------
         # VIDEO GENERATION
-        # =========================================================
+        # -------------------------
         elif intent == "video":
             if stream:
                 async def event_generator():
                     yield sse({"type": "starting", "message": "Generating video..."})
                     try:
                         result = await generate_video_internal(prompt, samples=1, user_id=user_id)
-
                         yield sse({
                             "type": "videos",
                             "provider": result.get("provider"),
                             "videos": result.get("videos", [])
                         })
                         yield sse({"type": "done"})
-
                     except Exception as e:
                         logger.error(f"Video generation failed: {e}")
                         yield sse({"type": "error", "message": str(e)})
-
                 return StreamingResponse(
                     event_generator(),
                     media_type="text/event-stream",
@@ -7133,13 +7125,12 @@ async def ask_universal(
             else:
                 return await generate_video_internal(prompt, samples=1, user_id=user_id)
 
-        # =========================================================
-        # VISION (IMAGE ANALYSIS)
-        # =========================================================
+        # -------------------------
+        # VISION / IMAGE ANALYSIS
+        # -------------------------
         elif intent == "vision" and files:
             if not files[0].get("url"):
                 raise HTTPException(400, "No valid image file provided")
-
             image_url = files[0]["url"]
 
             async def process_vision():
@@ -7147,11 +7138,9 @@ async def ask_universal(
                     resp = await client.get(image_url)
                     resp.raise_for_status()
                     image_bytes = resp.content
-
                 with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
                     tmp.write(image_bytes)
                     temp_path = tmp.name
-
                 try:
                     with open(temp_path, "rb") as f:
                         upload = UploadFile(filename="image.png", file=f)
@@ -7162,9 +7151,9 @@ async def ask_universal(
 
             return await process_vision()
 
-        # =========================================================
+        # -------------------------
         # IMG2VID
-        # =========================================================
+        # -------------------------
         elif intent == "img2vid" and files:
             image_url = files[0].get("url")
             if not image_url:
@@ -7175,11 +7164,9 @@ async def ask_universal(
                     resp = await client.get(image_url)
                     resp.raise_for_status()
                     image_bytes = resp.content
-
                 with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
                     tmp.write(image_bytes)
                     temp_path = tmp.name
-
                 try:
                     with open(temp_path, "rb") as f:
                         upload = UploadFile(filename="image.png", file=f)
@@ -7190,31 +7177,29 @@ async def ask_universal(
 
             return await process()
 
-        # =========================================================
+        # -------------------------
         # MATH
-        # =========================================================
+        # -------------------------
         elif intent == "math":
             return await solve_math(prompt)
 
-        # =========================================================
+        # -------------------------
         # JOKE
-        # =========================================================
+        # -------------------------
         elif intent == "joke":
             return await tell_joke("general")
 
-        # =========================================================
+        # -------------------------
         # CODE
-        # =========================================================
+        # -------------------------
         elif intent == "code":
             language = "python"
             code_prompt = f"Write a {language} program for: {prompt}"
-
             payload = {
                 "model": CODE_MODEL,
                 "messages": [{"role": "user", "content": code_prompt}],
                 "max_tokens": 2048
             }
-
             async with httpx.AsyncClient(timeout=60) as client:
                 r = await client.post(
                     "https://api.groq.com/openai/v1/chat/completions",
@@ -7223,41 +7208,29 @@ async def ask_universal(
                 )
                 r.raise_for_status()
                 code = r.json()["choices"][0]["message"]["content"]
+            return {"language": language, "code": code}
 
-            return {
-                "language": language,
-                "code": code
-            }
-
-        # =========================================================
+        # -------------------------
         # SEARCH
-        # =========================================================
+        # -------------------------
         elif intent == "search":
             query = prompt
             for prefix in ["search for", "look up", "find"]:
                 if prefix in prompt.lower():
                     query = prompt.lower().split(prefix, 1)[1].strip()
                     break
-
             return await duckduckgo_search(query)
 
-        # =========================================================
+        # -------------------------
         # TTS
-        # =========================================================
+        # -------------------------
         elif intent == "tts":
             text = prompt
-
             headers = {
                 "Authorization": f"Bearer {OPENAI_API_KEY}",
                 "Content-Type": "application/json"
             }
-
-            payload = {
-                "model": "tts-1",
-                "voice": "alloy",
-                "input": text
-            }
-
+            payload = {"model": "tts-1", "voice": "alloy", "input": text}
             async with httpx.AsyncClient(timeout=60) as client:
                 r = await client.post(
                     "https://api.openai.com/v1/audio/speech",
@@ -7266,29 +7239,21 @@ async def ask_universal(
                 )
                 r.raise_for_status()
                 audio_b64 = base64.b64encode(r.content).decode()
+            return {"text": text, "audio": audio_b64}
 
-            return {
-                "text": text,
-                "audio": audio_b64
-            }
-
-        # =========================================================
-        # CHAT (DEFAULT - STREAMING)
-        # =========================================================
+        # -------------------------
+        # CHAT (DEFAULT STREAMING)
+        # -------------------------
         else:
             async def event_generator():
                 try:
                     yield f"data: {json.dumps({'type': 'status', 'status': 'thinking'})}\n\n"
-
                     messages = history_messages.copy()
                     messages.append({"role": "user", "content": prompt})
-
                     reply = await chat_with_tools(user_id, messages)
-
                     for char in reply:
                         yield f"data: {json.dumps({'type': 'token', 'text': char})}\n\n"
                         await asyncio.sleep(0.005)
-
                     await asyncio.to_thread(
                         lambda: supabase.table("messages").insert({
                             "id": str(uuid.uuid4()),
@@ -7299,9 +7264,7 @@ async def ask_universal(
                             "created_at": datetime.utcnow().isoformat()
                         }).execute()
                     )
-
                     yield f"data: {json.dumps({'type': 'done'})}\n\n"
-
                 except Exception as e:
                     logger.error(f"Chat streaming failed: {e}")
                     yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
@@ -7315,13 +7278,22 @@ async def ask_universal(
                     "X-Accel-Buffering": "no"
                 }
             )
-        
+
+    except Exception as e:
+        logger.error(f"/ask/universal failed: {e}")
+        raise HTTPException(500, f"Internal error: {e}")
+
+
+# ========================
+# /migrate-guest endpoint
+# ========================
 @app.post("/migrate-guest")
 async def migrate_guest(
-request: Request,
-current_user: dict = Depends(get_current_user_optional)
+    request: Request,
+    current_user: dict = Depends(get_current_user_optional)
 ):
-    if not identity["is_authenticated"]:
+    identity = current_user or {}
+    if not identity.get("is_authenticated"):
         raise HTTPException(401, "Must be logged in")
 
     guest_id = request.cookies.get("guest_id")
@@ -7331,25 +7303,19 @@ current_user: dict = Depends(get_current_user_optional)
     real_user_id = identity["user_id"]
 
     # Update conversations
-    supabase.table("conversations") \
-        .update({
-            "user_id": real_user_id,
-            "is_guest": False
-        }) \
-        .eq("user_id", guest_id) \
-        .execute()
+    supabase.table("conversations").update({
+        "user_id": real_user_id,
+        "is_guest": False
+    }).eq("user_id", guest_id).execute()
 
     # Update messages
-    supabase.table("messages") \
-        .update({
-            "user_id": real_user_id,
-            "is_guest": False
-        }) \
-        .eq("user_id", guest_id) \
-        .execute()
+    supabase.table("messages").update({
+        "user_id": real_user_id,
+        "is_guest": False
+    }).eq("user_id", guest_id).execute()
 
     return {"status": "migrated"}
-
+    
 @app.get("/robots.txt", response_class=PlainTextResponse)
 async def robots():
     return "User-agent: *\nDisallow:"
