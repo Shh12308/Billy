@@ -7084,21 +7084,23 @@ async def ask_universal(
         history_messages = history_res.data or []
 
         # -------------------------
-        # INTENT DETECTION
+        # INTENT DETECTION (FIXED)
         # -------------------------
-        intent = detect_intent(prompt)
+        # Unpack tuple correctly: (intent_string, confidence_float)
+        detected_intent, confidence = detect_intent(prompt)
+        logger.info(f"Detected intent: {detected_intent} (Confidence: {confidence})")
 
         # -------------------------
         # IMAGE GENERATION
         # -------------------------
-        if intent == "image":
+        if detected_intent == "image_generation":
             result = await image_generation_handler(prompt, user_id, stream)
             return result
 
         # -------------------------
         # VIDEO GENERATION
         # -------------------------
-        elif intent == "video":
+        elif detected_intent == "video_generation":
             if stream:
                 async def event_generator():
                     yield sse({"type": "starting", "message": "Generating video..."})
@@ -7128,7 +7130,7 @@ async def ask_universal(
         # -------------------------
         # VISION / IMAGE ANALYSIS
         # -------------------------
-        elif intent == "vision" and files:
+        elif detected_intent == "vision_analysis" and files:
             if not files[0].get("url"):
                 raise HTTPException(400, "No valid image file provided")
             image_url = files[0]["url"]
@@ -7154,7 +7156,7 @@ async def ask_universal(
         # -------------------------
         # IMG2VID
         # -------------------------
-        elif intent == "img2vid" and files:
+        elif detected_intent == "img2vid" and files:
             image_url = files[0].get("url")
             if not image_url:
                 raise HTTPException(400, "Invalid image URL")
@@ -7180,19 +7182,19 @@ async def ask_universal(
         # -------------------------
         # MATH
         # -------------------------
-        elif intent == "math":
+        elif detected_intent == "math_calculation":
             return await solve_math(prompt)
 
         # -------------------------
         # JOKE
         # -------------------------
-        elif intent == "joke":
+        elif detected_intent == "joke":
             return await tell_joke("general")
 
         # -------------------------
         # CODE
         # -------------------------
-        elif intent == "code":
+        elif detected_intent == "code_generation":
             language = "python"
             code_prompt = f"Write a {language} program for: {prompt}"
             payload = {
@@ -7211,9 +7213,9 @@ async def ask_universal(
             return {"language": language, "code": code}
 
         # -------------------------
-        # SEARCH
+        # SEARCH (FIXED KEY)
         # -------------------------
-        elif intent == "search":
+        elif detected_intent == "web_search":
             query = prompt
             for prefix in ["search for", "look up", "find"]:
                 if prefix in prompt.lower():
@@ -7224,7 +7226,7 @@ async def ask_universal(
         # -------------------------
         # TTS
         # -------------------------
-        elif intent == "tts":
+        elif detected_intent == "text_to_speech":
             text = prompt
             headers = {
                 "Authorization": f"Bearer {OPENAI_API_KEY}",
