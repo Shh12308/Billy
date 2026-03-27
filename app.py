@@ -93,9 +93,11 @@ COOKIE_NAME = "session_token"
 # =========================
 # CLEANUP TASK
 # =========================
-async def cleanup_old_tasks():
+async def cleanup_memory_tasks():
+    """Cleans up completed asyncio tasks from the in-memory dictionary."""
     to_delete = []
 
+    # This cleans the global 'active_tasks' dictionary used for streaming
     for user_id, task in active_tasks.items():
         if task.done():
             to_delete.append(user_id)
@@ -103,14 +105,15 @@ async def cleanup_old_tasks():
     for user_id in to_delete:
         del active_tasks[user_id]
 
-    logger.info(f"Cleaned {len(to_delete)} completed tasks")
+    logger.info(f"Cleaned {len(to_delete)} completed memory tasks")
 
 # =========================
 # STARTUP / SHUTDOWN EVENTS
 # =========================
 @app.on_event("startup")
 async def start_scheduler():
-    scheduler.add_job(cleanup_old_tasks, "interval", minutes=10)
+    # Schedule the memory cleanup every 10 minutes
+    scheduler.add_job(cleanup_memory_tasks, "interval", minutes=10)
     scheduler.start()
     logger.info("Scheduler started.")
 
@@ -125,7 +128,7 @@ async def stop_scheduler():
 # =========================
 @app.post("/cleanup-now")
 async def cleanup_now():
-    asyncio.create_task(cleanup_old_tasks())
+    asyncio.create_task(cleanup_memory_tasks())
     return {"status": "cleanup scheduled"}
 
 # ---------- CONFIG & LOGGING ----------
@@ -492,8 +495,11 @@ async def get_current_user_optional(
                     )
                     user_resp.data = [user_data]
                 return user_resp.data[0]
-        except (JWTError, Exception) as e:
-            logger.warning(f"JWT validation failed: {e}")
+            except Exception as e:
+        # If using PyJWT specific errors, you can check: 
+        # from jwt import PyJWTError as JWTError 
+        # But catching Exception is safer if imports are missing.
+        logger.warning(f"JWT validation failed: {e}")
 
     # fallback to anonymous session
     user = await get_or_create_user(request, response)
@@ -616,13 +622,6 @@ async def merge_visitor_to_user(user_id: str, session_token: str):
     except Exception as e:
         logger.error(f"Visitor merge failed: {e}")
         
-
-# -----------------------------
-# Background Scheduler
-# -----------------------------
-from apscheduler.schedulers.background import BackgroundScheduler
-
-scheduler = BackgroundScheduler()
 
 async def check_available_models():
     print("Checking models...")
@@ -6483,27 +6482,28 @@ async def generate_image_background(
         task_manager.update_task_status(task_id, "failed", error=str(e))
 
 #// Cleanup job for old tasks
+# Cleanup job for old database records
 @scheduler.scheduled_job('interval', hours=24)
-async def cleanup_old_tasks():
-    """Clean up tasks older than 7 days"""
+async def cleanup_database_tasks():
+    """Clean up database tasks older than 7 days"""
     cutoff_date = (datetime.now() - timedelta(days=7)).isoformat()
     
     try:
-        #// Delete from database
+        # Delete from database
         supabase.table("background_tasks").delete().lt("created_at", cutoff_date).execute()
         
-       # // Clean up memory
+        # Clean up TaskManager active_tasks (different from global active_tasks)
         old_task_ids = [
             task_id for task_id, task in task_manager.active_tasks.items()
-            if task["created_at"] < cutoff_date
+            if task.get("created_at", datetime.max.isoformat()) < cutoff_date
         ]
         
         for task_id in old_task_ids:
             del task_manager.active_tasks[task_id]
             
-        logger.info(f"Cleaned up {len(old_task_ids)} old tasks")
+        logger.info(f"Cleaned up {len(old_task_ids)} old database tasks")
     except Exception as e:
-        logger.error(f"Failed to cleanup old tasks: {e}")
+        logger.error(f"Failed to cleanup old database tasks: {e}")
 
 #// ---------- API Endpoints ----------
 #// ----------------------------------
