@@ -495,11 +495,11 @@ async def get_current_user_optional(
                     )
                     user_resp.data = [user_data]
                 return user_resp.data[0]
-            except Exception as e:
-        # If using PyJWT specific errors, you can check: 
-        # from jwt import PyJWTError as JWTError 
-        # But catching Exception is safer if imports are missing.
-        logger.warning(f"JWT validation failed: {e}")
+        except Exception as e:
+            # If using PyJWT specific errors, you can check: 
+            # from jwt import PyJWTError as JWTError 
+            # But catching Exception is safer if imports are missing.
+            logger.warning(f"JWT validation failed: {e}")
 
     # fallback to anonymous session
     user = await get_or_create_user(request, response)
