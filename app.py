@@ -8072,6 +8072,25 @@ async def duck_search(q: str = Query(..., min_length=1)):
         logger.exception("DuckDuckGo search failed")
         raise HTTPException(500, "search_failed")
 
+@app.get("/tts/voices")
+async def get_tts_voices(current_user: dict = Depends(get_current_user_optional)):
+    """Get available OpenAI TTS voices only."""
+    openai_voices = [
+        {"id": "alloy", "name": "Alloy", "description": "Neutral, balanced"},
+        {"id": "echo", "name": "Echo", "description": "Warm, clear"},
+        {"id": "fable", "name": "Fable", "description": "Expressive, storytelling"},
+        {"id": "onyx", "name": "Onyx", "description": "Deep, authoritative"},
+        {"id": "nova", "name": "Nova", "description": "Friendly, upbeat"},
+        {"id": "shimmer", "name": "Shimmer", "description": "Soft, gentle"}
+    ]
+
+    # Always return OpenAI voices
+    return {
+        "voices": {"openai": openai_voices},
+        "default": "alloy",
+        "providers": {"openai": bool(OPENAI_API_KEY)}
+    }
+    
 #// ---------- STT ----------
 @app.post("/stt")
 async def speech_to_text(file: UploadFile = File(...)):
