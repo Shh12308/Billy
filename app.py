@@ -8189,7 +8189,7 @@ async def send_message(conversation_id: str, req: Request, res: Response):
 @app.get("/chats")
 async def list_chats(req: Request, res: Response):
     user = await get_or_create_user(req, res)
-    user_id = user.id
+    user_id = user["id"]
 
     try:
         response = supabase.table("conversations").select("*").eq("user_id", user_id).order("updated_at", desc=True).execute()
