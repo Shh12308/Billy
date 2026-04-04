@@ -38,7 +38,7 @@ app = FastAPI()
 # CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Tighten this for production
+    allow_origins=["https://heloxai.xyz","https://www.heloxai.xyz"],  # Tighten this for production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
