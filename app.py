@@ -16,6 +16,14 @@ from pydantic import BaseModel
 
 import httpx
 from supabase import create_client
+import time
+
+start = time.time()
+
+# call image API
+
+latency = int((time.time() - start) * 1000)
+print(f"Image latency: {latency}ms")
 
 # =========================
 # CONFIG & LOGGING
