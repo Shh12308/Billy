@@ -427,32 +427,41 @@ async def speech_to_text(file: UploadFile = File(...)):
 # =========================
 
 async def handle_image_generation(prompt: str, user_id: str, stream: bool):
-    """Generate Image (OpenAI or Placeholder)"""
     if not OPENAI_API_KEY:
-        # Fallback placeholder
         if stream:
             async def gen(): yield sse({"type": "error", "message": "No API Key"})
             return StreamingResponse(gen(), media_type="text/event-stream")
         return {"error": "No API Key"}
 
-    # Using DALL-E 3
     async with httpx.AsyncClient(timeout=120) as client:
         r = await client.post(
             "https://api.openai.com/v1/images/generations",
             headers=get_openai_headers(),
-            json={"model": "dall-e-3", "prompt": prompt, "n": 1, "size": "1024x1024", "response_format": "b64_json"}
+            json={
+                "model": "gpt-image-1",  # ✅ FIXED
+                "prompt": prompt,
+                "size": "1024x1024"
+            }
         )
+
+        # 🔥 ADD DEBUGGING (very important)
+        if r.status_code != 200:
+            print("IMAGE ERROR:", r.status_code, r.text)
+
         r.raise_for_status()
+
         data = r.json()
         b64 = data["data"][0]["b64_json"]
-        
-        # Upload to Supabase (Simplified)
+
         img_bytes = base64.b64decode(b64)
         fname = f"{uuid.uuid4().hex}.png"
         path = f"public/{fname}"
+
         try:
             await asyncio.to_thread(
-                lambda: supabase.storage.from_("ai-images").upload(path, img_bytes, {"content-type": "image/png"})
+                lambda: supabase.storage.from_("ai-images").upload(
+                    path, img_bytes, {"content-type": "image/png"}
+                )
             )
             public_url = f"{SUPABASE_URL}/storage/v1/object/public/ai-images/{path}"
         except Exception as e:
@@ -460,13 +469,13 @@ async def handle_image_generation(prompt: str, user_id: str, stream: bool):
             public_url = "data:image/png;base64," + b64
 
         if stream:
-            async def gen(): 
+            async def gen():
                 yield sse({"type": "images", "images": [{"url": public_url}]})
                 yield sse({"type": "done"})
             return StreamingResponse(gen(), media_type="text/event-stream")
-        
-        return {"images": [{"url": public_url}]}
 
+        return {"images": [{"url": public_url}]}
+        
 async def handle_video_generation(prompt: str, user_id: str, stream: bool):
     """Generate Video (Replicate or Placeholder)"""
     if not REPLICATE_API_TOKEN:
