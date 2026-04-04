@@ -426,34 +426,58 @@ async def speech_to_text(file: UploadFile = File(...)):
 # INTERNAL HANDLERS
 # =========================
 
-async def handle_image_generation(prompt: str, user_id: str, stream: bool):
+async def handle_image_generation(
+    prompt: str,
+    user_id: str,
+    stream: bool,
+    style: str = None,
+    size: str = "1024x1024",
+    num_images: int = 1
+):
     if not OPENAI_API_KEY:
         if stream:
             async def gen(): yield sse({"type": "error", "message": "No API Key"})
             return StreamingResponse(gen(), media_type="text/event-stream")
         return {"error": "No API Key"}
 
+    if not prompt:
+        raise ValueError("Prompt is required")
+
+    STYLES = {
+        "realistic": "ultra realistic, 4k, detailed",
+        "cartoon": "cartoon style, colorful",
+        "anime": "anime style, studio ghibli",
+        "cinematic": "cinematic lighting, dramatic",
+        "cyberpunk": "cyberpunk, neon futuristic",
+    }
+
+    if style in STYLES:
+        prompt = f"{prompt}, {STYLES[style]}"
+
     async with httpx.AsyncClient(timeout=120) as client:
         r = await client.post(
             "https://api.openai.com/v1/images/generations",
             headers=get_openai_headers(),
             json={
-                "model": "gpt-image-1",  # ✅ FIXED
+                "model": "gpt-image-1",
                 "prompt": prompt,
-                "size": "1024x1024"
+                "size": size,
+                "n": num_images
             }
         )
 
-        # 🔥 ADD DEBUGGING (very important)
         if r.status_code != 200:
             print("IMAGE ERROR:", r.status_code, r.text)
 
         r.raise_for_status()
-
         data = r.json()
-        b64 = data["data"][0]["b64_json"]
 
+    images = []
+
+    for item in data["data"]:
+        b64 = item["b64_json"]
         img_bytes = base64.b64decode(b64)
+
         fname = f"{uuid.uuid4().hex}.png"
         path = f"public/{fname}"
 
@@ -463,19 +487,20 @@ async def handle_image_generation(prompt: str, user_id: str, stream: bool):
                     path, img_bytes, {"content-type": "image/png"}
                 )
             )
-            public_url = f"{SUPABASE_URL}/storage/v1/object/public/ai-images/{path}"
-        except Exception as e:
-            logger.error(f"Upload failed: {e}")
-            public_url = "data:image/png;base64," + b64
+            url = f"{SUPABASE_URL}/storage/v1/object/public/ai-images/{path}"
+        except:
+            url = "data:image/png;base64," + b64
 
-        if stream:
-            async def gen():
-                yield sse({"type": "images", "images": [{"url": public_url}]})
-                yield sse({"type": "done"})
-            return StreamingResponse(gen(), media_type="text/event-stream")
+        images.append({"url": url})
 
-        return {"images": [{"url": public_url}]}
-        
+    if stream:
+        async def gen():
+            yield sse({"type": "images", "images": images})
+            yield sse({"type": "done"})
+        return StreamingResponse(gen(), media_type="text/event-stream")
+
+    return {"images": images}
+    
 async def handle_video_generation(prompt: str, user_id: str, stream: bool):
     """Generate Video (Replicate or Placeholder)"""
     if not REPLICATE_API_TOKEN:
