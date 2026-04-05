@@ -329,7 +329,7 @@ async def ask_universal(req: Request, res: Response):
     user = await get_user(req, res)
     user_id = user["id"]
 
-    # 1. Handle Conversation
+    # Handle conversation creation
     if not conv_id:
         conv_id = str(uuid.uuid4())
         await asyncio.to_thread(
@@ -339,89 +339,43 @@ async def ask_universal(req: Request, res: Response):
             }).execute()
         )
 
-    # 2. Save User Message
     await save_message(user_id, conv_id, "user", prompt)
 
-    # 3. Intent Detection
-    # =========================
-# INTENT DETECTION
-# =========================
+    # ------------------------
+    # INTENT DETECTION
+    # ------------------------
+    p_low = prompt.lower()
 
-p_low = prompt.lower()
+    intent_handlers = [
+        ("image", is_image_request, handle_image_generation),
+        ("video", is_video_request, handle_video_generation),
+        ("code", is_code_request, handle_code_assistant),
+        ("doc", is_document_request, handle_text_analysis),
+        ("data", is_data_request, handle_text_analysis),
+    ]
 
-def is_image_request(text: str) -> bool:
-    return bool(re.search(
-        r"\b(generate|create|make|draw|design)\b.*\b(image|picture|photo|art|logo|illustration)\b",
-        text
-    ))
+    for name, detector, handler in intent_handlers:
+        if detector(p_low):
+            logger.info(f"[INTENT] {name}")
+            return await handler(prompt, user_id, stream)  # ✅ This must be inside the function
 
-def is_video_request(text: str) -> bool:
-    return bool(re.search(
-        r"\b(generate|create|make)\b.*\b(video|animation|clip|movie)\b",
-        text
-    ))
-
-def is_code_request(text: str) -> bool:
-    return bool(re.search(
-        r"\b(code|function|script|bug|error|fix|debug|optimize|algorithm)\b",
-        text
-    ))
-
-def is_document_request(text: str) -> bool:
-    return bool(re.search(
-        r"\b(summarize|summary|analyze|key points|explain document)\b",
-        text
-    ))
-
-def is_data_request(text: str) -> bool:
-    return bool(re.search(
-        r"\b(csv|json|dataset|data analysis|analyze data|statistics)\b",
-        text
-    ))
-
-def is_recommendation(text: str) -> bool:
-    return bool(re.search(
-        r"\b(best|recommend|top|which should i buy|suggest)\b",
-        text
-    ))
-
-# =========================
-# INTENT ROUTER
-# =========================
-
-intent_handlers = [
-    ("image", is_image_request, handle_image_generation),
-    ("video", is_video_request, handle_video_generation),
-    ("code", is_code_request, handle_code_assistant),
-    ("doc", is_document_request, handle_text_analysis),
-    ("data", is_data_request, handle_text_analysis),
-]
-
-for name, detector, handler in intent_handlers:
-    if detector(p_low):
-        logger.info(f"[INTENT] {name}")
-        return await handler(prompt, user_id, stream)
-        
-    
-    # CHAT (DEFAULT)
+    # ------------------------
+    # DEFAULT CHAT
+    # ------------------------
     if stream:
         async def event_gen():
-            # Register stream for cancellation
             task = asyncio.current_task()
             active_streams[user_id] = task
-            
+
             try:
                 history = await get_history(conv_id)
                 full_history = [{"role": "system", "content": "You are a helpful AI."}] + history
-                
                 full_text = ""
                 async for token in stream_groq_chat(full_history):
-                    # Check cancellation
-                    if task and task.cancelled(): 
-                        break
+                    if task.cancelled(): break
                     full_text += token
                     yield sse({"type": "token", "text": token})
-                
+
                 await save_message(user_id, conv_id, "assistant", full_text)
                 yield sse({"type": "done"})
             except asyncio.CancelledError:
@@ -431,7 +385,7 @@ for name, detector, handler in intent_handlers:
 
         return StreamingResponse(event_gen(), media_type="text/event-stream")
     else:
-        # Non-streaming chat (simplified)
+        # Non-streaming fallback
         history = await get_history(conv_id)
         async with httpx.AsyncClient() as client:
             r = await client.post(
@@ -443,7 +397,6 @@ for name, detector, handler in intent_handlers:
             reply = r.json()["choices"][0]["message"]["content"]
             await save_message(user_id, conv_id, "assistant", reply)
             return {"reply": reply}
-
 @app.post("/newchat")
 async def new_chat(req: Request, res: Response):
     """Creates a new conversation and returns the ID"""
