@@ -343,16 +343,65 @@ async def ask_universal(req: Request, res: Response):
     await save_message(user_id, conv_id, "user", prompt)
 
     # 3. Intent Detection
-    p_low = prompt.lower()
-    
-    # IMAGE GENERATION
-if is_image_request(prompt):
-    return await handle_image_generation(prompt, user_id, stream)
+    # =========================
+# INTENT DETECTION
+# =========================
 
-# VIDEO GENERATION
-if is_video_request(prompt):
-    return await handle_video_generation(prompt, user_id, stream)
-    
+p_low = prompt.lower()
+
+def is_image_request(text: str) -> bool:
+    return bool(re.search(
+        r"\b(generate|create|make|draw|design)\b.*\b(image|picture|photo|art|logo|illustration)\b",
+        text
+    ))
+
+def is_video_request(text: str) -> bool:
+    return bool(re.search(
+        r"\b(generate|create|make)\b.*\b(video|animation|clip|movie)\b",
+        text
+    ))
+
+def is_code_request(text: str) -> bool:
+    return bool(re.search(
+        r"\b(code|function|script|bug|error|fix|debug|optimize|algorithm)\b",
+        text
+    ))
+
+def is_document_request(text: str) -> bool:
+    return bool(re.search(
+        r"\b(summarize|summary|analyze|key points|explain document)\b",
+        text
+    ))
+
+def is_data_request(text: str) -> bool:
+    return bool(re.search(
+        r"\b(csv|json|dataset|data analysis|analyze data|statistics)\b",
+        text
+    ))
+
+def is_recommendation(text: str) -> bool:
+    return bool(re.search(
+        r"\b(best|recommend|top|which should i buy|suggest)\b",
+        text
+    ))
+
+# =========================
+# INTENT ROUTER
+# =========================
+
+intent_handlers = [
+    ("image", is_image_request, handle_image_generation),
+    ("video", is_video_request, handle_video_generation),
+    ("code", is_code_request, handle_code_assistant),
+    ("doc", is_document_request, handle_text_analysis),
+    ("data", is_data_request, handle_text_analysis),
+]
+
+for name, detector, handler in intent_handlers:
+    if detector(p_low):
+        logger.info(f"[INTENT] {name}")
+        return await handler(prompt, user_id, stream)
+        
     
     # CHAT (DEFAULT)
     if stream:
