@@ -145,6 +145,129 @@ async def save_message(user_id: str, conv_id: str, role: str, content: str):
         }).execute()
     )
 
+async def universal_text_extractor(content: bytes, filename: str) -> str:
+    try:
+        # -------------------------
+        # PDF
+        # -------------------------
+        if filename.endswith(".pdf"):
+            from PyPDF2 import PdfReader
+            reader = PdfReader(BytesIO(content))
+            return "\n".join([p.extract_text() or "" for p in reader.pages])
+
+        # -------------------------
+        # CODE FILES
+        # -------------------------
+        if filename.endswith((
+            ".py", ".js", ".ts", ".jsx", ".tsx",
+            ".java", ".cpp", ".c", ".cs",
+            ".go", ".rs", ".php", ".rb", ".swift"
+        )):
+            return content.decode("utf-8", errors="ignore")
+
+        # -------------------------
+        # DATA FILES
+        # -------------------------
+        if filename.endswith((".json", ".csv", ".xml", ".yaml", ".yml")):
+            return content.decode("utf-8", errors="ignore")
+
+        # -------------------------
+        # TEXT FILES
+        # -------------------------
+        if filename.endswith((".txt", ".md", ".log")):
+            return content.decode("utf-8", errors="ignore")
+
+        # -------------------------
+        # HTML
+        # -------------------------
+        if filename.endswith(".html"):
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(content, "html.parser")
+            return soup.get_text()
+
+        # -------------------------
+        # FALLBACK (IMPORTANT)
+        # -------------------------
+        return content.decode("utf-8", errors="ignore")
+
+    except Exception as e:
+        logger.error(f"[EXTRACT FAIL] {e}")
+        raise HTTPException(500, "Failed to extract file content")
+
+async def handle_text_analysis(text: str, stream: bool):
+    text = text[:15000]  # 🛡️ prevent overload
+
+    messages = [
+        {
+            "role": "system",
+            "content": """You analyze files. Detect type automatically and respond accordingly:
+
+- Code → explain, find bugs, suggest improvements
+- PDF/docs → summarize + key insights
+- Data → extract patterns
+- Logs → find errors/issues
+
+Be structured and clear."""
+        },
+        {
+            "role": "user",
+            "content": text
+        }
+    ]
+
+    if stream:
+        async def gen():
+            async for token in stream_groq_chat(messages):
+                yield sse({"type": "token", "text": token})
+            yield sse({"type": "done"})
+        return StreamingResponse(gen(), media_type="text/event-stream")
+
+    async with httpx.AsyncClient() as client:
+        r = await client.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers=get_groq_headers(),
+            json={
+                "model": "llama-3.3-70b-versatile",
+                "messages": messages
+            }
+        )
+        r.raise_for_status()
+
+    return {"analysis": r.json()["choices"][0]["message"]["content"]}
+
+async def handle_image_analysis(image_bytes: bytes, stream: bool):
+    b64 = base64.b64encode(image_bytes).decode()
+
+    payload = {
+        "model": "gpt-4.1-mini",
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Analyze this image."},
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}
+            ]
+        }]
+    }
+
+    async with httpx.AsyncClient() as client:
+        r = await client.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers=get_openai_headers(),
+            json=payload
+        )
+        r.raise_for_status()
+
+    result = r.json()["choices"][0]["message"]["content"]
+
+    if stream:
+        async def gen():
+            yield sse({"type": "text", "text": result})
+            yield sse({"type": "done"})
+        return StreamingResponse(gen(), media_type="text/event-stream")
+
+    return {"analysis": result}
+    
+
 async def get_history(conv_id: str, limit: int = 10):
     res = await asyncio.to_thread(
         lambda: supabase.table("messages")
@@ -223,13 +346,14 @@ async def ask_universal(req: Request, res: Response):
     p_low = prompt.lower()
     
     # IMAGE GENERATION
-    if any(x in p_low for x in ["image", "draw", "picture", "photo", "art"]):
-        return await handle_image_generation(prompt, user_id, stream)
+if is_image_request(prompt):
+    return await handle_image_generation(prompt, user_id, stream)
 
-    # VIDEO GENERATION
-    if any(x in p_low for x in ["video", "animation", "animate"]):
-        return await handle_video_generation(prompt, user_id, stream)
-
+# VIDEO GENERATION
+if is_video_request(prompt):
+    return await handle_video_generation(prompt, user_id, stream)
+    
+    
     # CHAT (DEFAULT)
     if stream:
         async def event_gen():
@@ -399,6 +523,34 @@ async def text_to_speech(req: Request):
         r.raise_for_status()
         return Response(content=r.content, media_type="audio/mpeg")
 
+@app.post("/analysis")
+async def analyze_file(
+    req: Request,
+    file: UploadFile = File(...),
+    stream: bool = True
+):
+    user = await get_user(req, Response())
+    
+    content = await file.read()
+    filename = file.filename.lower()
+    content_type = file.content_type or ""
+
+    if not content:
+        raise HTTPException(400, "Empty file")
+
+    # 🛡️ Size limit (important)
+    if len(content) > 15_000_000:
+        raise HTTPException(400, "File too large (15MB max)")
+
+    # 🧠 Route
+    if content_type.startswith("image/"):
+        return await handle_image_analysis(content, stream)
+
+    # Everything else → text pipeline
+    text = await universal_text_extractor(content, filename)
+
+    return await handle_text_analysis(text, stream)
+    
 @app.get("/tts/voices")
 async def get_voices():
     return {
@@ -442,65 +594,117 @@ async def handle_image_generation(
     size: str = "1024x1024",
     num_images: int = 1
 ):
+    MAX_PROMPT_LEN = 3000  # safe buffer under 32k
+    MAX_IMAGES = 4
+
     if not OPENAI_API_KEY:
+        msg = "No API Key"
         if stream:
-            async def gen(): yield sse({"type": "error", "message": "No API Key"})
+            async def gen(): yield sse({"type": "error", "message": msg})
             return StreamingResponse(gen(), media_type="text/event-stream")
-        return {"error": "No API Key"}
+        return {"error": msg}
 
-    if not prompt:
-        raise ValueError("Prompt is required")
+    if not prompt or not prompt.strip():
+        raise HTTPException(400, "Prompt is required")
 
+    # 🛡️ HARD GUARD: prevent huge prompts
+    original_len = len(prompt)
+    if original_len > MAX_PROMPT_LEN:
+        logger.warning(f"[IMG] Prompt trimmed from {original_len} → {MAX_PROMPT_LEN}")
+        prompt = prompt[:MAX_PROMPT_LEN]
+
+    # 🛡️ Clamp image count
+    num_images = max(1, min(num_images, MAX_IMAGES))
+
+    # 🎨 Style handling
     STYLES = {
-        "realistic": "ultra realistic, 4k, detailed",
-        "cartoon": "cartoon style, colorful",
-        "anime": "anime style, studio ghibli",
-        "cinematic": "cinematic lighting, dramatic",
-        "cyberpunk": "cyberpunk, neon futuristic",
+        "realistic": "ultra realistic, 4k, highly detailed",
+        "cartoon": "cartoon style, vibrant colors",
+        "anime": "anime style, studio ghibli inspired",
+        "cinematic": "cinematic lighting, dramatic shadows",
+        "cyberpunk": "cyberpunk, neon futuristic, high contrast",
     }
 
     if style in STYLES:
         prompt = f"{prompt}, {STYLES[style]}"
 
-    async with httpx.AsyncClient(timeout=120) as client:
-        r = await client.post(
-            "https://api.openai.com/v1/images/generations",
-            headers=get_openai_headers(),
-            json={
-                "model": "gpt-image-1",
-                "prompt": prompt,
-                "size": size,
-                "n": num_images
-            }
-        )
+    logger.info(f"[IMG] Generating image | user={user_id} | len={len(prompt)}")
 
-        if r.status_code != 200:
-            print("IMAGE ERROR:", r.status_code, r.text)
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            r = await client.post(
+                "https://api.openai.com/v1/images/generations",
+                headers=get_openai_headers(),
+                json={
+                    "model": "gpt-image-1",
+                    "prompt": prompt,
+                    "size": size,
+                    "n": num_images
+                }
+            )
 
-        r.raise_for_status()
-        data = r.json()
+            if r.status_code != 200:
+                logger.error(f"[IMG ERROR] {r.status_code}: {r.text}")
 
+            r.raise_for_status()
+            data = r.json()
+
+    except httpx.HTTPStatusError as e:
+        logger.error(f"[IMG FAIL] HTTP error: {str(e)}")
+
+        if stream:
+            async def gen():
+                yield sse({
+                    "type": "error",
+                    "message": "Image generation failed",
+                    "details": str(e)
+                })
+            return StreamingResponse(gen(), media_type="text/event-stream")
+
+        return {"error": "Image generation failed", "details": str(e)}
+
+    except Exception as e:
+        logger.error(f"[IMG FAIL] Unexpected error: {str(e)}")
+
+        if stream:
+            async def gen():
+                yield sse({
+                    "type": "error",
+                    "message": "Unexpected error",
+                    "details": str(e)
+                })
+            return StreamingResponse(gen(), media_type="text/event-stream")
+
+        return {"error": "Unexpected error", "details": str(e)}
+
+    # 📦 Process images
     images = []
 
-    for item in data["data"]:
-        b64 = item["b64_json"]
-        img_bytes = base64.b64decode(b64)
-
-        fname = f"{uuid.uuid4().hex}.png"
-        path = f"public/{fname}"
-
+    for item in data.get("data", []):
         try:
-            await asyncio.to_thread(
-                lambda: supabase.storage.from_("ai-images").upload(
-                    path, img_bytes, {"content-type": "image/png"}
+            b64 = item["b64_json"]
+            img_bytes = base64.b64decode(b64)
+
+            fname = f"{uuid.uuid4().hex}.png"
+            path = f"public/{fname}"
+
+            try:
+                await asyncio.to_thread(
+                    lambda: supabase.storage.from_("ai-images").upload(
+                        path, img_bytes, {"content-type": "image/png"}
+                    )
                 )
-            )
-            url = f"{SUPABASE_URL}/storage/v1/object/public/ai-images/{path}"
-        except:
-            url = "data:image/png;base64," + b64
+                url = f"{SUPABASE_URL}/storage/v1/object/public/ai-images/{path}"
+            except Exception as storage_err:
+                logger.warning(f"[IMG STORAGE FAIL] {storage_err}")
+                url = "data:image/png;base64," + b64
 
-        images.append({"url": url})
+            images.append({"url": url})
 
+        except Exception as decode_err:
+            logger.error(f"[IMG DECODE FAIL] {decode_err}")
+
+    # 🚀 Stream or return
     if stream:
         async def gen():
             yield sse({"type": "images", "images": images})
