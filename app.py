@@ -123,6 +123,24 @@ async def get_user(request: Request, response: Response) -> dict:
         logger.error(f"User creation failed: {e}")
         raise HTTPException(500, "Auth failed")
 
+# ------------------------
+# INTENT DETECTOR FUNCTIONS
+# ------------------------
+def is_image_request(prompt: str) -> bool:
+    return any(word in prompt for word in ["image", "draw", "generate art", "picture", "illustration"])
+
+def is_video_request(prompt: str) -> bool:
+    return any(word in prompt for word in ["video", "clip", "movie", "animation"])
+
+def is_code_request(prompt: str) -> bool:
+    return any(word in prompt for word in ["code", "script", "function", "program", "bug"])
+
+def is_document_request(prompt: str) -> bool:
+    return any(word in prompt for word in ["document", "pdf", "file", "report", "doc"])
+
+def is_data_request(prompt: str) -> bool:
+    return any(word in prompt for word in ["data", "table", "csv", "dataset", "excel"])
+    
 def get_groq_headers():
     return {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
 
@@ -357,7 +375,7 @@ async def ask_universal(req: Request, res: Response):
     for name, detector, handler in intent_handlers:
         if detector(p_low):
             logger.info(f"[INTENT] {name}")
-            return await handler(prompt, user_id, stream)  # ✅ This must be inside the function
+            return await handler(prompt, user_id, stream)
 
     # ------------------------
     # DEFAULT CHAT
@@ -397,6 +415,7 @@ async def ask_universal(req: Request, res: Response):
             reply = r.json()["choices"][0]["message"]["content"]
             await save_message(user_id, conv_id, "assistant", reply)
             return {"reply": reply}
+            
 @app.post("/newchat")
 async def new_chat(req: Request, res: Response):
     """Creates a new conversation and returns the ID"""
