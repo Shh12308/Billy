@@ -151,6 +151,16 @@ def get_openai_headers():
 # CORE LOGIC
 # =========================
 
+async def handle_code_assistant(prompt: str, user_id: str, stream: bool):
+    """Simple code assistant placeholder"""
+    if stream:
+        async def gen():
+            yield sse({"type": "text", "text": "Code assistant is not implemented yet."})
+            yield sse({"type": "done"})
+        return StreamingResponse(gen(), media_type="text/event-stream")
+    
+    return {"reply": "Code assistant is not implemented yet."}
+    
 async def save_message(user_id: str, conv_id: str, role: str, content: str):
     await asyncio.to_thread(
         lambda: supabase.table("messages").insert({
