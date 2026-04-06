@@ -29,7 +29,7 @@ print(f"Image latency: {latency}ms")
 # CONFIG & LOGGING
 # =========================
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("HeloxAi")
+logger = logging.getLogger("HeloXAi")
 
 # Environment Variables
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -116,7 +116,7 @@ async def get_user(request: Request, response: Response) -> dict:
         )
         response.set_cookie(
             key=COOKIE_NAME, value=new_token, max_age=86400*30, 
-            httponly=True, secure=True, samesite="lax"
+            httponly=True, secure=True, samesite="none"
         )
         return user_data
     except Exception as e:
