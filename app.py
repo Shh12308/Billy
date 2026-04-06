@@ -77,7 +77,7 @@ class TTSRequest(BaseModel):
 # =========================
 # HELPERS
 # =========================
-COOKIE_NAME = "session_token"
+COOKIE_NAME = "HeloxAi4life"
 
 def sse(data: dict) -> str:
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
@@ -346,7 +346,37 @@ def get_vision_model():
 
 @app.post("/ask/universal")
 async def ask_universal(req: Request, res: Response):
-    body = await req.json()
+    content_type = req.headers.get("content-type", "")
+
+    # ------------------------
+    # SAFE BODY PARSING
+    # ------------------------
+    if "application/json" in content_type:
+        try:
+            body = await req.json()
+        except Exception:
+            raise HTTPException(400, "Invalid JSON")
+
+    elif "multipart/form-data" in content_type:
+        form = await req.form()
+        body = dict(form)
+
+        # 🚨 Handle accidental file uploads here
+        if "file" in form:
+            file: UploadFile = form["file"]
+            content = await file.read()
+
+            logger.warning("File sent to /ask/universal instead of /analysis")
+
+            if file.content_type.startswith("image/"):
+                return await handle_image_analysis(content, stream=True)
+
+            text = await universal_text_extractor(content, file.filename)
+            return await handle_text_analysis(text, stream=True)
+
+    else:
+        raise HTTPException(415, f"Unsupported content-type: {content_type}")
+        
     prompt = body.get("prompt", "")
     conv_id = body.get("conversation_id")
     stream = body.get("stream", True)
