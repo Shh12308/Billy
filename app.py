@@ -344,6 +344,10 @@ def get_vision_model():
 # ENDPOINTS
 # =========================
 
+@app.options("/{full_path:path}")
+async def preflight_handler(full_path: str):
+    return Response(status_code=200)
+    
 @app.post("/ask/universal")
 async def ask_universal(req: Request, res: Response):
     content_type = req.headers.get("content-type", "")
