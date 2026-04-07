@@ -376,7 +376,10 @@ async def ask_universal(req: Request, res: Response):
 
     else:
         raise HTTPException(415, f"Unsupported content-type: {content_type}")
-        
+
+    # ------------------------
+    # CONTINUE NORMAL FLOW
+    # ------------------------
     prompt = body.get("prompt", "")
     conv_id = body.get("conversation_id")
     stream = body.get("stream", True)
