@@ -891,7 +891,7 @@ async def handle_code_assistant(prompt: str, user_id: str, conv_id: str, stream:
     intent_result = detect_intent(prompt)
     logger.info(
         f"[CODE] sub_intent={intent_result.intent.value if intent_result else 'none'} "
-        f"confidence={(intent_result.confidence:.2%) if intent_result else 0}"
+        f"confidence={(intent_result.confidence if intent_result else 0):.2%}"
     )
 
     if stream:
