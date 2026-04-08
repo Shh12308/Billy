@@ -1695,25 +1695,44 @@ async def handle_image_generation(
     return {"images": images}
 
 
-async def handle_video_generation(prompt: str, user_id: str, conv_id: str, stream: bool):
-    """Generate Video (Replicate or Placeholder)"""
-    if not REPLICATE_API_TOKEN:
-        if stream:
-            async def gen():
-                yield sse({"type": "error", "message": "Replicate Key missing"})
+async def handle_video_generation(prompt, user_id, conv_id, stream):
+    headers = {
+        "Authorization": f"Token {REPLICATE_API_TOKEN}",
+        "Content-Type": "application/json",
+    }
 
-            return StreamingResponse(gen(), media_type="text/event-stream")
-        return {"error": "Replicate Key missing"}
+    async with httpx.AsyncClient(timeout=120) as client:
+        # 1. Create prediction
+        create_res = await client.post(
+            "https://api.replicate.com/v1/predictions",
+            headers=headers,
+            json={
+                "version": "your-model-version-id",
+                "input": {
+                    "prompt": prompt
+                }
+            }
+        )
+        create_res.raise_for_status()
+        prediction = create_res.json()
+        prediction_id = prediction["id"]
 
-    if stream:
-        async def gen():
-            yield sse({"type": "starting"})
+        # 2. Poll
+        while True:
+            poll_res = await client.get(
+                f"https://api.replicate.com/v1/predictions/{prediction_id}",
+                headers=headers
+            )
+            poll_res.raise_for_status()
+            data = poll_res.json()
+
+            if data["status"] == "succeeded":
+                video_url = data["output"]
+                break
+            elif data["status"] == "failed":
+                raise Exception("Video generation failed")
+
             await asyncio.sleep(2)
-            yield sse({"type": "error", "message": "Video generation requires specific Replicate polling logic implementation."})
-
-        return StreamingResponse(gen(), media_type="text/event-stream")
-
-    return {"error": "Video generation not implemented in this clean version"}
 
 
 # =========================
