@@ -1478,11 +1478,12 @@ async def analyze_intent_endpoint(req: Request):
 # =========================
 # MEDIA ENDPOINTS
 # =========================
+
 @app.post("/tts")
 async def text_to_speech(req: Request):
     """Text to Speech"""
     data = await req.json()
-    text = data.get("text", "")
+    text = data.get("text")
     voice = data.get("voice", "alloy")
 
     if not text:
@@ -1491,14 +1492,20 @@ async def text_to_speech(req: Request):
         raise HTTPException(500, "OpenAI Key missing")
 
     async with httpx.AsyncClient(timeout=60) as client:
-        r = await client.post(
-            "https://api.openai.com/v1/audio/speech",
-            headers=get_openai_headers(),
-            json={"model": "tts-1", "voice": voice, "input": text}
-        )
-        r.raise_for_status()
-        return Response(content=r.content, media_type="audio/mpeg")
+        try:
+            r = await client.post(
+                "https://api.openai.com/v1/audio/speech",
+                headers=get_openai_headers(),
+                json={"model": "tts-1", "voice": voice, "input": text}
+            )
+            r.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            return JSONResponse(
+                status_code=e.response.status_code,
+                content={"error": e.response.text}
+            )
 
+        return Response(content=r.content, media_type="audio/mpeg")
 
 @app.post("/analysis")
 async def analyze_file(
