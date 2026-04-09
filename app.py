@@ -1447,13 +1447,13 @@ async def regenerate(req: Request, res: Response):
     if not conv_id:
         raise HTTPException(400, "conversation_id required")
 
+    # FIX: Removed .execute() from here. The helper function handles execution.
     msgs = await _execute_supabase_with_retry(
         supabase.table("messages")
         .select("*")
         .eq("conversation_id", conv_id)
         .order("created_at", desc=True)
-        .limit(10)
-        .execute(),
+        .limit(10),
         description="Regenerate History Lookup"
     )
 
@@ -1508,15 +1508,16 @@ async def regenerate(req: Request, res: Response):
 async def list_chats(req: Request, res: Response):
     """List all user chats"""
     user = await get_user(req, res)
-    res = await _execute_supabase_with_retry(
+    
+    # FIX: Removed .execute() from here. Renamed variable to 'result' to avoid shadowing 'res' (Response).
+    result = await _execute_supabase_with_retry(
         supabase.table("conversations")
         .select("*")
         .eq("user_id", user["id"])
-        .order("updated_at", desc=True)
-        .execute(),
+        .order("updated_at", desc=True),
         description="List Chats"
     )
-    return {"chats": res.data or []}
+    return {"chats": result.data or []}
 
 
 # =========================
@@ -1688,7 +1689,7 @@ async def handle_image_generation(
                 "https://api.openai.com/v1/images/generations",
                 headers=get_openai_headers(),
                 json={
-                    "model": "gpt-image-1",
+                    "model": "dall-e-3", # Corrected model name
                     "prompt": prompt,
                     "size": size,
                     "n": num_images
@@ -1738,24 +1739,29 @@ async def handle_image_generation(
 
     for item in data.get("data", []):
         try:
-            b64 = item["b64_json"]
-            img_bytes = base64.b64decode(b64)
+            # DALL-E 3 returns url, DALL-E 2 returns b64_json. Handle both.
+            b64 = item.get("b64_json")
+            url = item.get("url")
 
-            fname = f"{uuid.uuid4().hex}.png"
-            path = f"public/{fname}"
+            if url:
+                images.append({"url": url})
+            elif b64:
+                img_bytes = base64.b64decode(b64)
+                fname = f"{uuid.uuid4().hex}.png"
+                path = f"public/{fname}"
 
-            try:
-                await asyncio.to_thread(
-                    lambda: supabase.storage.from_("ai-images").upload(
-                        path, img_bytes, {"content-type": "image/png"}
+                try:
+                    await asyncio.to_thread(
+                        lambda: supabase.storage.from_("ai-images").upload(
+                            path, img_bytes, {"content-type": "image/png"}
+                        )
                     )
-                )
-                url = f"{SUPABASE_URL}/storage/v1/object/public/ai-images/{path}"
-            except Exception as storage_err:
-                logger.warning(f"[IMG STORAGE FAIL] {storage_err}")
-                url = "data:image/png;base64," + b64
-
-            images.append({"url": url})
+                    url = f"{SUPABASE_URL}/storage/v1/object/public/ai-images/{path}"
+                except Exception as storage_err:
+                    logger.warning(f"[IMG STORAGE FAIL] {storage_err}")
+                    url = "data:image/png;base64," + b64
+                
+                images.append({"url": url})
 
         except Exception as decode_err:
             logger.error(f"[IMG DECODE FAIL] {decode_err}")
