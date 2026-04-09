@@ -752,7 +752,7 @@ async def get_user(request: Request, response: Response) -> Dict[str, Any]:
         new_user_data = {
             "id": session_token, # PK
             "email": f"anon+{session_token[:8]}@local"
-        )
+        }
         
         await _execute_supabase_with_retry(
             supabase.table("users").insert(new_user_data),
