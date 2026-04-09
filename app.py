@@ -671,18 +671,43 @@ def sse(data: dict) -> str:
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
+async def _execute_supabase_with_retry(query_builder, description="Supabase Operation"):
+    """
+    Executes a Supabase query builder with retries for transient errors (502, Cloudflare).
+    """
+    max_retries = 3
+    last_exception = None
+    
+    for attempt in range(max_retries):
+        try:
+            return await asyncio.to_thread(query_builder.execute)
+        except Exception as e:
+            last_exception = e
+            error_str = str(e)
+            # Check for 502 Bad Gateway or JSON decoding errors (which happen on 502 HTML responses)
+            if "502" in error_str or "Bad Gateway" in error_str or "Expecting value" in error_str:
+                logger.warning(f"{description} encountered transient error (attempt {attempt + 1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(1 * (attempt + 1)) # Exponential backoff
+                    continue
+            else:
+                # For non-transient errors, break immediately
+                logger.error(f"{description} failed: {e}")
+                break
+    
+    if last_exception:
+        raise last_exception
+
+
 async def get_user(request: Request, response: Response) -> dict:
     """Get or create anonymous user"""
     session_token = request.cookies.get(COOKIE_NAME)
 
     if session_token:
         try:
-            user_resp = await asyncio.to_thread(
-                lambda: supabase.table("users")
-                .select("*")
-                .eq("session_token", session_token)
-                .limit(1)
-                .execute()
+            user_resp = await _execute_supabase_with_retry(
+                supabase.table("users").select("*").eq("session_token", session_token).limit(1),
+                description="User Lookup"
             )
             if user_resp.data:
                 return user_resp.data[0]
@@ -699,8 +724,9 @@ async def get_user(request: Request, response: Response) -> dict:
     }
 
     try:
-        await asyncio.to_thread(
-            lambda: supabase.table("users").insert(user_data).execute()
+        await _execute_supabase_with_retry(
+            supabase.table("users").insert(user_data),
+            description="User Creation"
         )
         response.set_cookie(
             key=COOKIE_NAME, value=new_token, max_age=86400 * 30,
@@ -724,15 +750,17 @@ def get_openai_headers():
 # CORE LOGIC
 # =========================
 async def save_message(user_id: str, conv_id: str, role: str, content: str):
-    await asyncio.to_thread(
-        lambda: supabase.table("messages").insert({
-            "id": str(uuid.uuid4()),
-            "conversation_id": conv_id,
-            "user_id": user_id,
-            "role": role,
-            "content": content,
-            "created_at": datetime.now(timezone.utc).isoformat()
-        }).execute()
+    data = {
+        "id": str(uuid.uuid4()),
+        "conversation_id": conv_id,
+        "user_id": user_id,
+        "role": role,
+        "content": content,
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    await _execute_supabase_with_retry(
+        supabase.table("messages").insert(data),
+        description="Save Message"
     )
 
 
@@ -846,13 +874,13 @@ async def handle_image_analysis(image_bytes: bytes, stream: bool):
 
 
 async def get_history(conv_id: str, limit: int = 10):
-    res = await asyncio.to_thread(
-        lambda: supabase.table("messages")
+    res = await _execute_supabase_with_retry(
+        supabase.table("messages")
         .select("role, content")
         .eq("conversation_id", conv_id)
         .order("created_at", desc=False)
-        .limit(limit)
-        .execute()
+        .limit(limit),
+        description="Get History"
     )
     return [{"role": m["role"], "content": m["content"]} for m in (res.data or [])]
 
@@ -907,7 +935,10 @@ async def handle_code_assistant(prompt: str, user_id: str, conv_id: str, stream:
                     yield sse({"type": "token", "text": token})
 
                 if conv_id:
-                    await save_message(user_id, conv_id, "assistant", full_text)
+                    try:
+                        await save_message(user_id, conv_id, "assistant", full_text)
+                    except Exception as e:
+                        logger.error(f"Failed to save assistant message: {e}")
                 yield sse({"type": "done"})
             except asyncio.CancelledError:
                 yield sse({"type": "stopped"})
@@ -1001,11 +1032,12 @@ async def ask_universal(req: Request, res: Response):
     # Handle conversation creation
     if not conv_id:
         conv_id = str(uuid.uuid4())
-        await asyncio.to_thread(
-            lambda: supabase.table("conversations").insert({
+        await _execute_supabase_with_retry(
+            supabase.table("conversations").insert({
                 "id": conv_id, "user_id": user_id,
                 "title": prompt[:30], "created_at": datetime.now(timezone.utc).isoformat()
-            }).execute()
+            }),
+            description="Create Conversation"
         )
 
     await save_message(user_id, conv_id, "user", prompt)
@@ -1086,7 +1118,11 @@ async def ask_universal(req: Request, res: Response):
                     full_text += token
                     yield sse({"type": "token", "text": token})
 
-                await save_message(user_id, conv_id, "assistant", full_text)
+                try:
+                    await save_message(user_id, conv_id, "assistant", full_text)
+                except Exception as e:
+                    logger.error(f"Failed to save assistant message: {e}")
+                
                 yield sse({"type": "done"})
             except asyncio.CancelledError:
                 yield sse({"type": "stopped"})
@@ -1136,7 +1172,12 @@ Format complex equations clearly using LaTeX-style notation where appropriate.""
                         break
                     full_text += token
                     yield sse({"type": "token", "text": token})
-                await save_message(user_id, conv_id, "assistant", full_text)
+                
+                try:
+                    await save_message(user_id, conv_id, "assistant", full_text)
+                except Exception as e:
+                    logger.error(f"Failed to save assistant message: {e}")
+
                 yield sse({"type": "done"})
             except asyncio.CancelledError:
                 yield sse({"type": "stopped"})
@@ -1182,7 +1223,12 @@ Be thorough but concise."""
                         break
                     full_text += token
                     yield sse({"type": "token", "text": token})
-                await save_message(user_id, conv_id, "assistant", full_text)
+                
+                try:
+                    await save_message(user_id, conv_id, "assistant", full_text)
+                except Exception as e:
+                    logger.error(f"Failed to save assistant message: {e}")
+
                 yield sse({"type": "done"})
             except asyncio.CancelledError:
                 yield sse({"type": "stopped"})
@@ -1228,7 +1274,12 @@ Adapt your style to the specific creative request."""
                         break
                     full_text += token
                     yield sse({"type": "token", "text": token})
-                await save_message(user_id, conv_id, "assistant", full_text)
+                
+                try:
+                    await save_message(user_id, conv_id, "assistant", full_text)
+                except Exception as e:
+                    logger.error(f"Failed to save assistant message: {e}")
+
                 yield sse({"type": "done"})
             except asyncio.CancelledError:
                 yield sse({"type": "stopped"})
@@ -1274,7 +1325,12 @@ Always indicate the source and target languages."""
                         break
                     full_text += token
                     yield sse({"type": "token", "text": token})
-                await save_message(user_id, conv_id, "assistant", full_text)
+                
+                try:
+                    await save_message(user_id, conv_id, "assistant", full_text)
+                except Exception as e:
+                    logger.error(f"Failed to save assistant message: {e}")
+
                 yield sse({"type": "done"})
             except asyncio.CancelledError:
                 yield sse({"type": "stopped"})
@@ -1320,7 +1376,12 @@ Tailor the summary length to the complexity of the content."""
                         break
                     full_text += token
                     yield sse({"type": "token", "text": token})
-                await save_message(user_id, conv_id, "assistant", full_text)
+                
+                try:
+                    await save_message(user_id, conv_id, "assistant", full_text)
+                except Exception as e:
+                    logger.error(f"Failed to save assistant message: {e}")
+
                 yield sse({"type": "done"})
             except asyncio.CancelledError:
                 yield sse({"type": "stopped"})
@@ -1350,11 +1411,12 @@ async def new_chat(req: Request, res: Response):
     """Creates a new conversation and returns the ID"""
     user = await get_user(req, res)
     cid = str(uuid.uuid4())
-    await asyncio.to_thread(
-        lambda: supabase.table("conversations").insert({
+    await _execute_supabase_with_retry(
+        supabase.table("conversations").insert({
             "id": cid, "user_id": user["id"],
             "title": "New Chat", "created_at": datetime.now(timezone.utc).isoformat()
-        }).execute()
+        }),
+        description="New Chat"
     )
     return {"conversation_id": cid}
 
@@ -1385,13 +1447,14 @@ async def regenerate(req: Request, res: Response):
     if not conv_id:
         raise HTTPException(400, "conversation_id required")
 
-    msgs = await asyncio.to_thread(
-        lambda: supabase.table("messages")
+    msgs = await _execute_supabase_with_retry(
+        supabase.table("messages")
         .select("*")
         .eq("conversation_id", conv_id)
         .order("created_at", desc=True)
         .limit(10)
-        .execute()
+        .execute(),
+        description="Regenerate History Lookup"
     )
 
     if not msgs.data:
@@ -1406,13 +1469,13 @@ async def regenerate(req: Request, res: Response):
     if not last_user_msg:
         raise HTTPException(400, "No user message to regenerate from")
 
-    await asyncio.to_thread(
-        lambda: supabase.table("messages")
+    await _execute_supabase_with_retry(
+        supabase.table("messages")
         .delete()
         .gt("created_at", last_user_msg["created_at"])
         .eq("role", "assistant")
-        .eq("conversation_id", conv_id)
-        .execute()
+        .eq("conversation_id", conv_id),
+        description="Delete Old Assistant Message"
     )
 
     async def event_gen():
@@ -1427,7 +1490,11 @@ async def regenerate(req: Request, res: Response):
                 full_text += token
                 yield sse({"type": "token", "text": token})
 
-            await save_message(user_id, conv_id, "assistant", full_text)
+            try:
+                await save_message(user_id, conv_id, "assistant", full_text)
+            except Exception as e:
+                logger.error(f"Failed to save assistant message: {e}")
+
             yield sse({"type": "done"})
         except asyncio.CancelledError:
             yield sse({"type": "stopped"})
@@ -1441,12 +1508,13 @@ async def regenerate(req: Request, res: Response):
 async def list_chats(req: Request, res: Response):
     """List all user chats"""
     user = await get_user(req, res)
-    res = await asyncio.to_thread(
-        lambda: supabase.table("conversations")
+    res = await _execute_supabase_with_retry(
+        supabase.table("conversations")
         .select("*")
         .eq("user_id", user["id"])
         .order("updated_at", desc=True)
-        .execute()
+        .execute(),
+        description="List Chats"
     )
     return {"chats": res.data or []}
 
