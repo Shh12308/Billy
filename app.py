@@ -1061,12 +1061,33 @@ async def ask_universal(req: Request, res: Response):
     user_id = user["id"]
 
     # Handle conversation creation
-    if not conv_id:
-        conv_id = str(uuid.uuid4())
+        # Handle conversation creation
+    # We must verify the conversation exists to avoid Foreign Key violations.
+    # If conv_id is provided but missing in DB, we create it.
+    conversation_exists = False
+    
+    if conv_id:
+        # Verify if the provided conversation ID actually exists
+        check = await _execute_supabase_with_retry(
+            supabase.table("conversations").select("id").eq("id", conv_id).limit(1),
+            description="Check Conversation Existence"
+        )
+        if check.data:
+            conversation_exists = True
+        else:
+            # If it doesn't exist, we treat it as a new chat request but keep the ID if possible, 
+            # or generate a new one to be safe. Here we generate a new one to ensure uniqueness.
+            logger.warning(f"Conversation {conv_id} not found in DB. Creating new conversation.")
+            conv_id = str(uuid.uuid4())
+
+    if not conversation_exists:
+        # Create the conversation (either because ID was missing, or ID was invalid)
         await _execute_supabase_with_retry(
             supabase.table("conversations").insert({
-                "id": conv_id, "user_id": user_id,
-                "title": prompt[:30], "created_at": datetime.now(timezone.utc).isoformat()
+                "id": conv_id, 
+                "user_id": user_id,
+                "title": prompt[:30] if prompt else "New Chat", 
+                "created_at": datetime.now(timezone.utc).isoformat()
             }),
             description="Create Conversation"
         )
