@@ -711,12 +711,7 @@ async def get_user(request: Request, response: Response) -> Dict[str, Any]:
     # Default user object (Free/Guest) aligned with SQL Schema
     user_obj = {
         "id": None,
-        "email": None,
-        "plan": "free",
-        "is_free": True,
-        "is_premium": False,
-        "is_lifetime": False,
-        "role": "user"
+        "email": None
     }
 
     # 1. Try to find user via Cookie (Guest/Anonymous Persistence)
@@ -734,11 +729,6 @@ async def get_user(request: Request, response: Response) -> Dict[str, Any]:
                 user_obj = {
                     "id": u["id"],
                     "email": u.get("email"),
-                    "plan": u.get("plan", "free"),
-                    "is_free": u.get("is_free", True),
-                    "is_premium": u.get("is_premium", False),
-                    "is_lifetime": u.get("is_lifetime", False),
-                    "role": u.get("role", "user")
                 }
                 return user_obj
         except Exception as e:
@@ -761,15 +751,8 @@ async def get_user(request: Request, response: Response) -> Dict[str, Any]:
     try:
         new_user_data = {
             "id": session_token, # PK
-            "email": f"anon+{session_token[:8]}@local", # Unique email for anon
-            "plan": "free",
-            "is_free": True,
-            "is_premium": False,
-            "is_lifetime": False,
-            "role": "user",
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "updated_at": datetime.now(timezone.utc).isoformat()
-        }
+            "email": f"anon+{session_token[:8]}@local"
+            )
         
         await _execute_supabase_with_retry(
             supabase.table("users").insert(new_user_data),
