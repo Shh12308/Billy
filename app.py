@@ -41,7 +41,7 @@ app = FastAPI()
 # CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://heloxai.xyz", "https://www.heloxai.xyz"],
+    allow_origins=["https://heloxai.xyz", "https://www.heloxai.xyz", "*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -117,7 +117,7 @@ class AdvancedIntentDetector:
                 r'\b(visualize|visualise)\s+(this|that|the|it)',
                 r'\b(dall[eé]|midjourney|stable\s+diffusion|sd\s*xl|flux)',
                 r'\b(generate|create)\s+(some\s+)?art',
-                r'\bmake\s+(me\s+)?(a\s+)?(visual|graphic|thumbnail|logo|icon|banner|poster)',
+                r'\b(make\s+(me\s+)?(a\s+)?(visual|graphic|thumbnail|logo|icon|banner|poster)',
                 r'\b(prompt\s+(for|to))\s+(generate|create|make)',
             ],
             IntentCategory.VIDEO_GENERATION: [
@@ -142,7 +142,7 @@ class AdvancedIntentDetector:
                 r'\b(convert\s+(this|to)\s+(code|python|javascript|java|c\+\+|rust|go|typescript))',
                 r'\b(scaffold|boilerplate|template)\s+(for|a)',
                 r'\b(wrapper|helper|utility)\s+(function|class|module)\s+(for|to)',
-                r'\bimplement\s+(the|a|this)\s+(\w+\s+)?(pattern|algorithm|logic|feature)',
+                r'\b(implement\s+(the|a|this)\s+(\w+\s+)?(pattern|algorithm|logic|feature)',
             ],
             IntentCategory.CODE_REVIEW: [
                 r'\b(review|analyze|critique|evaluate|audit)\s+(this|my|the)\s+(code|function|class|script|implementation|pr)',
@@ -189,7 +189,7 @@ class AdvancedIntentDetector:
             ],
             IntentCategory.API_DEVELOPMENT: [
                 r'\b(create|build|develop|design|implement)\s+(a\s+)?(api|rest\s*api|graphql\s*api|endpoint|route)',
-                r'\bapi\s*(endpoint|route|handler|controller|gateway)',
+                r'\b(api\s*(endpoint|route|handler|controller|gateway)',
                 r'\b(restful|rest|graphql|grpc|websocket)\s*(api|service|endpoint)?',
                 r'\b(openapi|swagger|api\s*documentation)',
                 r'\b(request|response|payload)\s+(format|structure|schema)',
@@ -699,43 +699,92 @@ async def _execute_supabase_with_retry(query_builder, description="Supabase Oper
         raise last_exception
 
 
-async def get_user(request: Request, response: Response) -> dict:
-    """Get or create anonymous user"""
+async def get_user(request: Request, response: Response) -> Dict[str, Any]:
+    """
+    Robust user fetching logic.
+    1. Checks Cookie 'HeloxAi4life' (used for Anonymous/Guest persistence).
+    2. Syncs with 'public.users' table based on the provided SQL Schema.
+    3. Returns user dict including is_premium and is_lifetime.
+    """
     session_token = request.cookies.get(COOKIE_NAME)
-
-    if session_token:
-        try:
-            user_resp = await _execute_supabase_with_retry(
-                supabase.table("users").select("*").eq("session_token", session_token).limit(1),
-                description="User Lookup"
-            )
-            if user_resp.data:
-                return user_resp.data[0]
-        except Exception as e:
-            logger.error(f"User lookup failed: {e}")
-
-    new_token = uuid.uuid4().hex
-    user_data = {
-        "id": str(uuid.uuid4()),
-        "email": f"anon+{uuid.uuid4().hex}@local",
-        "anonymous": True,
-        "session_token": new_token,
-        "created_at": datetime.now(timezone.utc).isoformat()
+    
+    # Default user object (Free/Guest) aligned with SQL Schema
+    user_obj = {
+        "id": None,
+        "email": None,
+        "plan": "free",
+        "is_free": True,
+        "is_premium": False,
+        "is_lifetime": False,
+        "role": "user"
     }
 
-    try:
-        await _execute_supabase_with_retry(
-            supabase.table("users").insert(user_data),
-            description="User Creation"
-        )
+    # 1. Try to find user via Cookie (Guest/Anonymous Persistence)
+    # NOTE: We assume the cookie contains a UUID that maps directly to users.id
+    if session_token:
+        try:
+            # Check if user exists in DB by ID
+            user_resp = await _execute_supabase_with_retry(
+                supabase.table("users").select("*").eq("id", session_token).limit(1),
+                description="User Lookup by ID"
+            )
+            if user_resp.data:
+                u = user_resp.data[0]
+                # Map DB columns to our internal user object
+                user_obj = {
+                    "id": u["id"],
+                    "email": u.get("email"),
+                    "plan": u.get("plan", "free"),
+                    "is_free": u.get("is_free", True),
+                    "is_premium": u.get("is_premium", False),
+                    "is_lifetime": u.get("is_lifetime", False),
+                    "role": u.get("role", "user")
+                }
+                return user_obj
+        except Exception as e:
+            logger.error(f"Cookie user lookup failed: {e}")
+
+    # 2. Create Anonymous User if none found (and we have or can generate a token)
+    # If no cookie, generate a new UUID
+    if not session_token:
+        session_token = str(uuid.uuid4())
         response.set_cookie(
-            key=COOKIE_NAME, value=new_token, max_age=86400 * 30,
-            httponly=True, secure=True, samesite="none"
+            key=COOKIE_NAME, 
+            value=session_token, 
+            max_age=86400*30, 
+            httponly=True, 
+            secure=True, 
+            samesite="none"
         )
-        return user_data
+    
+    # Create row in public.users matching the schema
+    try:
+        new_user_data = {
+            "id": session_token, # PK
+            "email": f"anon+{session_token[:8]}@local", # Unique email for anon
+            "plan": "free",
+            "is_free": True,
+            "is_premium": False,
+            "is_lifetime": False,
+            "role": "user",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        }
+        
+        await _execute_supabase_with_retry(
+            supabase.table("users").insert(new_user_data),
+            description="Create Anonymous User"
+        )
+        
+        user_obj["id"] = session_token
+        # user_obj already has defaults set above
+        
     except Exception as e:
-        logger.error(f"User creation failed: {e}")
-        raise HTTPException(500, "Auth failed")
+        logger.error(f"Failed to create anonymous user: {e}")
+        # Fallback: return session-only user object (won't persist to DB but won't crash)
+        user_obj["id"] = session_token
+
+    return user_obj
 
 
 def get_groq_headers():
@@ -753,7 +802,6 @@ async def save_message(user_id: str, conv_id: str, role: str, content: str):
     data = {
         "id": str(uuid.uuid4()),
         "conversation_id": conv_id,
-        "user_id": user_id,
         "role": role,
         "content": content,
         "created_at": datetime.now(timezone.utc).isoformat()
@@ -843,7 +891,7 @@ async def handle_image_analysis(image_bytes: bytes, stream: bool):
     b64 = base64.b64encode(image_bytes).decode()
 
     payload = {
-        "model": "gpt-4.1-mini",
+        "model": "gpt-4o-mini",
         "messages": [{
             "role": "user",
             "content": [
@@ -1059,6 +1107,19 @@ async def ask_universal(req: Request, res: Response):
         )
     else:
         logger.info(f"[INTENT] action=general (no specific intent)")
+
+    # ------------------------
+    # PERMISSION CHECKS (Premium/Lifetime)
+    # ------------------------
+    if action_type in ["image", "video"]:
+        # Check if user is allowed based on DB flags
+        is_allowed = user.get("is_premium") or user.get("is_lifetime")
+        if not is_allowed:
+            error_msg = f"{'Image' if action_type == 'image' else 'Video'} generation requires a Premium or Lifetime plan."
+            if stream:
+                async def gen(): yield sse({"type": "error", "message": error_msg})
+                return StreamingResponse(gen(), media_type="text/event-stream")
+            raise HTTPException(403, error_msg)
 
     # ------------------------
     # INTENT-BASED ROUTING
@@ -1447,7 +1508,6 @@ async def regenerate(req: Request, res: Response):
     if not conv_id:
         raise HTTPException(400, "conversation_id required")
 
-    # FIX: Removed .execute() from here. The helper function handles execution.
     msgs = await _execute_supabase_with_retry(
         supabase.table("messages")
         .select("*")
@@ -1509,7 +1569,6 @@ async def list_chats(req: Request, res: Response):
     """List all user chats"""
     user = await get_user(req, res)
     
-    # FIX: Removed .execute() from here. Renamed variable to 'result' to avoid shadowing 'res' (Response).
     result = await _execute_supabase_with_retry(
         supabase.table("conversations")
         .select("*")
