@@ -1060,10 +1060,9 @@ async def ask_universal(req: Request, res: Response):
     user = await get_user(req, res)
     user_id = user["id"]
 
-    # Handle conversation creation
-        # Handle conversation creation
-    # We must verify the conversation exists to avoid Foreign Key violations.
-    # If conv_id is provided but missing in DB, we create it.
+    # ------------------------
+    # HANDLE CONVERSATION CREATION (FIXED)
+    # ------------------------
     conversation_exists = False
     
     if conv_id:
@@ -1079,6 +1078,10 @@ async def ask_universal(req: Request, res: Response):
             # or generate a new one to be safe. Here we generate a new one to ensure uniqueness.
             logger.warning(f"Conversation {conv_id} not found in DB. Creating new conversation.")
             conv_id = str(uuid.uuid4())
+
+    # FIX: Handle the case where conv_id was not provided in the request (None)
+    if not conv_id:
+        conv_id = str(uuid.uuid4())
 
     if not conversation_exists:
         # Create the conversation (either because ID was missing, or ID was invalid)
