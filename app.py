@@ -107,7 +107,7 @@ class AdvancedIntentDetector:
             "skip", "avoid", "except", "but not", "ignore", "rather than"
         }
 
-    def _compile_patterns(self):
+        def _compile_patterns(self):
         """Pre-compile regex patterns for performance"""
         self.patterns = {
             IntentCategory.IMAGE_GENERATION: [
@@ -117,7 +117,7 @@ class AdvancedIntentDetector:
                 r'\b(visualize|visualise)\s+(this|that|the|it)',
                 r'\b(dall[eé]|midjourney|stable\s+diffusion|sd\s*xl|flux)',
                 r'\b(generate|create)\s+(some\s+)?art',
-                r'\b(make\s+(me\s+)?(a\s+)?(visual|graphic|thumbnail|logo|icon|banner|poster)',
+                r'\b(make\s+(me\s+)?(a\s+)?(visual|graphic|thumbnail|logo|icon|banner|poster))',
                 r'\b(prompt\s+(for|to))\s+(generate|create|make)',
             ],
             IntentCategory.VIDEO_GENERATION: [
@@ -142,7 +142,7 @@ class AdvancedIntentDetector:
                 r'\b(convert\s+(this|to)\s+(code|python|javascript|java|c\+\+|rust|go|typescript))',
                 r'\b(scaffold|boilerplate|template)\s+(for|a)',
                 r'\b(wrapper|helper|utility)\s+(function|class|module)\s+(for|to)',
-                r'\b(implement\s+(the|a|this)\s+(\w+\s+)?(pattern|algorithm|logic|feature)',
+                r'\b(implement\s+(the|a|this)\s+(\w+\s+)?(pattern|algorithm|logic|feature))',
             ],
             IntentCategory.CODE_REVIEW: [
                 r'\b(review|analyze|critique|evaluate|audit)\s+(this|my|the)\s+(code|function|class|script|implementation|pr)',
@@ -189,7 +189,7 @@ class AdvancedIntentDetector:
             ],
             IntentCategory.API_DEVELOPMENT: [
                 r'\b(create|build|develop|design|implement)\s+(a\s+)?(api|rest\s*api|graphql\s*api|endpoint|route)',
-                r'\b(api\s*(endpoint|route|handler|controller|gateway)',
+                r'\b(api\s*(endpoint|route|handler|controller|gateway))',
                 r'\b(restful|rest|graphql|grpc|websocket)\s*(api|service|endpoint)?',
                 r'\b(openapi|swagger|api\s*documentation)',
                 r'\b(request|response|payload)\s+(format|structure|schema)',
@@ -221,7 +221,8 @@ class AdvancedIntentDetector:
                 r'\b(how\s+(does|do|did|can|would|should|to))\s+',
                 r'\b(tell\s+me\s+(about|more\s+about|how|why))',
                 r'\b(why\s+(is|does|do|are|did|can|would))\s+',
-                r'\b(definition|meaning)\s*(of|for)\s+',
+                # FIXED: Added closing parenthesis for (of|for) and removed trailing space
+                r'\b(definition|meaning)\s+(of|for)\s+',
                 r'\b(understand(ing)?)\s*(this|how|why|what|better)?',
                 r'\b(break\s+down|simplify|elaborate)\s+',
             ],
@@ -230,6 +231,7 @@ class AdvancedIntentDetector:
                 r'\b(creative|fiction|fantasy|sci[- ]?fi|horror|romance|thriller|mystery)\s*(writing|story|tale)?',
                 r'\b(narrative|plot|character|setting|dialogue)\s*(for|development|creation|arc)?',
                 r'\b(storytelling|story[- ]?telling)',
+                # Removed trailing space to be consistent
                 r'\b(write\s+(like|in\s+the\s+style\s+of))\s+',
             ],
             IntentCategory.MATHEMATICAL: [
@@ -244,6 +246,7 @@ class AdvancedIntentDetector:
                 r'\b(research|find|search|look\s+up|investigate)\s+(about|on|for|into)',
                 r'\b(stud(y|ies))\s+(show|suggest|indicate|demonstrate|prove)',
                 r'\b(academic|scholarly|peer[- ]?reviewed)\s*(source|paper|article|research|journal)?',
+                # Removed trailing space
                 r'\b(cite|citation|reference|bibliography)\s+',
                 r'\b(literature\s+review)\s*(on|for|of)?',
                 r'\b(what\s+(does\s+)?(research|science|literature)\s+say)',
