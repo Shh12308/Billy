@@ -50,7 +50,7 @@ app.add_middleware(
 # Database Client
 supabase = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
 
-# Global State for Stream Cancellation (In-memory for single-instance/Railway sticky sessions)
+# Global State for Stream Cancellation
 active_streams: Dict[str, asyncio.Task] = {}
 
 
@@ -221,7 +221,6 @@ class AdvancedIntentDetector:
                 r'\b(how\s+(does|do|did|can|would|should|to))\s+',
                 r'\b(tell\s+me\s+(about|more\s+about|how|why))',
                 r'\b(why\s+(is|does|do|are|did|can|would))\s+',
-                # FIXED: Added closing parenthesis for (of|for) and removed trailing space
                 r'\b(definition|meaning)\s+(of|for)\s+',
                 r'\b(understand(ing)?)\s*(this|how|why|what|better)?',
                 r'\b(break\s+down|simplify|elaborate)\s+',
@@ -231,7 +230,6 @@ class AdvancedIntentDetector:
                 r'\b(creative|fiction|fantasy|sci[- ]?fi|horror|romance|thriller|mystery)\s*(writing|story|tale)?',
                 r'\b(narrative|plot|character|setting|dialogue)\s*(for|development|creation|arc)?',
                 r'\b(storytelling|story[- ]?telling)',
-                # Removed trailing space to be consistent
                 r'\b(write\s+(like|in\s+the\s+style\s+of))\s+',
             ],
             IntentCategory.MATHEMATICAL: [
@@ -246,7 +244,6 @@ class AdvancedIntentDetector:
                 r'\b(research|find|search|look\s+up|investigate)\s+(about|on|for|into)',
                 r'\b(stud(y|ies))\s+(show|suggest|indicate|demonstrate|prove)',
                 r'\b(academic|scholarly|peer[- ]?reviewed)\s*(source|paper|article|research|journal)?',
-                # Removed trailing space
                 r'\b(cite|citation|reference|bibliography)\s+',
                 r'\b(literature\s+review)\s*(on|for|of)?',
                 r'\b(what\s+(does\s+)?(research|science|literature)\s+say)',
@@ -707,38 +704,40 @@ async def get_user(request: Request, response: Response) -> Dict[str, Any]:
     Robust user fetching logic.
     1. Checks Cookie 'HeloxAi4life' (used for Anonymous/Guest persistence).
     2. Syncs with 'public.users' table based on the provided SQL Schema.
-    3. Returns user dict including is_premium and is_lifetime.
+    3. Returns user dict including is_premium, is_lifetime, and global memory.
     """
     session_token = request.cookies.get(COOKIE_NAME)
     
     # Default user object (Free/Guest) aligned with SQL Schema
     user_obj = {
         "id": None,
-        "email": None
+        "email": None,
+        "memory": ""  # Added Memory Field
     }
 
     # 1. Try to find user via Cookie (Guest/Anonymous Persistence)
-    # NOTE: We assume the cookie contains a UUID that maps directly to users.id
     if session_token:
         try:
-            # Check if user exists in DB by ID
+            # Select * to grab any available columns including memory
             user_resp = await _execute_supabase_with_retry(
                 supabase.table("users").select("*").eq("id", session_token).limit(1),
                 description="User Lookup by ID"
             )
             if user_resp.data:
                 u = user_resp.data[0]
-                # Map DB columns to our internal user object
                 user_obj = {
                     "id": u["id"],
-                    "email": u.get("email")
+                    "email": u.get("email"),
+                    "memory": u.get("memory", ""), # Fetch global memory
+                    "is_premium": u.get("is_premium", False),
+                    "is_lifetime": u.get("is_lifetime", False),
+                    "plan": u.get("plan", "free")
                 }
                 return user_obj
         except Exception as e:
             logger.error(f"Cookie user lookup failed: {e}")
 
-    # 2. Create Anonymous User if none found (and we have or can generate a token)
-    # If no cookie, generate a new UUID
+    # 2. Create Anonymous User if none found
     if not session_token:
         session_token = str(uuid.uuid4())
         response.set_cookie(
@@ -750,11 +749,12 @@ async def get_user(request: Request, response: Response) -> Dict[str, Any]:
             samesite="none"
         )
     
-    # Create row in public.users matching the schema
+    # Create row in public.users
     try:
         new_user_data = {
-            "id": session_token, # PK
-            "email": f"anon+{session_token[:8]}@local"
+            "id": session_token,
+            "email": f"anon+{session_token[:8]}@local",
+            "memory": "" # Initialize empty memory
         }
         
         await _execute_supabase_with_retry(
@@ -763,11 +763,9 @@ async def get_user(request: Request, response: Response) -> Dict[str, Any]:
         )
         
         user_obj["id"] = session_token
-        # user_obj already has defaults set above
         
     except Exception as e:
         logger.error(f"Failed to create anonymous user: {e}")
-        # Fallback: return session-only user object (won't persist to DB but won't crash)
         user_obj["id"] = session_token
 
     return user_obj
@@ -908,6 +906,7 @@ async def handle_image_analysis(image_bytes: bytes, stream: bool):
 
 
 async def get_history(conv_id: str, limit: int = 10):
+    # Fetches ONLY the history for this specific conversation (Context Isolation)
     res = await _execute_supabase_with_retry(
         supabase.table("messages")
         .select("role, content")
@@ -942,9 +941,14 @@ async def stream_groq_chat(messages: list, model: str = "llama-3.3-70b-versatile
                         pass
 
 
-async def handle_code_assistant(prompt: str, user_id: str, conv_id: str, stream: bool):
-    """Advanced code assistant with intent-aware system prompts"""
+async def handle_code_assistant(prompt: str, user: Dict[str, Any], conv_id: str, stream: bool):
+    """Advanced code assistant with intent-aware system prompts and user memory"""
     system_prompt = get_detector().get_code_system_prompt(prompt)
+    
+    # Inject Global User Memory
+    user_memory = user.get("memory", "")
+    if user_memory:
+        system_prompt += f"\n\nUser Context: {user_memory}"
 
     history = await get_history(conv_id) if conv_id else []
     messages = [{"role": "system", "content": system_prompt}] + history
@@ -959,7 +963,7 @@ async def handle_code_assistant(prompt: str, user_id: str, conv_id: str, stream:
     if stream:
         async def gen():
             task = asyncio.current_task()
-            active_streams[user_id] = task
+            active_streams[user["id"]] = task
             try:
                 full_text = ""
                 async for token in stream_groq_chat(messages):
@@ -970,14 +974,14 @@ async def handle_code_assistant(prompt: str, user_id: str, conv_id: str, stream:
 
                 if conv_id:
                     try:
-                        await save_message(user_id, conv_id, "assistant", full_text)
+                        await save_message(user["id"], conv_id, "assistant", full_text)
                     except Exception as e:
                         logger.error(f"Failed to save assistant message: {e}")
                 yield sse({"type": "done"})
             except asyncio.CancelledError:
                 yield sse({"type": "stopped"})
             finally:
-                active_streams.pop(user_id, None)
+                active_streams.pop(user["id"], None)
 
         return StreamingResponse(gen(), media_type="text/event-stream")
 
@@ -991,7 +995,7 @@ async def handle_code_assistant(prompt: str, user_id: str, conv_id: str, stream:
         reply = r.json()["choices"][0]["message"]["content"]
 
     if conv_id:
-        await save_message(user_id, conv_id, "assistant", reply)
+        await save_message(user["id"], conv_id, "assistant", reply)
     return {"reply": reply}
 
 
@@ -1064,10 +1068,9 @@ async def ask_universal(req: Request, res: Response):
         raise HTTPException(400, "Prompt required")
 
     user = await get_user(req, res)
-    user_id = user["id"]
 
     # ------------------------
-    # HANDLE CONVERSATION CREATION (FIXED)
+    # HANDLE CONVERSATION CREATION
     # ------------------------
     conversation_exists = False
     
@@ -1080,28 +1083,25 @@ async def ask_universal(req: Request, res: Response):
         if check.data:
             conversation_exists = True
         else:
-            # If it doesn't exist, we treat it as a new chat request but keep the ID if possible, 
-            # or generate a new one to be safe. Here we generate a new one to ensure uniqueness.
+            # Create new if ID is invalid
             logger.warning(f"Conversation {conv_id} not found in DB. Creating new conversation.")
             conv_id = str(uuid.uuid4())
 
-    # FIX: Handle the case where conv_id was not provided in the request (None)
     if not conv_id:
         conv_id = str(uuid.uuid4())
 
     if not conversation_exists:
-        # Create the conversation (either because ID was missing, or ID was invalid)
         await _execute_supabase_with_retry(
             supabase.table("conversations").insert({
                 "id": conv_id, 
-                "user_id": user_id,
+                "user_id": user["id"],
                 "title": prompt[:30] if prompt else "New Chat", 
                 "created_at": datetime.now(timezone.utc).isoformat()
             }),
             description="Create Conversation"
         )
 
-    await save_message(user_id, conv_id, "user", prompt)
+    await save_message(user["id"], conv_id, "user", prompt)
 
     # ------------------------
     # ADVANCED INTENT DETECTION
@@ -1125,7 +1125,6 @@ async def ask_universal(req: Request, res: Response):
     # PERMISSION CHECKS (Premium/Lifetime)
     # ------------------------
     if action_type in ["image", "video"]:
-        # Check if user is allowed based on DB flags
         is_allowed = user.get("is_premium") or user.get("is_lifetime")
         if not is_allowed:
             error_msg = f"{'Image' if action_type == 'image' else 'Video'} generation requires a Premium or Lifetime plan."
@@ -1154,25 +1153,26 @@ async def ask_universal(req: Request, res: Response):
         if action_type in ("document", "data"):
             return await handler(prompt, stream)
         else:
-            return await handler(prompt, user_id, conv_id, stream)
+            # Pass user object for memory context
+            return await handler(prompt, user, conv_id, stream)
 
     # ------------------------
     # SPECIALIZED HANDLERS
     # ------------------------
     if action_type == "math":
-        return await handle_math_request(prompt, user_id, conv_id, stream)
+        return await handle_math_request(prompt, user, conv_id, stream)
 
     if action_type == "research":
-        return await handle_research_request(prompt, user_id, conv_id, stream)
+        return await handle_research_request(prompt, user, conv_id, stream)
 
     if action_type == "creative":
-        return await handle_creative_request(prompt, user_id, conv_id, stream)
+        return await handle_creative_request(prompt, user, conv_id, stream)
 
     if action_type == "translation":
-        return await handle_translation_request(prompt, user_id, conv_id, stream)
+        return await handle_translation_request(prompt, user, conv_id, stream)
 
     if action_type == "summary":
-        return await handle_summary_request(prompt, user_id, conv_id, stream)
+        return await handle_summary_request(prompt, user, conv_id, stream)
 
     # ------------------------
     # DEFAULT CHAT
@@ -1180,11 +1180,20 @@ async def ask_universal(req: Request, res: Response):
     if stream:
         async def event_gen():
             task = asyncio.current_task()
-            active_streams[user_id] = task
+            active_streams[user["id"]] = task
 
             try:
+                # Fetch history for THIS specific chat (Context Isolation)
                 history = await get_history(conv_id)
-                full_history = [{"role": "system", "content": "You are a helpful AI."}] + history
+                
+                # Inject Global User Memory into System Prompt
+                base_system = "You are a helpful AI."
+                user_memory = user.get("memory", "")
+                if user_memory:
+                    base_system += f"\n\nUser Context: {user_memory}"
+                
+                full_history = [{"role": "system", "content": base_system}] + history
+                
                 full_text = ""
                 async for token in stream_groq_chat(full_history):
                     if task.cancelled():
@@ -1193,7 +1202,7 @@ async def ask_universal(req: Request, res: Response):
                     yield sse({"type": "token", "text": token})
 
                 try:
-                    await save_message(user_id, conv_id, "assistant", full_text)
+                    await save_message(user["id"], conv_id, "assistant", full_text)
                 except Exception as e:
                     logger.error(f"Failed to save assistant message: {e}")
                 
@@ -1201,27 +1210,34 @@ async def ask_universal(req: Request, res: Response):
             except asyncio.CancelledError:
                 yield sse({"type": "stopped"})
             finally:
-                active_streams.pop(user_id, None)
+                active_streams.pop(user["id"], None)
 
         return StreamingResponse(event_gen(), media_type="text/event-stream")
     else:
         history = await get_history(conv_id)
+        base_system = "You are a helpful AI."
+        user_memory = user.get("memory", "")
+        if user_memory:
+            base_system += f"\n\nUser Context: {user_memory}"
+            
+        full_history = [{"role": "system", "content": base_system}] + history
+        
         async with httpx.AsyncClient() as client:
             r = await client.post(
                 "https://api.groq.com/openai/v1/chat/completions",
                 headers=get_groq_headers(),
-                json={"model": "llama-3.3-70b-versatile", "messages": history, "max_tokens": 1024}
+                json={"model": "llama-3.3-70b-versatile", "messages": full_history, "max_tokens": 1024}
             )
             r.raise_for_status()
             reply = r.json()["choices"][0]["message"]["content"]
-            await save_message(user_id, conv_id, "assistant", reply)
+            await save_message(user["id"], conv_id, "assistant", reply)
             return {"reply": reply}
 
 
 # =========================
 # SPECIALIZED HANDLERS
 # =========================
-async def handle_math_request(prompt: str, user_id: str, conv_id: str, stream: bool):
+async def handle_math_request(prompt: str, user: Dict[str, Any], conv_id: str, stream: bool):
     """Handle mathematical queries with specialized prompting"""
     system_prompt = """You are a mathematical expert. When solving math problems:
 1. Show your work step-by-step
@@ -1232,13 +1248,18 @@ async def handle_math_request(prompt: str, user_id: str, conv_id: str, stream: b
 
 Format complex equations clearly using LaTeX-style notation where appropriate."""
 
+    # Inject Memory
+    user_memory = user.get("memory", "")
+    if user_memory:
+        system_prompt += f"\n\nUser Context: {user_memory}"
+
     history = await get_history(conv_id) if conv_id else []
     messages = [{"role": "system", "content": system_prompt}] + history
 
     if stream:
         async def gen():
             task = asyncio.current_task()
-            active_streams[user_id] = task
+            active_streams[user["id"]] = task
             try:
                 full_text = ""
                 async for token in stream_groq_chat(messages):
@@ -1248,7 +1269,7 @@ Format complex equations clearly using LaTeX-style notation where appropriate.""
                     yield sse({"type": "token", "text": token})
                 
                 try:
-                    await save_message(user_id, conv_id, "assistant", full_text)
+                    await save_message(user["id"], conv_id, "assistant", full_text)
                 except Exception as e:
                     logger.error(f"Failed to save assistant message: {e}")
 
@@ -1256,7 +1277,7 @@ Format complex equations clearly using LaTeX-style notation where appropriate.""
             except asyncio.CancelledError:
                 yield sse({"type": "stopped"})
             finally:
-                active_streams.pop(user_id, None)
+                active_streams.pop(user["id"], None)
 
         return StreamingResponse(gen(), media_type="text/event-stream")
 
@@ -1269,11 +1290,11 @@ Format complex equations clearly using LaTeX-style notation where appropriate.""
         r.raise_for_status()
         reply = r.json()["choices"][0]["message"]["content"]
 
-    await save_message(user_id, conv_id, "assistant", reply)
+    await save_message(user["id"], conv_id, "assistant", reply)
     return {"reply": reply}
 
 
-async def handle_research_request(prompt: str, user_id: str, conv_id: str, stream: bool):
+async def handle_research_request(prompt: str, user: Dict[str, Any], conv_id: str, stream: bool):
     """Handle research-oriented queries"""
     system_prompt = """You are a research assistant. When helping with research:
 1. Provide well-structured, factual information
@@ -1283,13 +1304,18 @@ async def handle_research_request(prompt: str, user_id: str, conv_id: str, strea
 5. Suggest further areas of investigation
 Be thorough but concise."""
 
+    # Inject Memory
+    user_memory = user.get("memory", "")
+    if user_memory:
+        system_prompt += f"\n\nUser Context: {user_memory}"
+
     history = await get_history(conv_id) if conv_id else []
     messages = [{"role": "system", "content": system_prompt}] + history
 
     if stream:
         async def gen():
             task = asyncio.current_task()
-            active_streams[user_id] = task
+            active_streams[user["id"]] = task
             try:
                 full_text = ""
                 async for token in stream_groq_chat(messages, max_tokens=2048):
@@ -1299,7 +1325,7 @@ Be thorough but concise."""
                     yield sse({"type": "token", "text": token})
                 
                 try:
-                    await save_message(user_id, conv_id, "assistant", full_text)
+                    await save_message(user["id"], conv_id, "assistant", full_text)
                 except Exception as e:
                     logger.error(f"Failed to save assistant message: {e}")
 
@@ -1307,7 +1333,7 @@ Be thorough but concise."""
             except asyncio.CancelledError:
                 yield sse({"type": "stopped"})
             finally:
-                active_streams.pop(user_id, None)
+                active_streams.pop(user["id"], None)
 
         return StreamingResponse(gen(), media_type="text/event-stream")
 
@@ -1320,11 +1346,11 @@ Be thorough but concise."""
         r.raise_for_status()
         reply = r.json()["choices"][0]["message"]["content"]
 
-    await save_message(user_id, conv_id, "assistant", reply)
+    await save_message(user["id"], conv_id, "assistant", reply)
     return {"reply": reply}
 
 
-async def handle_creative_request(prompt: str, user_id: str, conv_id: str, stream: bool):
+async def handle_creative_request(prompt: str, user: Dict[str, Any], conv_id: str, stream: bool):
     """Handle creative writing requests"""
     system_prompt = """You are a creative writing expert. When writing creative content:
 1. Use vivid, engaging language
@@ -1334,13 +1360,18 @@ async def handle_creative_request(prompt: str, user_id: str, conv_id: str, strea
 5. Be original and imaginative
 Adapt your style to the specific creative request."""
 
+    # Inject Memory
+    user_memory = user.get("memory", "")
+    if user_memory:
+        system_prompt += f"\n\nUser Context: {user_memory}"
+
     history = await get_history(conv_id) if conv_id else []
     messages = [{"role": "system", "content": system_prompt}] + history
 
     if stream:
         async def gen():
             task = asyncio.current_task()
-            active_streams[user_id] = task
+            active_streams[user["id"]] = task
             try:
                 full_text = ""
                 async for token in stream_groq_chat(messages, max_tokens=2048):
@@ -1350,7 +1381,7 @@ Adapt your style to the specific creative request."""
                     yield sse({"type": "token", "text": token})
                 
                 try:
-                    await save_message(user_id, conv_id, "assistant", full_text)
+                    await save_message(user["id"], conv_id, "assistant", full_text)
                 except Exception as e:
                     logger.error(f"Failed to save assistant message: {e}")
 
@@ -1358,7 +1389,7 @@ Adapt your style to the specific creative request."""
             except asyncio.CancelledError:
                 yield sse({"type": "stopped"})
             finally:
-                active_streams.pop(user_id, None)
+                active_streams.pop(user["id"], None)
 
         return StreamingResponse(gen(), media_type="text/event-stream")
 
@@ -1371,11 +1402,11 @@ Adapt your style to the specific creative request."""
         r.raise_for_status()
         reply = r.json()["choices"][0]["message"]["content"]
 
-    await save_message(user_id, conv_id, "assistant", reply)
+    await save_message(user["id"], conv_id, "assistant", reply)
     return {"reply": reply}
 
 
-async def handle_translation_request(prompt: str, user_id: str, conv_id: str, stream: bool):
+async def handle_translation_request(prompt: str, user: Dict[str, Any], conv_id: str, stream: bool):
     """Handle translation requests"""
     system_prompt = """You are a professional translator. When translating:
 1. Preserve the meaning and tone of the original
@@ -1385,13 +1416,18 @@ async def handle_translation_request(prompt: str, user_id: str, conv_id: str, st
 5. If unsure about context, provide alternatives
 Always indicate the source and target languages."""
 
+    # Inject Memory
+    user_memory = user.get("memory", "")
+    if user_memory:
+        system_prompt += f"\n\nUser Context: {user_memory}"
+
     history = await get_history(conv_id) if conv_id else []
     messages = [{"role": "system", "content": system_prompt}] + history
 
     if stream:
         async def gen():
             task = asyncio.current_task()
-            active_streams[user_id] = task
+            active_streams[user["id"]] = task
             try:
                 full_text = ""
                 async for token in stream_groq_chat(messages):
@@ -1401,7 +1437,7 @@ Always indicate the source and target languages."""
                     yield sse({"type": "token", "text": token})
                 
                 try:
-                    await save_message(user_id, conv_id, "assistant", full_text)
+                    await save_message(user["id"], conv_id, "assistant", full_text)
                 except Exception as e:
                     logger.error(f"Failed to save assistant message: {e}")
 
@@ -1409,7 +1445,7 @@ Always indicate the source and target languages."""
             except asyncio.CancelledError:
                 yield sse({"type": "stopped"})
             finally:
-                active_streams.pop(user_id, None)
+                active_streams.pop(user["id"], None)
 
         return StreamingResponse(gen(), media_type="text/event-stream")
 
@@ -1422,11 +1458,11 @@ Always indicate the source and target languages."""
         r.raise_for_status()
         reply = r.json()["choices"][0]["message"]["content"]
 
-    await save_message(user_id, conv_id, "assistant", reply)
+    await save_message(user["id"], conv_id, "assistant", reply)
     return {"reply": reply}
 
 
-async def handle_summary_request(prompt: str, user_id: str, conv_id: str, stream: bool):
+async def handle_summary_request(prompt: str, user: Dict[str, Any], conv_id: str, stream: bool):
     """Handle summarization requests"""
     system_prompt = """You are a summarization expert. When summarizing:
 1. Extract the most important points
@@ -1436,13 +1472,18 @@ async def handle_summary_request(prompt: str, user_id: str, conv_id: str, stream
 5. Start with a brief overview, then key points
 Tailor the summary length to the complexity of the content."""
 
+    # Inject Memory
+    user_memory = user.get("memory", "")
+    if user_memory:
+        system_prompt += f"\n\nUser Context: {user_memory}"
+
     history = await get_history(conv_id) if conv_id else []
     messages = [{"role": "system", "content": system_prompt}] + history
 
     if stream:
         async def gen():
             task = asyncio.current_task()
-            active_streams[user_id] = task
+            active_streams[user["id"]] = task
             try:
                 full_text = ""
                 async for token in stream_groq_chat(messages):
@@ -1452,7 +1493,7 @@ Tailor the summary length to the complexity of the content."""
                     yield sse({"type": "token", "text": token})
                 
                 try:
-                    await save_message(user_id, conv_id, "assistant", full_text)
+                    await save_message(user["id"], conv_id, "assistant", full_text)
                 except Exception as e:
                     logger.error(f"Failed to save assistant message: {e}")
 
@@ -1460,7 +1501,7 @@ Tailor the summary length to the complexity of the content."""
             except asyncio.CancelledError:
                 yield sse({"type": "stopped"})
             finally:
-                active_streams.pop(user_id, None)
+                active_streams.pop(user["id"], None)
 
         return StreamingResponse(gen(), media_type="text/event-stream")
 
@@ -1473,7 +1514,7 @@ Tailor the summary length to the complexity of the content."""
         r.raise_for_status()
         reply = r.json()["choices"][0]["message"]["content"]
 
-    await save_message(user_id, conv_id, "assistant", reply)
+    await save_message(user["id"], conv_id, "assistant", reply)
     return {"reply": reply}
 
 
@@ -1556,8 +1597,16 @@ async def regenerate(req: Request, res: Response):
         active_streams[user_id] = task
         try:
             history = await get_history(conv_id)
+            
+            # Inject Global Memory for Regeneration
+            base_system = "You are a helpful AI."
+            user_memory = user.get("memory", "")
+            if user_memory:
+                base_system += f"\n\nUser Context: {user_memory}"
+            full_history = [{"role": "system", "content": base_system}] + history
+            
             full_text = ""
-            async for token in stream_groq_chat(history):
+            async for token in stream_groq_chat(full_history):
                 if task and task.cancelled():
                     break
                 full_text += token
@@ -1712,7 +1761,7 @@ async def speech_to_text(file: UploadFile = File(...)):
 # =========================
 async def handle_image_generation(
         prompt: str,
-        user_id: str,
+        user: Dict[str, Any],
         conv_id: str,
         stream: bool,
         style: str = None,
@@ -1753,7 +1802,7 @@ async def handle_image_generation(
         prompt = f"{prompt}, {STYLES[style]}"
 
     start_time = time.time()
-    logger.info(f"[IMG] Generating image | user={user_id} | len={len(prompt)}")
+    logger.info(f"[IMG] Generating image | user={user['id']} | len={len(prompt)}")
 
     try:
         async with httpx.AsyncClient(timeout=60) as client:
@@ -1761,7 +1810,7 @@ async def handle_image_generation(
                 "https://api.openai.com/v1/images/generations",
                 headers=get_openai_headers(),
                 json={
-                    "model": "dall-e-3", # Corrected model name
+                    "model": "dall-e-3",
                     "prompt": prompt,
                     "size": size,
                     "n": num_images
@@ -1811,7 +1860,6 @@ async def handle_image_generation(
 
     for item in data.get("data", []):
         try:
-            # DALL-E 3 returns url, DALL-E 2 returns b64_json. Handle both.
             b64 = item.get("b64_json")
             url = item.get("url")
 
@@ -1848,7 +1896,7 @@ async def handle_image_generation(
     return {"images": images}
 
 
-async def handle_video_generation(prompt, user_id, conv_id, stream):
+async def handle_video_generation(prompt, user: Dict[str, Any], conv_id: str, stream):
     headers = {
         "Authorization": f"Token {REPLICATE_API_TOKEN}",
         "Content-Type": "application/json",
