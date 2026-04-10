@@ -107,7 +107,7 @@ class AdvancedIntentDetector:
             "skip", "avoid", "except", "but not", "ignore", "rather than"
         }
 
-        def _compile_patterns(self):
+    def _compile_patterns(self):
         """Pre-compile regex patterns for performance"""
         self.patterns = {
             IntentCategory.IMAGE_GENERATION: [
