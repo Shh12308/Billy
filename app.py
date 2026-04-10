@@ -1018,6 +1018,9 @@ def get_vision_model():
 async def preflight_handler(full_path: str):
     return Response(status_code=200)
 
+@app.get("/robots.txt")
+def robots():
+    return PlainTextResponse("User-agent: *\nDisallow:")
 
 @app.post("/ask/universal")
 async def ask_universal(req: Request, res: Response):
