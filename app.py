@@ -15,6 +15,9 @@ from fastapi import FastAPI, Request, Response, HTTPException, Depends, UploadFi
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse
+
 
 import httpx
 from supabase import create_client
