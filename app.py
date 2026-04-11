@@ -854,9 +854,15 @@ Be structured and clear."""
 
     if stream:
         async def gen():
-            async for token in stream_groq_chat(messages):
-                yield sse({"type": "token", "text": token})
-            yield sse({"type": "done"})
+            task = asyncio.current_task()
+            try:
+                async for token in stream_groq_chat(messages):
+                    if task.cancelled(): break
+                    yield sse({"type": "token", "text": token})
+                yield sse({"type": "done"})
+            except Exception as e:
+                logger.error(f"Text analysis stream error: {e}")
+                yield sse({"type": "error", "message": "Analysis failed."})
 
         return StreamingResponse(gen(), media_type="text/event-stream")
 
@@ -900,8 +906,13 @@ async def handle_image_analysis(image_bytes: bytes, stream: bool):
 
     if stream:
         async def gen():
-            yield sse({"type": "text", "text": result})
-            yield sse({"type": "done"})
+            task = asyncio.current_task()
+            try:
+                yield sse({"type": "text", "text": result})
+                yield sse({"type": "done"})
+            except Exception as e:
+                logger.error(f"Image analysis stream error: {e}")
+                yield sse({"type": "error", "message": "Analysis failed."})
 
         return StreamingResponse(gen(), media_type="text/event-stream")
 
@@ -922,26 +933,40 @@ async def get_history(conv_id: str, limit: int = 10):
 
 
 async def stream_groq_chat(messages: list, model: str = "llama-3.3-70b-versatile", max_tokens: int = 1024):
-    """Streams response from Groq"""
-    async with httpx.AsyncClient(timeout=None) as client:
-        async with client.stream(
-            "POST",
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers=get_groq_headers(),
-            json={"model": model, "messages": messages, "stream": True, "max_tokens": max_tokens}
-        ) as resp:
-            async for line in resp.aiter_lines():
-                if line.startswith("data: "):
-                    data = line[6:]
-                    if data == "[DONE]":
-                        break
-                    try:
-                        chunk = json.loads(data)
-                        delta = chunk["choices"][0]["delta"].get("content")
-                        if delta:
-                            yield delta
-                    except:
-                        pass
+    """Streams response from Groq with robust error handling"""
+    try:
+        async with httpx.AsyncClient(timeout=None) as client:
+            async with client.stream(
+                "POST",
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers=get_groq_headers(),
+                json={"model": model, "messages": messages, "stream": True, "max_tokens": max_tokens}
+            ) as resp:
+                
+                # Check for HTTP errors immediately
+                if resp.status_code != 200:
+                    error_text = await resp.aread()
+                    logger.error(f"Groq API Error {resp.status_code}: {error_text}")
+                    raise Exception(f"AI Service Error ({resp.status_code})")
+
+                async for line in resp.aiter_lines():
+                    if line.startswith("data: "):
+                        data = line[6:]
+                        if data == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(data)
+                            delta = chunk["choices"][0]["delta"].get("content")
+                            if delta:
+                                yield delta
+                        except:
+                            pass
+    except httpx.ConnectError:
+        logger.error("Failed to connect to Groq API.")
+        raise Exception("Connection to AI service failed.")
+    except Exception as e:
+        logger.error(f"Stream generation error: {e}")
+        raise e
 
 
 async def handle_code_assistant(prompt: str, user: Dict[str, Any], conv_id: str, stream: bool):
@@ -981,8 +1006,11 @@ async def handle_code_assistant(prompt: str, user: Dict[str, Any], conv_id: str,
                     except Exception as e:
                         logger.error(f"Failed to save assistant message: {e}")
                 yield sse({"type": "done"})
-            except asyncio.CancelledError:
-                yield sse({"type": "stopped"})
+            
+            except Exception as e:
+                logger.error(f"Streaming Error: {e}")
+                yield sse({"type": "error", "message": "An error occurred processing your request."})
+            
             finally:
                 active_streams.pop(user["id"], None)
 
@@ -1104,7 +1132,11 @@ async def ask_universal(req: Request, res: Response):
             description="Create Conversation"
         )
 
-    await save_message(user["id"], conv_id, "user", prompt)
+    # Wrap save message in try/except to prevent crash on DB timeout
+    try:
+        await save_message(user["id"], conv_id, "user", prompt)
+    except Exception as e:
+        logger.error(f"Failed to save user message: {e}")
 
     # ------------------------
     # ADVANCED INTENT DETECTION
@@ -1187,7 +1219,11 @@ async def ask_universal(req: Request, res: Response):
 
             try:
                 # Fetch history for THIS specific chat (Context Isolation)
-                history = await get_history(conv_id)
+                try:
+                    history = await get_history(conv_id)
+                except Exception as e:
+                    logger.error(f"History fetch failed: {e}")
+                    history = [] 
                 
                 # Inject Global User Memory into System Prompt
                 base_system = "You are a helpful AI."
@@ -1210,8 +1246,11 @@ async def ask_universal(req: Request, res: Response):
                     logger.error(f"Failed to save assistant message: {e}")
                 
                 yield sse({"type": "done"})
-            except asyncio.CancelledError:
-                yield sse({"type": "stopped"})
+            
+            except Exception as e:
+                logger.error(f"Universal Stream Error: {e}")
+                yield sse({"type": "error", "message": "An error occurred processing your request."})
+            
             finally:
                 active_streams.pop(user["id"], None)
 
@@ -1277,8 +1316,11 @@ Format complex equations clearly using LaTeX-style notation where appropriate.""
                     logger.error(f"Failed to save assistant message: {e}")
 
                 yield sse({"type": "done"})
-            except asyncio.CancelledError:
-                yield sse({"type": "stopped"})
+            
+            except Exception as e:
+                logger.error(f"Math Stream Error: {e}")
+                yield sse({"type": "error", "message": "An error occurred."})
+            
             finally:
                 active_streams.pop(user["id"], None)
 
@@ -1333,8 +1375,11 @@ Be thorough but concise."""
                     logger.error(f"Failed to save assistant message: {e}")
 
                 yield sse({"type": "done"})
-            except asyncio.CancelledError:
-                yield sse({"type": "stopped"})
+            
+            except Exception as e:
+                logger.error(f"Research Stream Error: {e}")
+                yield sse({"type": "error", "message": "An error occurred."})
+            
             finally:
                 active_streams.pop(user["id"], None)
 
@@ -1389,8 +1434,11 @@ Adapt your style to the specific creative request."""
                     logger.error(f"Failed to save assistant message: {e}")
 
                 yield sse({"type": "done"})
-            except asyncio.CancelledError:
-                yield sse({"type": "stopped"})
+            
+            except Exception as e:
+                logger.error(f"Creative Stream Error: {e}")
+                yield sse({"type": "error", "message": "An error occurred."})
+            
             finally:
                 active_streams.pop(user["id"], None)
 
@@ -1445,8 +1493,11 @@ Always indicate the source and target languages."""
                     logger.error(f"Failed to save assistant message: {e}")
 
                 yield sse({"type": "done"})
-            except asyncio.CancelledError:
-                yield sse({"type": "stopped"})
+            
+            except Exception as e:
+                logger.error(f"Translation Stream Error: {e}")
+                yield sse({"type": "error", "message": "An error occurred."})
+            
             finally:
                 active_streams.pop(user["id"], None)
 
@@ -1501,8 +1552,11 @@ Tailor the summary length to the complexity of the content."""
                     logger.error(f"Failed to save assistant message: {e}")
 
                 yield sse({"type": "done"})
-            except asyncio.CancelledError:
-                yield sse({"type": "stopped"})
+            
+            except Exception as e:
+                logger.error(f"Summary Stream Error: {e}")
+                yield sse({"type": "error", "message": "An error occurred."})
+            
             finally:
                 active_streams.pop(user["id"], None)
 
@@ -1621,8 +1675,11 @@ async def regenerate(req: Request, res: Response):
                 logger.error(f"Failed to save assistant message: {e}")
 
             yield sse({"type": "done"})
-        except asyncio.CancelledError:
-            yield sse({"type": "stopped"})
+        
+        except Exception as e:
+            logger.error(f"Regenerate Stream Error: {e}")
+            yield sse({"type": "error", "message": "An error occurred."})
+        
         finally:
             active_streams.pop(user_id, None)
 
