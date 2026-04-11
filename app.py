@@ -44,7 +44,7 @@ app = FastAPI()
 # CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://heloxai.xyz", "https://www.heloxai.xyz", "*"],
+    allow_origins=["https://heloxai.xyz"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -1156,17 +1156,6 @@ async def ask_universal(req: Request, res: Response):
     else:
         logger.info(f"[INTENT] action=general (no specific intent)")
 
-    # ------------------------
-    # PERMISSION CHECKS (Premium/Lifetime)
-    # ------------------------
-    if action_type in ["image", "video"]:
-        is_allowed = user.get("is_premium") or user.get("is_lifetime")
-        if not is_allowed:
-            error_msg = f"{'Image' if action_type == 'image' else 'Video'} generation requires a Premium or Lifetime plan."
-            if stream:
-                async def gen(): yield sse({"type": "error", "message": error_msg})
-                return StreamingResponse(gen(), media_type="text/event-stream")
-            raise HTTPException(403, error_msg)
 
     # ------------------------
     # INTENT-BASED ROUTING
