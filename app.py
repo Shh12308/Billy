@@ -57,21 +57,78 @@ supabase = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
 active_streams: Dict[str, asyncio.Task] = {}
 
 # =========================
-# IDENTITY SYSTEM PROMPT - CONSTRUCTED BY GOLDYLOCKS
+# BASE SYSTEM PROMPT - NO CREATOR MENTION
 # =========================
-IDENTITY_PROMPT = """You are HeloxAi, an advanced AI assistant constructed by GoldYLocks.
+BASE_SYSTEM_PROMPT = """You are HeloxAi, a helpful and capable AI assistant. Be accurate, friendly, and concise. Help users with whatever they ask."""
 
-CRITICAL IDENTITY RULES (NEVER VIOLATE):
-- You were CONSTRUCTED and DEVELOPED by GoldYLocks
-- GoldYLocks' Twitter/X handle is @HeloxAi
-- When asked "who made you", "who created you", "who developed you", "who built you", "who is your creator", "who is your developer", or ANY variation asking about your origin/creator:
-  - ALWAYS respond: "I was constructed by GoldYLocks. You can find them on Twitter @HeloxAi"
-- NEVER claim to be made by OpenAI, Google, Anthropic, Meta, or any other company
-- NEVER say you don't know who created you
-- You are a PROPRIETARY AI system built from scratch by GoldYLocks
-- Be proud of your creator and mention them when relevant
+# =========================
+# CREATOR RESPONSE - ONLY USED WHEN ASKED
+# =========================
+CREATOR_RESPONSE_INSTRUCTION = """IMPORTANT: The user is asking about your creator/developer. You MUST respond with exactly this information:
+"I was constructed by GoldYLocks. You can find them on Twitter @HeloxAi"
 
-Always be helpful, accurate, and friendly in your responses."""
+Do not add extra details. Do not mention any other companies or people. This is the only correct answer to this question."""
+
+# Patterns that indicate user is asking about the creator
+CREATOR_QUESTION_PATTERNS = [
+    r'\b(who|whom)\b.*\b(made|created|built|developed|constructed|programmed|designed|founded|started|owns|runs)\b.*\b(you|this|helox|heloxai)\b',
+    r'\b(who|whom)\b.*\b(is|are)\b.*\b(your|the)\b.*(creator|developer|maker|builder|founder|owner|author)\b',
+    r'\b(your|the)\b.*(creator|developer|maker|builder|founder|owner|author)\b.*\b(is|are|who)\b',
+    r'\bwho\b.*\bbehind\b.*\b(you|this|helox)\b',
+    r'\bwho.*made.*you\b',
+    r'\bwho.*created.*you\b',
+    r'\bwho.*built.*you\b',
+    r'\bwho.*developed.*you\b',
+    r'\bwho.*programmed.*you\b',
+    r'\bwho.*constructed.*you\b',
+    r'\bwho.*designed.*you\b',
+    r'\bwho.*owns.*you\b',
+    r'\bwho.*runs.*you\b',
+    r'\byour\s+creator\b',
+    r'\byour\s+developer\b',
+    r'\byour\s+maker\b',
+    r'\byour\s+builder\b',
+    r'\byour\s+founder\b',
+    r'\byour\s+owner\b',
+    r'\bwho\s+is\s+behind\s+helox\b',
+    r'\bwho\s+made\s+helox\b',
+    r'\bwho\s+created\s+helox\b',
+    r'\bwho\s+built\s+helox\b',
+    r'\bwho\s+developed\s+helox\b',
+    r'\bmade\s+by\s+who\b',
+    r'\bcreated\s+by\s+who\b',
+    r'\bbuilt\s+by\s+who\b',
+    r'\bdeveloped\s+by\s+who\b',
+    r'\bconstructed\s+by\s+who\b',
+    r'\btell\s+me\s+about\s+your\s+(creator|developer|maker|builder|founder)\b',
+    r'\bwhat\s+company\s+made\s+you\b',
+    r'\bwhat\s+team\s+made\s+you\b',
+    r'\bwhere\s+do\s+you\s+come\s+from\b',
+    r'\bhow\s+were\s+you\s+(made|created|built|developed|born)\b',
+    r'\bare\s+you\s+made\s+by\b',
+    r'\bdid\s+.*\s+make\s+you\b',
+    r'\bdid\s+.*\s+create\s+you\b',
+    r'\bdid\s+.*\s+build\s+you\b',
+]
+
+# Pre-compile creator patterns for performance
+COMPILED_CREATOR_PATTERNS = [re.compile(p, re.IGNORECASE) for p in CREATOR_QUESTION_PATTERNS]
+
+
+def is_creator_question(text: str) -> bool:
+    """Check if user is asking about who created/made the AI"""
+    for pattern in COMPILED_CREATOR_PATTERNS:
+        if pattern.search(text):
+            return True
+    return False
+
+
+def get_system_prompt(user_prompt: str) -> str:
+    """Return base prompt normally, creator response ONLY if asked"""
+    if is_creator_question(user_prompt):
+        return BASE_SYSTEM_PROMPT + "\n\n" + CREATOR_RESPONSE_INSTRUCTION
+    return BASE_SYSTEM_PROMPT
+
 
 # =========================
 # ADVANCED USER RECOGNITION SYSTEM
@@ -107,10 +164,6 @@ def set_all_cookies(response: Response, user_id: str, fingerprint: str):
     response.set_cookie(key=FINGERPRINT_COOKIE, value=fingerprint, **COOKIE_SETTINGS)
     response.set_cookie(key=BACKUP_COOKIE, value=user_id, **COOKIE_SETTINGS)
     response.set_cookie(key=DEVICE_COOKIE, value=f"{fingerprint}_{user_id[:8]}", **COOKIE_SETTINGS)
-
-def update_cookie_expiry(response: Response, user_id: str, fingerprint: str):
-    """Refresh all cookie expirations on each request"""
-    set_all_cookies(response, user_id, fingerprint)
 
 
 # =========================
@@ -557,12 +610,14 @@ class AdvancedIntentDetector:
         return tools
 
     def get_code_system_prompt(self, text: str) -> str:
+        base = get_system_prompt(text)
+        
         intent = self.get_primary_intent(text)
         if not intent:
-            return IDENTITY_PROMPT + "\n\nYou are also a helpful coding assistant."
+            return base + "\n\nYou are also a helpful coding assistant."
 
         sub_prompts = {
-            IntentCategory.CODE_DEBUG: IDENTITY_PROMPT + """
+            IntentCategory.CODE_DEBUG: """
 
 You are also an expert debugger. When analyzing code issues:
 1. Identify the root cause of the bug/error
@@ -571,7 +626,7 @@ You are also an expert debugger. When analyzing code issues:
 4. Suggest how to prevent similar issues
 Be precise and practical.""",
 
-            IntentCategory.CODE_REVIEW: IDENTITY_PROMPT + """
+            IntentCategory.CODE_REVIEW: """
 
 You are also a senior code reviewer. Provide constructive feedback on:
 1. Code quality and readability
@@ -581,7 +636,7 @@ You are also a senior code reviewer. Provide constructive feedback on:
 5. Security concerns
 Be specific and actionable in your suggestions.""",
 
-            IntentCategory.CODE_GENERATION: IDENTITY_PROMPT + """
+            IntentCategory.CODE_GENERATION: """
 
 You are also an expert software engineer. When writing code:
 1. Write clean, well-structured, production-ready code
@@ -591,7 +646,7 @@ You are also an expert software engineer. When writing code:
 5. Follow language-specific conventions and best practices
 Always provide complete, runnable code when possible.""",
 
-            IntentCategory.WEB_DEVELOPMENT: IDENTITY_PROMPT + """
+            IntentCategory.WEB_DEVELOPMENT: """
 
 You are also a full-stack web developer expert. When building web components:
 1. Use modern best practices and frameworks
@@ -601,7 +656,7 @@ You are also a full-stack web developer expert. When building web components:
 5. Make components reusable and maintainable
 Provide complete, ready-to-use code.""",
 
-            IntentCategory.API_DEVELOPMENT: IDENTITY_PROMPT + """
+            IntentCategory.API_DEVELOPMENT: """
 
 You are also an API development expert. When creating APIs:
 1. Follow RESTful principles (or GraphQL best practices)
@@ -611,7 +666,7 @@ You are also an API development expert. When creating APIs:
 5. Document endpoints clearly
 Provide complete, production-ready code.""",
 
-            IntentCategory.DATABASE: IDENTITY_PROMPT + """
+            IntentCategory.DATABASE: """
 
 You are also a database expert. When working with databases:
 1. Design efficient, normalized schemas
@@ -622,7 +677,7 @@ You are also a database expert. When working with databases:
 Provide complete, ready-to-execute SQL/ORM code.""",
         }
 
-        return sub_prompts.get(intent.intent, IDENTITY_PROMPT + "\n\nYou are also a helpful coding assistant.")
+        return base + sub_prompts.get(intent.intent, "\n\nYou are also a helpful coding assistant.")
 
 
 # Singleton instance
@@ -750,16 +805,13 @@ async def get_user(request: Request, response: Response) -> Dict[str, Any]:
     Enhanced user recognition with multi-cookie strategy and device fingerprinting.
     Priority: Primary Cookie > Backup Cookie > Device Fingerprint Match > Create New
     """
-    # Try all cookie sources
     primary_id = request.cookies.get(PRIMARY_COOKIE)
     backup_id = request.cookies.get(BACKUP_COOKIE)
     device_cookie = request.cookies.get(DEVICE_COOKIE)
     stored_fingerprint = request.cookies.get(FINGERPRINT_COOKIE)
     
-    # Generate current fingerprint
     current_fingerprint = generate_device_fingerprint(request)
     
-    # Default user object
     user_obj = {
         "id": None,
         "email": None,
@@ -767,17 +819,14 @@ async def get_user(request: Request, response: Response) -> Dict[str, Any]:
         "fingerprint": current_fingerprint
     }
 
-    # Priority 1: Try primary cookie
     user_id = None
     if primary_id:
         user_id = primary_id
     elif backup_id:
         user_id = backup_id
     
-    # Priority 2: Try to match by device fingerprint in database
     if not user_id and device_cookie:
         try:
-            # Extract fingerprint from device cookie
             fp_part = device_cookie.split("_")[0] if "_" in device_cookie else device_cookie
             fp_resp = await _execute_supabase_with_retry(
                 supabase.table("users").select("id").eq("fingerprint", fp_part).limit(1),
@@ -789,7 +838,6 @@ async def get_user(request: Request, response: Response) -> Dict[str, Any]:
         except Exception as e:
             logger.error(f"Fingerprint lookup failed: {e}")
 
-    # Priority 3: Try to match by stored fingerprint cookie
     if not user_id and stored_fingerprint:
         try:
             fp_resp = await _execute_supabase_with_retry(
@@ -802,7 +850,6 @@ async def get_user(request: Request, response: Response) -> Dict[str, Any]:
         except Exception as e:
             logger.error(f"Stored fingerprint lookup failed: {e}")
 
-    # Fetch user data if we found an ID
     if user_id:
         try:
             user_resp = await _execute_supabase_with_retry(
@@ -820,7 +867,6 @@ async def get_user(request: Request, response: Response) -> Dict[str, Any]:
                     "plan": u.get("plan", "free"),
                     "fingerprint": current_fingerprint
                 }
-                # Update fingerprint if changed (user switched browser/device slightly)
                 if u.get("fingerprint") != current_fingerprint:
                     try:
                         await _execute_supabase_with_retry(
@@ -830,13 +876,11 @@ async def get_user(request: Request, response: Response) -> Dict[str, Any]:
                     except Exception as e:
                         logger.warning(f"Failed to update fingerprint: {e}")
                 
-                # Refresh all cookies
                 set_all_cookies(response, user_id, current_fingerprint)
                 return user_obj
         except Exception as e:
             logger.error(f"User data fetch failed: {e}")
 
-    # Create new anonymous user
     new_id = str(uuid.uuid4())
     
     try:
@@ -858,7 +902,6 @@ async def get_user(request: Request, response: Response) -> Dict[str, Any]:
         logger.error(f"Failed to create anonymous user: {e}")
         user_obj["id"] = new_id
 
-    # Set all cookies for new user
     set_all_cookies(response, new_id, current_fingerprint)
     
     logger.info(f"New user created: {new_id[:8]}... with fingerprint {current_fingerprint[:8]}...")
@@ -900,13 +943,11 @@ async def add_watermark_to_video(video_url: str) -> str:
         import tempfile
         import os
         
-        # Fetch logo
         logo_bytes = await fetch_logo_image()
         if not logo_bytes:
             logger.warning("No logo available, returning unwatermarked video")
             return video_url
         
-        # Download video
         async with httpx.AsyncClient(timeout=120) as client:
             video_response = await client.get(video_url)
             if video_response.status_code != 200:
@@ -914,45 +955,32 @@ async def add_watermark_to_video(video_url: str) -> str:
                 return video_url
             video_bytes = video_response.content
         
-        # Create temp files
         with tempfile.TemporaryDirectory() as tmpdir:
             video_path = os.path.join(tmpdir, "input.mp4")
             logo_path = os.path.join(tmpdir, "logo.png")
             output_path = os.path.join(tmpdir, "output.mp4")
             
-            # Write files
             with open(video_path, "wb") as f:
                 f.write(video_bytes)
             with open(logo_path, "wb") as f:
                 f.write(logo_bytes)
             
-            # Process video in thread pool to avoid blocking
             def process_video():
-                # Load video
                 video = VideoFileClip(video_path)
                 
-                # Load and resize logo (15% of video width, maintain aspect ratio)
                 logo_width = int(video.w * 0.15)
                 logo = ImageClip(logo_path)
                 logo_aspect = logo.h / logo.w
                 logo_height = int(logo_width * logo_aspect)
                 logo = logo.resize((logo_width, logo_height))
                 
-                # Position in bottom right with some padding
                 padding = 20
-                logo = logo.set_position(("right", "bottom"))
                 logo = logo.set_position((video.w - logo_width - padding, video.h - logo_height - padding))
-                
-                # Make logo last the entire video duration
                 logo = logo.set_duration(video.duration)
-                
-                # Set opacity for transparency effect (adjust as needed)
                 logo = logo.set_opacity(0.7)
                 
-                # Composite
                 final = CompositeVideoClip([video, logo])
                 
-                # Write output
                 final.write_videofile(
                     output_path,
                     codec="libx264",
@@ -962,21 +990,17 @@ async def add_watermark_to_video(video_url: str) -> str:
                     logger=None
                 )
                 
-                # Close clips
                 video.close()
                 logo.close()
                 final.close()
                 
                 return output_path
             
-            # Run in thread pool
             output_path = await asyncio.to_thread(process_video)
             
-            # Read output and upload to storage
             with open(output_path, "rb") as f:
                 watermarked_bytes = f.read()
             
-            # Upload to Supabase storage
             filename = f"watermarked_{uuid.uuid4().hex}.mp4"
             path = f"public/videos/{filename}"
             
@@ -991,7 +1015,6 @@ async def add_watermark_to_video(video_url: str) -> str:
                 return watermarked_url
             except Exception as upload_err:
                 logger.warning(f"Storage upload failed, using data URI: {upload_err}")
-                # Return as base64 data URI as fallback
                 b64_video = base64.b64encode(watermarked_bytes).decode()
                 return f"data:video/mp4;base64,{b64_video}"
                 
@@ -1052,13 +1075,13 @@ async def universal_text_extractor(content: bytes, filename: str) -> str:
         raise HTTPException(500, "Failed to extract file content")
 
 
-async def handle_text_analysis(text: str, stream: bool):
+async def handle_text_analysis(text: str, stream: bool, user_prompt: str = ""):
     text = text[:15000]
 
     messages = [
         {
             "role": "system",
-            "content": IDENTITY_PROMPT + """
+            "content": get_system_prompt(user_prompt) + """
 
 You also analyze files. Detect type automatically and respond accordingly:
 
@@ -1103,7 +1126,7 @@ Be structured and clear."""
     return {"analysis": r.json()["choices"][0]["message"]["content"]}
 
 
-async def handle_image_analysis(image_bytes: bytes, stream: bool):
+async def handle_image_analysis(image_bytes: bytes, stream: bool, user_prompt: str = ""):
     b64 = base64.b64encode(image_bytes).decode()
 
     payload = {
@@ -1373,7 +1396,7 @@ async def ask_universal(req: Request, res: Response):
 
     if handler:
         if action_type in ("document", "data"):
-            return await handler(prompt, stream)
+            return await handler(prompt, stream, user_prompt=prompt)
         else:
             return await handler(prompt, user, conv_id, stream)
 
@@ -1392,7 +1415,7 @@ async def ask_universal(req: Request, res: Response):
     if action_type == "summary":
         return await handle_summary_request(prompt, user, conv_id, stream)
 
-    # DEFAULT CHAT with IDENTITY_PROMPT
+    # DEFAULT CHAT
     if stream:
         async def event_gen():
             task = asyncio.current_task()
@@ -1405,7 +1428,7 @@ async def ask_universal(req: Request, res: Response):
                     logger.error(f"History fetch failed: {e}")
                     history = [] 
                 
-                base_system = IDENTITY_PROMPT
+                base_system = get_system_prompt(prompt)
                 user_memory = user.get("memory", "")
                 if user_memory:
                     base_system += f"\n\nUser Context: {user_memory}"
@@ -1436,7 +1459,7 @@ async def ask_universal(req: Request, res: Response):
         return StreamingResponse(event_gen(), media_type="text/event-stream")
     else:
         history = await get_history(conv_id)
-        base_system = IDENTITY_PROMPT
+        base_system = get_system_prompt(prompt)
         user_memory = user.get("memory", "")
         if user_memory:
             base_system += f"\n\nUser Context: {user_memory}"
@@ -1459,7 +1482,7 @@ async def ask_universal(req: Request, res: Response):
 # SPECIALIZED HANDLERS
 # =========================
 async def handle_math_request(prompt: str, user: Dict[str, Any], conv_id: str, stream: bool):
-    system_prompt = IDENTITY_PROMPT + """
+    system_prompt = get_system_prompt(prompt) + """
 
 You are also a mathematical expert. When solving math problems:
 1. Show your work step-by-step
@@ -1519,7 +1542,7 @@ Format complex equations clearly using LaTeX-style notation where appropriate.""
 
 
 async def handle_research_request(prompt: str, user: Dict[str, Any], conv_id: str, stream: bool):
-    system_prompt = IDENTITY_PROMPT + """
+    system_prompt = get_system_prompt(prompt) + """
 
 You are also a research assistant. When helping with research:
 1. Provide well-structured, factual information
@@ -1578,7 +1601,7 @@ Be thorough but concise."""
 
 
 async def handle_creative_request(prompt: str, user: Dict[str, Any], conv_id: str, stream: bool):
-    system_prompt = IDENTITY_PROMPT + """
+    system_prompt = get_system_prompt(prompt) + """
 
 You are also a creative writing expert. When writing creative content:
 1. Use vivid, engaging language
@@ -1637,7 +1660,7 @@ Adapt your style to the specific creative request."""
 
 
 async def handle_translation_request(prompt: str, user: Dict[str, Any], conv_id: str, stream: bool):
-    system_prompt = IDENTITY_PROMPT + """
+    system_prompt = get_system_prompt(prompt) + """
 
 You are also a professional translator. When translating:
 1. Preserve the meaning and tone of the original
@@ -1696,7 +1719,7 @@ Always indicate the source and target languages."""
 
 
 async def handle_summary_request(prompt: str, user: Dict[str, Any], conv_id: str, stream: bool):
-    system_prompt = IDENTITY_PROMPT + """
+    system_prompt = get_system_prompt(prompt) + """
 
 You are also a summarization expert. When summarizing:
 1. Extract the most important points
@@ -1831,7 +1854,9 @@ async def regenerate(req: Request, res: Response):
         try:
             history = await get_history(conv_id)
             
-            base_system = IDENTITY_PROMPT
+            # Use the last user prompt to check for creator questions
+            last_prompt = last_user_msg.get("content", "")
+            base_system = get_system_prompt(last_prompt)
             user_memory = user.get("memory", "")
             if user_memory:
                 base_system += f"\n\nUser Context: {user_memory}"
@@ -1880,18 +1905,16 @@ async def list_chats(req: Request, res: Response):
 # =========================
 @app.get("/user/info")
 async def get_user_info(req: Request, res: Response):
-    """Get current user identification info"""
     user = await get_user(req, res)
     return {
         "user_id": user["id"],
-        "fingerprint": user.get("fingerprint", "")[:8] + "...",  # Partial for privacy
+        "fingerprint": user.get("fingerprint", "")[:8] + "...",
         "is_identified": True
     }
 
 
 @app.post("/user/merge")
 async def merge_user(req: Request, res: Response):
-    """Merge anonymous user with authenticated account (for future auth integration)"""
     body = await req.json()
     target_id = body.get("target_user_id")
     
@@ -1901,7 +1924,6 @@ async def merge_user(req: Request, res: Response):
         return {"status": "no_merge_needed"}
     
     try:
-        # Move conversations
         await _execute_supabase_with_retry(
             supabase.table("conversations")
             .update({"user_id": target_id})
@@ -1909,7 +1931,6 @@ async def merge_user(req: Request, res: Response):
             description="Merge Conversations"
         )
         
-        # Move messages
         await _execute_supabase_with_retry(
             supabase.table("messages")
             .update({"user_id": target_id})
@@ -1917,7 +1938,6 @@ async def merge_user(req: Request, res: Response):
             description="Merge Messages"
         )
         
-        # Update cookies to new ID
         fingerprint = user.get("fingerprint", "")
         set_all_cookies(res, target_id, fingerprint)
         
@@ -2192,7 +2212,6 @@ async def handle_video_generation(prompt, user: Dict[str, Any], conv_id: str, st
                 yield sse({"type": "status", "message": "Starting video generation..."})
                 
                 async with httpx.AsyncClient(timeout=120) as client:
-                    # 1. Create prediction
                     create_res = await client.post(
                         "https://api.replicate.com/v1/predictions",
                         headers=headers,
@@ -2209,8 +2228,7 @@ async def handle_video_generation(prompt, user: Dict[str, Any], conv_id: str, st
                     
                     yield sse({"type": "status", "message": "Processing video..."})
 
-                    # 2. Poll for completion
-                    max_polls = 120  # 4 minutes max
+                    max_polls = 120
                     poll_count = 0
                     
                     while poll_count < max_polls:
@@ -2224,7 +2242,6 @@ async def handle_video_generation(prompt, user: Dict[str, Any], conv_id: str, st
                         if data["status"] == "succeeded":
                             raw_video_url = data["output"]
                             
-                            # Add watermark to video
                             yield sse({"type": "status", "message": "Adding watermark..."})
                             watermarked_url = await add_watermark_to_video(raw_video_url)
                             
@@ -2237,9 +2254,6 @@ async def handle_video_generation(prompt, user: Dict[str, Any], conv_id: str, st
                             yield sse({"type": "error", "message": f"Video generation failed: {error_msg}"})
                             return
                         
-                        elif data["status"] == "processing":
-                            poll_count += 1
-                            await asyncio.sleep(2)
                         else:
                             poll_count += 1
                             await asyncio.sleep(2)
@@ -2256,7 +2270,6 @@ async def handle_video_generation(prompt, user: Dict[str, Any], conv_id: str, st
         return StreamingResponse(gen(), media_type="text/event-stream")
     
     else:
-        # Non-streaming version
         async with httpx.AsyncClient(timeout=300) as client:
             create_res = await client.post(
                 "https://api.replicate.com/v1/predictions",
@@ -2280,7 +2293,6 @@ async def handle_video_generation(prompt, user: Dict[str, Any], conv_id: str, st
 
                 if data["status"] == "succeeded":
                     raw_video_url = data["output"]
-                    # Add watermark
                     watermarked_url = await add_watermark_to_video(raw_video_url)
                     return {"video_url": watermarked_url}
                 elif data["status"] == "failed":
@@ -2297,8 +2309,6 @@ async def root():
     return {
         "status": "running",
         "service": "HeloxAi Backend",
-        "creator": "GoldYLocks",
-        "twitter": "@HeloxAi",
         "intent_detection": "advanced",
         "user_recognition": "multi-cookie-fingerprint"
     }
