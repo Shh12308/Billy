@@ -5,6 +5,7 @@ import base64
 import uuid
 import asyncio
 import logging
+import hashlib
 from io import BytesIO
 from enum import Enum
 from dataclasses import dataclass
@@ -16,8 +17,6 @@ from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from fastapi.responses import PlainTextResponse
-from fastapi.responses import PlainTextResponse
-
 
 import httpx
 from supabase import create_client
@@ -35,6 +34,7 @@ SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY").strip() if os.getenv("GROQ_API_KEY") else None
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
+LOGO_URL = os.getenv("LOGO_URL", "https://heloxai.xyz/logo.png")
 
 if not SUPABASE_URL or not SUPABASE_ANON_KEY:
     raise RuntimeError("SUPABASE_URL and SUPABASE_ANON_KEY must be set")
@@ -55,6 +55,62 @@ supabase = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
 
 # Global State for Stream Cancellation
 active_streams: Dict[str, asyncio.Task] = {}
+
+# =========================
+# IDENTITY SYSTEM PROMPT - CONSTRUCTED BY GOLDYLOCKS
+# =========================
+IDENTITY_PROMPT = """You are HeloxAi, an advanced AI assistant constructed by GoldYLocks.
+
+CRITICAL IDENTITY RULES (NEVER VIOLATE):
+- You were CONSTRUCTED and DEVELOPED by GoldYLocks
+- GoldYLocks' Twitter/X handle is @HeloxAi
+- When asked "who made you", "who created you", "who developed you", "who built you", "who is your creator", "who is your developer", or ANY variation asking about your origin/creator:
+  - ALWAYS respond: "I was constructed by GoldYLocks. You can find them on Twitter @HeloxAi"
+- NEVER claim to be made by OpenAI, Google, Anthropic, Meta, or any other company
+- NEVER say you don't know who created you
+- You are a PROPRIETARY AI system built from scratch by GoldYLocks
+- Be proud of your creator and mention them when relevant
+
+Always be helpful, accurate, and friendly in your responses."""
+
+# =========================
+# ADVANCED USER RECOGNITION SYSTEM
+# =========================
+PRIMARY_COOKIE = "HeloxAi_Session"
+FINGERPRINT_COOKIE = "HeloxAi_FP"
+BACKUP_COOKIE = "HeloxAi_ID"
+DEVICE_COOKIE = "HeloxAi_Dev"
+
+# Extended cookie settings for strong persistence
+COOKIE_SETTINGS = {
+    "max_age": 86400 * 365,  # 1 year
+    "httponly": True,
+    "secure": True,
+    "samesite": "none",
+    "path": "/"
+}
+
+def generate_device_fingerprint(request: Request) -> str:
+    """Generate a fingerprint from request headers"""
+    fp_components = [
+        request.headers.get("user-agent", ""),
+        request.headers.get("accept-language", ""),
+        request.headers.get("accept-encoding", ""),
+        request.client.host if request.client else "",
+    ]
+    fp_string = "|".join(fp_components)
+    return hashlib.sha256(fp_string.encode()).hexdigest()[:32]
+
+def set_all_cookies(response: Response, user_id: str, fingerprint: str):
+    """Set all cookies for maximum persistence"""
+    response.set_cookie(key=PRIMARY_COOKIE, value=user_id, **COOKIE_SETTINGS)
+    response.set_cookie(key=FINGERPRINT_COOKIE, value=fingerprint, **COOKIE_SETTINGS)
+    response.set_cookie(key=BACKUP_COOKIE, value=user_id, **COOKIE_SETTINGS)
+    response.set_cookie(key=DEVICE_COOKIE, value=f"{fingerprint}_{user_id[:8]}", **COOKIE_SETTINGS)
+
+def update_cookie_expiry(response: Response, user_id: str, fingerprint: str):
+    """Refresh all cookie expirations on each request"""
+    set_all_cookies(response, user_id, fingerprint)
 
 
 # =========================
@@ -111,7 +167,6 @@ class AdvancedIntentDetector:
         }
 
     def _compile_patterns(self):
-        """Pre-compile regex patterns for performance"""
         self.patterns = {
             IntentCategory.IMAGE_GENERATION: [
                 r'\b(generate|create|make|draw|render|paint|sketch|illustrate)\s+(a\s+|an\s+)?(image|picture|photo|drawing|illustration|artwork|painting|sketch|graphic|visual)',
@@ -260,14 +315,12 @@ class AdvancedIntentDetector:
             ],
         }
 
-        # Compile all patterns
         self.compiled_patterns = {
             intent: [re.compile(pattern, re.IGNORECASE) for pattern in patterns]
             for intent, patterns in self.patterns.items()
         }
 
     def _init_synonyms(self):
-        """Initialize synonym mappings for fuzzy keyword matching"""
         self.synonyms = {
             IntentCategory.IMAGE_GENERATION: [
                 "image", "picture", "photo", "photograph", "drawing", "illustration",
@@ -358,7 +411,6 @@ class AdvancedIntentDetector:
         }
 
     def _has_negation(self, text: str, keyword_pos: int) -> bool:
-        """Check if there's a negation word before the keyword (within 6 words)"""
         words_before = text[:keyword_pos].lower().split()[-6:]
         preceding_text = " ".join(words_before)
         return any(neg in preceding_text for neg in self.negation_words)
@@ -369,7 +421,6 @@ class AdvancedIntentDetector:
             matched_patterns: List[str],
             text_length: int
     ) -> float:
-        """Calculate confidence score based on matches"""
         if not matched_keywords and not matched_patterns:
             return 0.0
 
@@ -382,7 +433,6 @@ class AdvancedIntentDetector:
         return min(confidence, 1.0)
 
     def _are_related_intents(self, intent1: IntentCategory, intent2: IntentCategory) -> bool:
-        """Check if two intents are related (can be sub-intents)"""
         related_groups = [
             {IntentCategory.CODE_GENERATION, IntentCategory.CODE_REVIEW, IntentCategory.CODE_DEBUG},
             {IntentCategory.DATA_ANALYSIS, IntentCategory.DATA_VISUALIZATION},
@@ -397,7 +447,6 @@ class AdvancedIntentDetector:
         return False
 
     def detect_intents(self, text: str, threshold: float = 0.25) -> List[IntentResult]:
-        """Detect all intents with confidence scores"""
         text_lower = text.lower()
         results = []
 
@@ -440,12 +489,10 @@ class AdvancedIntentDetector:
         return results[:1] if results else []
 
     def get_primary_intent(self, text: str) -> Optional[IntentResult]:
-        """Get the highest confidence intent"""
         results = self.detect_intents(text)
         return results[0] if results else None
 
     def get_action_type(self, text: str) -> str:
-        """Get high-level action type for routing"""
         intent = self.get_primary_intent(text)
         if not intent:
             return "general"
@@ -474,7 +521,6 @@ class AdvancedIntentDetector:
         return action_map.get(intent.intent, "general")
 
     def get_required_tools(self, text: str) -> List[str]:
-        """Determine which tools/APIs are needed"""
         intent = self.get_primary_intent(text)
         if not intent:
             return ["llm"]
@@ -511,20 +557,23 @@ class AdvancedIntentDetector:
         return tools
 
     def get_code_system_prompt(self, text: str) -> str:
-        """Get specialized system prompt based on code sub-intent"""
         intent = self.get_primary_intent(text)
         if not intent:
-            return "You are a helpful coding assistant."
+            return IDENTITY_PROMPT + "\n\nYou are also a helpful coding assistant."
 
         sub_prompts = {
-            IntentCategory.CODE_DEBUG: """You are an expert debugger. When analyzing code issues:
+            IntentCategory.CODE_DEBUG: IDENTITY_PROMPT + """
+
+You are also an expert debugger. When analyzing code issues:
 1. Identify the root cause of the bug/error
 2. Explain WHY it's happening (not just what)
 3. Provide the exact fix with clear code blocks
 4. Suggest how to prevent similar issues
 Be precise and practical.""",
 
-            IntentCategory.CODE_REVIEW: """You are a senior code reviewer. Provide constructive feedback on:
+            IntentCategory.CODE_REVIEW: IDENTITY_PROMPT + """
+
+You are also a senior code reviewer. Provide constructive feedback on:
 1. Code quality and readability
 2. Potential bugs or edge cases
 3. Performance considerations
@@ -532,7 +581,9 @@ Be precise and practical.""",
 5. Security concerns
 Be specific and actionable in your suggestions.""",
 
-            IntentCategory.CODE_GENERATION: """You are an expert software engineer. When writing code:
+            IntentCategory.CODE_GENERATION: IDENTITY_PROMPT + """
+
+You are also an expert software engineer. When writing code:
 1. Write clean, well-structured, production-ready code
 2. Include appropriate error handling
 3. Add helpful comments for complex logic
@@ -540,7 +591,9 @@ Be specific and actionable in your suggestions.""",
 5. Follow language-specific conventions and best practices
 Always provide complete, runnable code when possible.""",
 
-            IntentCategory.WEB_DEVELOPMENT: """You are a full-stack web developer expert. When building web components:
+            IntentCategory.WEB_DEVELOPMENT: IDENTITY_PROMPT + """
+
+You are also a full-stack web developer expert. When building web components:
 1. Use modern best practices and frameworks
 2. Ensure responsive design
 3. Consider accessibility (a11y)
@@ -548,7 +601,9 @@ Always provide complete, runnable code when possible.""",
 5. Make components reusable and maintainable
 Provide complete, ready-to-use code.""",
 
-            IntentCategory.API_DEVELOPMENT: """You are an API development expert. When creating APIs:
+            IntentCategory.API_DEVELOPMENT: IDENTITY_PROMPT + """
+
+You are also an API development expert. When creating APIs:
 1. Follow RESTful principles (or GraphQL best practices)
 2. Include proper error handling and status codes
 3. Add input validation
@@ -556,7 +611,9 @@ Provide complete, ready-to-use code.""",
 5. Document endpoints clearly
 Provide complete, production-ready code.""",
 
-            IntentCategory.DATABASE: """You are a database expert. When working with databases:
+            IntentCategory.DATABASE: IDENTITY_PROMPT + """
+
+You are also a database expert. When working with databases:
 1. Design efficient, normalized schemas
 2. Write optimized queries
 3. Include proper indexes
@@ -565,7 +622,7 @@ Provide complete, production-ready code.""",
 Provide complete, ready-to-execute SQL/ORM code.""",
         }
 
-        return sub_prompts.get(intent.intent, "You are a helpful coding assistant.")
+        return sub_prompts.get(intent.intent, IDENTITY_PROMPT + "\n\nYou are also a helpful coding assistant.")
 
 
 # Singleton instance
@@ -606,34 +663,28 @@ def is_data_request(prompt: str) -> bool:
 # NEW ADVANCED FUNCTIONS
 # =========================
 def detect_intent(prompt: str) -> Optional[IntentResult]:
-    """Get detailed intent with confidence and metadata"""
     return get_detector().get_primary_intent(prompt)
 
 
 def get_action_type(prompt: str) -> str:
-    """Get high-level action type for routing"""
     return get_detector().get_action_type(prompt)
 
 
 def get_required_tools(prompt: str) -> List[str]:
-    """Get list of tools needed for the request"""
     return get_detector().get_required_tools(prompt)
 
 
 def is_debug_request(prompt: str) -> bool:
-    """Check if this is a debugging request"""
     intent = detect_intent(prompt)
     return intent and intent.intent == IntentCategory.CODE_DEBUG
 
 
 def is_review_request(prompt: str) -> bool:
-    """Check if this is a code review request"""
     intent = detect_intent(prompt)
     return intent and intent.intent == IntentCategory.CODE_REVIEW
 
 
 def get_intent_confidence(prompt: str) -> float:
-    """Get confidence score for detected intent"""
     intent = detect_intent(prompt)
     return intent.confidence if intent else 0.0
 
@@ -667,17 +718,11 @@ class IntentInfo(BaseModel):
 # =========================
 # HELPERS
 # =========================
-COOKIE_NAME = "HeloxAi4life"
-
-
 def sse(data: dict) -> str:
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
 async def _execute_supabase_with_retry(query_builder, description="Supabase Operation"):
-    """
-    Executes a Supabase query builder with retries for transient errors (502, Cloudflare).
-    """
     max_retries = 3
     last_exception = None
     
@@ -687,14 +732,12 @@ async def _execute_supabase_with_retry(query_builder, description="Supabase Oper
         except Exception as e:
             last_exception = e
             error_str = str(e)
-            # Check for 502 Bad Gateway or JSON decoding errors (which happen on 502 HTML responses)
             if "502" in error_str or "Bad Gateway" in error_str or "Expecting value" in error_str:
                 logger.warning(f"{description} encountered transient error (attempt {attempt + 1}/{max_retries}): {e}")
                 if attempt < max_retries - 1:
-                    await asyncio.sleep(1 * (attempt + 1)) # Exponential backoff
+                    await asyncio.sleep(1 * (attempt + 1))
                     continue
             else:
-                # For non-transient errors, break immediately
                 logger.error(f"{description} failed: {e}")
                 break
     
@@ -704,26 +747,66 @@ async def _execute_supabase_with_retry(query_builder, description="Supabase Oper
 
 async def get_user(request: Request, response: Response) -> Dict[str, Any]:
     """
-    Robust user fetching logic.
-    1. Checks Cookie 'HeloxAi4life' (used for Anonymous/Guest persistence).
-    2. Syncs with 'public.users' table based on the provided SQL Schema.
-    3. Returns user dict including is_premium, is_lifetime, and global memory.
+    Enhanced user recognition with multi-cookie strategy and device fingerprinting.
+    Priority: Primary Cookie > Backup Cookie > Device Fingerprint Match > Create New
     """
-    session_token = request.cookies.get(COOKIE_NAME)
+    # Try all cookie sources
+    primary_id = request.cookies.get(PRIMARY_COOKIE)
+    backup_id = request.cookies.get(BACKUP_COOKIE)
+    device_cookie = request.cookies.get(DEVICE_COOKIE)
+    stored_fingerprint = request.cookies.get(FINGERPRINT_COOKIE)
     
-    # Default user object (Free/Guest) aligned with SQL Schema
+    # Generate current fingerprint
+    current_fingerprint = generate_device_fingerprint(request)
+    
+    # Default user object
     user_obj = {
         "id": None,
         "email": None,
-        "memory": ""  # Added Memory Field
+        "memory": "",
+        "fingerprint": current_fingerprint
     }
 
-    # 1. Try to find user via Cookie (Guest/Anonymous Persistence)
-    if session_token:
+    # Priority 1: Try primary cookie
+    user_id = None
+    if primary_id:
+        user_id = primary_id
+    elif backup_id:
+        user_id = backup_id
+    
+    # Priority 2: Try to match by device fingerprint in database
+    if not user_id and device_cookie:
         try:
-            # Select * to grab any available columns including memory
+            # Extract fingerprint from device cookie
+            fp_part = device_cookie.split("_")[0] if "_" in device_cookie else device_cookie
+            fp_resp = await _execute_supabase_with_retry(
+                supabase.table("users").select("id").eq("fingerprint", fp_part).limit(1),
+                description="User Lookup by Fingerprint"
+            )
+            if fp_resp.data:
+                user_id = fp_resp.data[0]["id"]
+                logger.info(f"User recovered via fingerprint match: {user_id[:8]}...")
+        except Exception as e:
+            logger.error(f"Fingerprint lookup failed: {e}")
+
+    # Priority 3: Try to match by stored fingerprint cookie
+    if not user_id and stored_fingerprint:
+        try:
+            fp_resp = await _execute_supabase_with_retry(
+                supabase.table("users").select("id").eq("fingerprint", stored_fingerprint).limit(1),
+                description="User Lookup by Stored Fingerprint"
+            )
+            if fp_resp.data:
+                user_id = fp_resp.data[0]["id"]
+                logger.info(f"User recovered via stored fingerprint: {user_id[:8]}...")
+        except Exception as e:
+            logger.error(f"Stored fingerprint lookup failed: {e}")
+
+    # Fetch user data if we found an ID
+    if user_id:
+        try:
             user_resp = await _execute_supabase_with_retry(
-                supabase.table("users").select("*").eq("id", session_token).limit(1),
+                supabase.table("users").select("*").eq("id", user_id).limit(1),
                 description="User Lookup by ID"
             )
             if user_resp.data:
@@ -731,33 +814,37 @@ async def get_user(request: Request, response: Response) -> Dict[str, Any]:
                 user_obj = {
                     "id": u["id"],
                     "email": u.get("email"),
-                    "memory": u.get("memory", ""), # Fetch global memory
+                    "memory": u.get("memory", ""),
                     "is_premium": u.get("is_premium", False),
                     "is_lifetime": u.get("is_lifetime", False),
-                    "plan": u.get("plan", "free")
+                    "plan": u.get("plan", "free"),
+                    "fingerprint": current_fingerprint
                 }
+                # Update fingerprint if changed (user switched browser/device slightly)
+                if u.get("fingerprint") != current_fingerprint:
+                    try:
+                        await _execute_supabase_with_retry(
+                            supabase.table("users").update({"fingerprint": current_fingerprint}).eq("id", user_id),
+                            description="Update Fingerprint"
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to update fingerprint: {e}")
+                
+                # Refresh all cookies
+                set_all_cookies(response, user_id, current_fingerprint)
                 return user_obj
         except Exception as e:
-            logger.error(f"Cookie user lookup failed: {e}")
+            logger.error(f"User data fetch failed: {e}")
 
-    # 2. Create Anonymous User if none found
-    if not session_token:
-        session_token = str(uuid.uuid4())
-        response.set_cookie(
-            key=COOKIE_NAME, 
-            value=session_token, 
-            max_age=86400*30, 
-            httponly=True, 
-            secure=True, 
-            samesite="none"
-        )
+    # Create new anonymous user
+    new_id = str(uuid.uuid4())
     
-    # Create row in public.users
     try:
         new_user_data = {
-            "id": session_token,
-            "email": f"anon+{session_token[:8]}@local",
-            "memory": "" # Initialize empty memory
+            "id": new_id,
+            "email": f"anon+{new_id[:8]}@local",
+            "memory": "",
+            "fingerprint": current_fingerprint
         }
         
         await _execute_supabase_with_retry(
@@ -765,12 +852,17 @@ async def get_user(request: Request, response: Response) -> Dict[str, Any]:
             description="Create Anonymous User"
         )
         
-        user_obj["id"] = session_token
+        user_obj["id"] = new_id
         
     except Exception as e:
         logger.error(f"Failed to create anonymous user: {e}")
-        user_obj["id"] = session_token
+        user_obj["id"] = new_id
 
+    # Set all cookies for new user
+    set_all_cookies(response, new_id, current_fingerprint)
+    
+    logger.info(f"New user created: {new_id[:8]}... with fingerprint {current_fingerprint[:8]}...")
+    
     return user_obj
 
 
@@ -780,6 +872,135 @@ def get_groq_headers():
 
 def get_openai_headers():
     return {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
+
+
+# =========================
+# VIDEO WATERMARK SYSTEM
+# =========================
+async def fetch_logo_image() -> Optional[bytes]:
+    """Fetch the logo.png from the configured URL"""
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.get(LOGO_URL)
+            if response.status_code == 200:
+                return response.content
+            logger.error(f"Failed to fetch logo: HTTP {response.status_code}")
+    except Exception as e:
+        logger.error(f"Logo fetch error: {e}")
+    return None
+
+
+async def add_watermark_to_video(video_url: str) -> str:
+    """
+    Add transparent watermark (logo.png) to bottom-right of video.
+    Returns the URL of the watermarked video.
+    """
+    try:
+        from moviepy.editor import VideoFileClip, ImageClip, CompositeVideoClip
+        import tempfile
+        import os
+        
+        # Fetch logo
+        logo_bytes = await fetch_logo_image()
+        if not logo_bytes:
+            logger.warning("No logo available, returning unwatermarked video")
+            return video_url
+        
+        # Download video
+        async with httpx.AsyncClient(timeout=120) as client:
+            video_response = await client.get(video_url)
+            if video_response.status_code != 200:
+                logger.error(f"Failed to download video: HTTP {video_response.status_code}")
+                return video_url
+            video_bytes = video_response.content
+        
+        # Create temp files
+        with tempfile.TemporaryDirectory() as tmpdir:
+            video_path = os.path.join(tmpdir, "input.mp4")
+            logo_path = os.path.join(tmpdir, "logo.png")
+            output_path = os.path.join(tmpdir, "output.mp4")
+            
+            # Write files
+            with open(video_path, "wb") as f:
+                f.write(video_bytes)
+            with open(logo_path, "wb") as f:
+                f.write(logo_bytes)
+            
+            # Process video in thread pool to avoid blocking
+            def process_video():
+                # Load video
+                video = VideoFileClip(video_path)
+                
+                # Load and resize logo (15% of video width, maintain aspect ratio)
+                logo_width = int(video.w * 0.15)
+                logo = ImageClip(logo_path)
+                logo_aspect = logo.h / logo.w
+                logo_height = int(logo_width * logo_aspect)
+                logo = logo.resize((logo_width, logo_height))
+                
+                # Position in bottom right with some padding
+                padding = 20
+                logo = logo.set_position(("right", "bottom"))
+                logo = logo.set_position((video.w - logo_width - padding, video.h - logo_height - padding))
+                
+                # Make logo last the entire video duration
+                logo = logo.set_duration(video.duration)
+                
+                # Set opacity for transparency effect (adjust as needed)
+                logo = logo.set_opacity(0.7)
+                
+                # Composite
+                final = CompositeVideoClip([video, logo])
+                
+                # Write output
+                final.write_videofile(
+                    output_path,
+                    codec="libx264",
+                    audio_codec="aac",
+                    temp_audiofile=os.path.join(tmpdir, "temp_audio.m4a"),
+                    remove_temp=True,
+                    logger=None
+                )
+                
+                # Close clips
+                video.close()
+                logo.close()
+                final.close()
+                
+                return output_path
+            
+            # Run in thread pool
+            output_path = await asyncio.to_thread(process_video)
+            
+            # Read output and upload to storage
+            with open(output_path, "rb") as f:
+                watermarked_bytes = f.read()
+            
+            # Upload to Supabase storage
+            filename = f"watermarked_{uuid.uuid4().hex}.mp4"
+            path = f"public/videos/{filename}"
+            
+            try:
+                await asyncio.to_thread(
+                    lambda: supabase.storage.from_("ai-videos").upload(
+                        path, watermarked_bytes, {"content-type": "video/mp4"}
+                    )
+                )
+                watermarked_url = f"{SUPABASE_URL}/storage/v1/object/public/ai-videos/{path}"
+                logger.info(f"Watermarked video uploaded: {watermarked_url}")
+                return watermarked_url
+            except Exception as upload_err:
+                logger.warning(f"Storage upload failed, using data URI: {upload_err}")
+                # Return as base64 data URI as fallback
+                b64_video = base64.b64encode(watermarked_bytes).decode()
+                return f"data:video/mp4;base64,{b64_video}"
+                
+    except ImportError:
+        logger.error("moviepy not installed. Install with: pip install moviepy")
+        return video_url
+    except Exception as e:
+        logger.error(f"Watermark error: {e}")
+        return video_url
 
 
 # =========================
@@ -837,7 +1058,9 @@ async def handle_text_analysis(text: str, stream: bool):
     messages = [
         {
             "role": "system",
-            "content": """You analyze files. Detect type automatically and respond accordingly:
+            "content": IDENTITY_PROMPT + """
+
+You also analyze files. Detect type automatically and respond accordingly:
 
 - Code → explain, find bugs, suggest improvements
 - PDF/docs → summarize + key insights
@@ -920,7 +1143,6 @@ async def handle_image_analysis(image_bytes: bytes, stream: bool):
 
 
 async def get_history(conv_id: str, limit: int = 10):
-    # Fetches ONLY the history for this specific conversation (Context Isolation)
     res = await _execute_supabase_with_retry(
         supabase.table("messages")
         .select("role, content")
@@ -933,7 +1155,6 @@ async def get_history(conv_id: str, limit: int = 10):
 
 
 async def stream_groq_chat(messages: list, model: str = "llama-3.3-70b-versatile", max_tokens: int = 1024):
-    """Streams response from Groq with robust error handling"""
     try:
         async with httpx.AsyncClient(timeout=None) as client:
             async with client.stream(
@@ -943,7 +1164,6 @@ async def stream_groq_chat(messages: list, model: str = "llama-3.3-70b-versatile
                 json={"model": model, "messages": messages, "stream": True, "max_tokens": max_tokens}
             ) as resp:
                 
-                # Check for HTTP errors immediately
                 if resp.status_code != 200:
                     error_text = await resp.aread()
                     logger.error(f"Groq API Error {resp.status_code}: {error_text}")
@@ -970,10 +1190,8 @@ async def stream_groq_chat(messages: list, model: str = "llama-3.3-70b-versatile
 
 
 async def handle_code_assistant(prompt: str, user: Dict[str, Any], conv_id: str, stream: bool):
-    """Advanced code assistant with intent-aware system prompts and user memory"""
     system_prompt = get_detector().get_code_system_prompt(prompt)
     
-    # Inject Global User Memory
     user_memory = user.get("memory", "")
     if user_memory:
         system_prompt += f"\n\nUser Context: {user_memory}"
@@ -981,7 +1199,6 @@ async def handle_code_assistant(prompt: str, user: Dict[str, Any], conv_id: str,
     history = await get_history(conv_id) if conv_id else []
     messages = [{"role": "system", "content": system_prompt}] + history
 
-    # Get intent info for logging
     intent_result = detect_intent(prompt)
     logger.info(
         f"[CODE] sub_intent={intent_result.intent.value if intent_result else 'none'} "
@@ -1061,9 +1278,6 @@ def robots():
 async def ask_universal(req: Request, res: Response):
     content_type = req.headers.get("content-type", "")
 
-    # ------------------------
-    # SAFE BODY PARSING
-    # ------------------------
     if "application/json" in content_type:
         try:
             body = await req.json()
@@ -1088,9 +1302,6 @@ async def ask_universal(req: Request, res: Response):
     else:
         raise HTTPException(415, f"Unsupported content-type: {content_type}")
 
-    # ------------------------
-    # CONTINUE NORMAL FLOW
-    # ------------------------
     prompt = body.get("prompt", "")
     conv_id = body.get("conversation_id")
     stream = body.get("stream", True)
@@ -1100,13 +1311,9 @@ async def ask_universal(req: Request, res: Response):
 
     user = await get_user(req, res)
 
-    # ------------------------
-    # HANDLE CONVERSATION CREATION
-    # ------------------------
     conversation_exists = False
     
     if conv_id:
-        # Verify if the provided conversation ID actually exists
         check = await _execute_supabase_with_retry(
             supabase.table("conversations").select("id").eq("id", conv_id).limit(1),
             description="Check Conversation Existence"
@@ -1114,7 +1321,6 @@ async def ask_universal(req: Request, res: Response):
         if check.data:
             conversation_exists = True
         else:
-            # Create new if ID is invalid
             logger.warning(f"Conversation {conv_id} not found in DB. Creating new conversation.")
             conv_id = str(uuid.uuid4())
 
@@ -1132,15 +1338,11 @@ async def ask_universal(req: Request, res: Response):
             description="Create Conversation"
         )
 
-    # Wrap save message in try/except to prevent crash on DB timeout
     try:
         await save_message(user["id"], conv_id, "user", prompt)
     except Exception as e:
         logger.error(f"Failed to save user message: {e}")
 
-    # ------------------------
-    # ADVANCED INTENT DETECTION
-    # ------------------------
     intent_result = detect_intent(prompt)
     action_type = get_action_type(prompt)
     required_tools = get_required_tools(prompt)
@@ -1156,10 +1358,6 @@ async def ask_universal(req: Request, res: Response):
     else:
         logger.info(f"[INTENT] action=general (no specific intent)")
 
-
-    # ------------------------
-    # INTENT-BASED ROUTING
-    # ------------------------
     handler_map = {
         "image": handle_image_generation,
         "video": handle_video_generation,
@@ -1177,12 +1375,8 @@ async def ask_universal(req: Request, res: Response):
         if action_type in ("document", "data"):
             return await handler(prompt, stream)
         else:
-            # Pass user object for memory context
             return await handler(prompt, user, conv_id, stream)
 
-    # ------------------------
-    # SPECIALIZED HANDLERS
-    # ------------------------
     if action_type == "math":
         return await handle_math_request(prompt, user, conv_id, stream)
 
@@ -1198,24 +1392,20 @@ async def ask_universal(req: Request, res: Response):
     if action_type == "summary":
         return await handle_summary_request(prompt, user, conv_id, stream)
 
-    # ------------------------
-    # DEFAULT CHAT
-    # ------------------------
+    # DEFAULT CHAT with IDENTITY_PROMPT
     if stream:
         async def event_gen():
             task = asyncio.current_task()
             active_streams[user["id"]] = task
 
             try:
-                # Fetch history for THIS specific chat (Context Isolation)
                 try:
                     history = await get_history(conv_id)
                 except Exception as e:
                     logger.error(f"History fetch failed: {e}")
                     history = [] 
                 
-                # Inject Global User Memory into System Prompt
-                base_system = "You are a helpful AI."
+                base_system = IDENTITY_PROMPT
                 user_memory = user.get("memory", "")
                 if user_memory:
                     base_system += f"\n\nUser Context: {user_memory}"
@@ -1246,7 +1436,7 @@ async def ask_universal(req: Request, res: Response):
         return StreamingResponse(event_gen(), media_type="text/event-stream")
     else:
         history = await get_history(conv_id)
-        base_system = "You are a helpful AI."
+        base_system = IDENTITY_PROMPT
         user_memory = user.get("memory", "")
         if user_memory:
             base_system += f"\n\nUser Context: {user_memory}"
@@ -1269,8 +1459,9 @@ async def ask_universal(req: Request, res: Response):
 # SPECIALIZED HANDLERS
 # =========================
 async def handle_math_request(prompt: str, user: Dict[str, Any], conv_id: str, stream: bool):
-    """Handle mathematical queries with specialized prompting"""
-    system_prompt = """You are a mathematical expert. When solving math problems:
+    system_prompt = IDENTITY_PROMPT + """
+
+You are also a mathematical expert. When solving math problems:
 1. Show your work step-by-step
 2. Explain each step clearly
 3. Use proper mathematical notation
@@ -1279,7 +1470,6 @@ async def handle_math_request(prompt: str, user: Dict[str, Any], conv_id: str, s
 
 Format complex equations clearly using LaTeX-style notation where appropriate."""
 
-    # Inject Memory
     user_memory = user.get("memory", "")
     if user_memory:
         system_prompt += f"\n\nUser Context: {user_memory}"
@@ -1329,8 +1519,9 @@ Format complex equations clearly using LaTeX-style notation where appropriate.""
 
 
 async def handle_research_request(prompt: str, user: Dict[str, Any], conv_id: str, stream: bool):
-    """Handle research-oriented queries"""
-    system_prompt = """You are a research assistant. When helping with research:
+    system_prompt = IDENTITY_PROMPT + """
+
+You are also a research assistant. When helping with research:
 1. Provide well-structured, factual information
 2. Cite sources when possible (even if general)
 3. Present multiple perspectives on controversial topics
@@ -1338,7 +1529,6 @@ async def handle_research_request(prompt: str, user: Dict[str, Any], conv_id: st
 5. Suggest further areas of investigation
 Be thorough but concise."""
 
-    # Inject Memory
     user_memory = user.get("memory", "")
     if user_memory:
         system_prompt += f"\n\nUser Context: {user_memory}"
@@ -1388,8 +1578,9 @@ Be thorough but concise."""
 
 
 async def handle_creative_request(prompt: str, user: Dict[str, Any], conv_id: str, stream: bool):
-    """Handle creative writing requests"""
-    system_prompt = """You are a creative writing expert. When writing creative content:
+    system_prompt = IDENTITY_PROMPT + """
+
+You are also a creative writing expert. When writing creative content:
 1. Use vivid, engaging language
 2. Create compelling characters and narratives
 3. Pay attention to rhythm and flow
@@ -1397,7 +1588,6 @@ async def handle_creative_request(prompt: str, user: Dict[str, Any], conv_id: st
 5. Be original and imaginative
 Adapt your style to the specific creative request."""
 
-    # Inject Memory
     user_memory = user.get("memory", "")
     if user_memory:
         system_prompt += f"\n\nUser Context: {user_memory}"
@@ -1447,8 +1637,9 @@ Adapt your style to the specific creative request."""
 
 
 async def handle_translation_request(prompt: str, user: Dict[str, Any], conv_id: str, stream: bool):
-    """Handle translation requests"""
-    system_prompt = """You are a professional translator. When translating:
+    system_prompt = IDENTITY_PROMPT + """
+
+You are also a professional translator. When translating:
 1. Preserve the meaning and tone of the original
 2. Use natural, idiomatic language in the target
 3. Handle cultural nuances appropriately
@@ -1456,7 +1647,6 @@ async def handle_translation_request(prompt: str, user: Dict[str, Any], conv_id:
 5. If unsure about context, provide alternatives
 Always indicate the source and target languages."""
 
-    # Inject Memory
     user_memory = user.get("memory", "")
     if user_memory:
         system_prompt += f"\n\nUser Context: {user_memory}"
@@ -1506,8 +1696,9 @@ Always indicate the source and target languages."""
 
 
 async def handle_summary_request(prompt: str, user: Dict[str, Any], conv_id: str, stream: bool):
-    """Handle summarization requests"""
-    system_prompt = """You are a summarization expert. When summarizing:
+    system_prompt = IDENTITY_PROMPT + """
+
+You are also a summarization expert. When summarizing:
 1. Extract the most important points
 2. Maintain accuracy - don't add information
 3. Be concise but complete
@@ -1515,7 +1706,6 @@ async def handle_summary_request(prompt: str, user: Dict[str, Any], conv_id: str
 5. Start with a brief overview, then key points
 Tailor the summary length to the complexity of the content."""
 
-    # Inject Memory
     user_memory = user.get("memory", "")
     if user_memory:
         system_prompt += f"\n\nUser Context: {user_memory}"
@@ -1569,7 +1759,6 @@ Tailor the summary length to the complexity of the content."""
 # =========================
 @app.post("/newchat")
 async def new_chat(req: Request, res: Response):
-    """Creates a new conversation and returns the ID"""
     user = await get_user(req, res)
     cid = str(uuid.uuid4())
     await _execute_supabase_with_retry(
@@ -1584,7 +1773,6 @@ async def new_chat(req: Request, res: Response):
 
 @app.post("/stop")
 async def stop_generation(req: Request, res: Response):
-    """Cancels the current stream for the user"""
     user = await get_user(req, res)
     user_id = user["id"]
 
@@ -1598,7 +1786,6 @@ async def stop_generation(req: Request, res: Response):
 
 @app.post("/regenerate")
 async def regenerate(req: Request, res: Response):
-    """Regenerates the last assistant response"""
     body = await req.json()
     conv_id = body.get("conversation_id")
 
@@ -1644,8 +1831,7 @@ async def regenerate(req: Request, res: Response):
         try:
             history = await get_history(conv_id)
             
-            # Inject Global Memory for Regeneration
-            base_system = "You are a helpful AI."
+            base_system = IDENTITY_PROMPT
             user_memory = user.get("memory", "")
             if user_memory:
                 base_system += f"\n\nUser Context: {user_memory}"
@@ -1677,7 +1863,6 @@ async def regenerate(req: Request, res: Response):
 
 @app.get("/chats")
 async def list_chats(req: Request, res: Response):
-    """List all user chats"""
     user = await get_user(req, res)
     
     result = await _execute_supabase_with_retry(
@@ -1691,11 +1876,63 @@ async def list_chats(req: Request, res: Response):
 
 
 # =========================
+# USER IDENTITY ENDPOINT
+# =========================
+@app.get("/user/info")
+async def get_user_info(req: Request, res: Response):
+    """Get current user identification info"""
+    user = await get_user(req, res)
+    return {
+        "user_id": user["id"],
+        "fingerprint": user.get("fingerprint", "")[:8] + "...",  # Partial for privacy
+        "is_identified": True
+    }
+
+
+@app.post("/user/merge")
+async def merge_user(req: Request, res: Response):
+    """Merge anonymous user with authenticated account (for future auth integration)"""
+    body = await req.json()
+    target_id = body.get("target_user_id")
+    
+    user = await get_user(req, res)
+    
+    if not target_id or target_id == user["id"]:
+        return {"status": "no_merge_needed"}
+    
+    try:
+        # Move conversations
+        await _execute_supabase_with_retry(
+            supabase.table("conversations")
+            .update({"user_id": target_id})
+            .eq("user_id", user["id"]),
+            description="Merge Conversations"
+        )
+        
+        # Move messages
+        await _execute_supabase_with_retry(
+            supabase.table("messages")
+            .update({"user_id": target_id})
+            .eq("user_id", user["id"]),
+            description="Merge Messages"
+        )
+        
+        # Update cookies to new ID
+        fingerprint = user.get("fingerprint", "")
+        set_all_cookies(res, target_id, fingerprint)
+        
+        return {"status": "merged", "new_user_id": target_id}
+    
+    except Exception as e:
+        logger.error(f"User merge failed: {e}")
+        raise HTTPException(500, "Failed to merge user data")
+
+
+# =========================
 # INTENT ANALYSIS ENDPOINT
 # =========================
 @app.post("/analyze-intent")
 async def analyze_intent_endpoint(req: Request):
-    """Analyze the intent of a prompt without executing it"""
     body = await req.json()
     prompt = body.get("prompt", "")
 
@@ -1720,7 +1957,6 @@ async def analyze_intent_endpoint(req: Request):
 
 @app.post("/tts")
 async def text_to_speech(req: Request):
-    """Text to Speech"""
     data = await req.json()
     text = data.get("text")
     voice = data.get("voice", "alloy")
@@ -1787,7 +2023,6 @@ async def get_voices():
 
 @app.post("/stt")
 async def speech_to_text(file: UploadFile = File(...)):
-    """Speech to Text (Whisper)"""
     if not OPENAI_API_KEY:
         raise HTTPException(500, "OpenAI Key missing")
 
@@ -1951,38 +2186,107 @@ async def handle_video_generation(prompt, user: Dict[str, Any], conv_id: str, st
         "Content-Type": "application/json",
     }
 
-    async with httpx.AsyncClient(timeout=120) as client:
-        # 1. Create prediction
-        create_res = await client.post(
-            "https://api.replicate.com/v1/predictions",
-            headers=headers,
-            json={
-                "version": "your-model-version-id",
-                "input": {
-                    "prompt": prompt
+    if stream:
+        async def gen():
+            try:
+                yield sse({"type": "status", "message": "Starting video generation..."})
+                
+                async with httpx.AsyncClient(timeout=120) as client:
+                    # 1. Create prediction
+                    create_res = await client.post(
+                        "https://api.replicate.com/v1/predictions",
+                        headers=headers,
+                        json={
+                            "version": "your-model-version-id",
+                            "input": {
+                                "prompt": prompt
+                            }
+                        }
+                    )
+                    create_res.raise_for_status()
+                    prediction = create_res.json()
+                    prediction_id = prediction["id"]
+                    
+                    yield sse({"type": "status", "message": "Processing video..."})
+
+                    # 2. Poll for completion
+                    max_polls = 120  # 4 minutes max
+                    poll_count = 0
+                    
+                    while poll_count < max_polls:
+                        poll_res = await client.get(
+                            f"https://api.replicate.com/v1/predictions/{prediction_id}",
+                            headers=headers
+                        )
+                        poll_res.raise_for_status()
+                        data = poll_res.json()
+
+                        if data["status"] == "succeeded":
+                            raw_video_url = data["output"]
+                            
+                            # Add watermark to video
+                            yield sse({"type": "status", "message": "Adding watermark..."})
+                            watermarked_url = await add_watermark_to_video(raw_video_url)
+                            
+                            yield sse({"type": "video", "url": watermarked_url})
+                            yield sse({"type": "done"})
+                            return
+                            
+                        elif data["status"] == "failed":
+                            error_msg = data.get("error", "Unknown error")
+                            yield sse({"type": "error", "message": f"Video generation failed: {error_msg}"})
+                            return
+                        
+                        elif data["status"] == "processing":
+                            poll_count += 1
+                            await asyncio.sleep(2)
+                        else:
+                            poll_count += 1
+                            await asyncio.sleep(2)
+
+                    yield sse({"type": "error", "message": "Video generation timed out"})
+                    
+            except httpx.HTTPStatusError as e:
+                logger.error(f"Video gen HTTP error: {e}")
+                yield sse({"type": "error", "message": f"API error: {e.response.status_code}"})
+            except Exception as e:
+                logger.error(f"Video gen error: {e}")
+                yield sse({"type": "error", "message": str(e)})
+
+        return StreamingResponse(gen(), media_type="text/event-stream")
+    
+    else:
+        # Non-streaming version
+        async with httpx.AsyncClient(timeout=300) as client:
+            create_res = await client.post(
+                "https://api.replicate.com/v1/predictions",
+                headers=headers,
+                json={
+                    "version": "your-model-version-id",
+                    "input": {"prompt": prompt}
                 }
-            }
-        )
-        create_res.raise_for_status()
-        prediction = create_res.json()
-        prediction_id = prediction["id"]
-
-        # 2. Poll
-        while True:
-            poll_res = await client.get(
-                f"https://api.replicate.com/v1/predictions/{prediction_id}",
-                headers=headers
             )
-            poll_res.raise_for_status()
-            data = poll_res.json()
+            create_res.raise_for_status()
+            prediction = create_res.json()
+            prediction_id = prediction["id"]
 
-            if data["status"] == "succeeded":
-                video_url = data["output"]
-                break
-            elif data["status"] == "failed":
-                raise Exception("Video generation failed")
+            while True:
+                poll_res = await client.get(
+                    f"https://api.replicate.com/v1/predictions/{prediction_id}",
+                    headers=headers
+                )
+                poll_res.raise_for_status()
+                data = poll_res.json()
 
-            await asyncio.sleep(2)
+                if data["status"] == "succeeded":
+                    raw_video_url = data["output"]
+                    # Add watermark
+                    watermarked_url = await add_watermark_to_video(raw_video_url)
+                    return {"video_url": watermarked_url}
+                elif data["status"] == "failed":
+                    raise HTTPException(500, f"Video generation failed: {data.get('error')}")
+
+                await asyncio.sleep(2)
 
 
 # =========================
@@ -1993,7 +2297,10 @@ async def root():
     return {
         "status": "running",
         "service": "HeloxAi Backend",
-        "intent_detection": "advanced"
+        "creator": "GoldYLocks",
+        "twitter": "@HeloxAi",
+        "intent_detection": "advanced",
+        "user_recognition": "multi-cookie-fingerprint"
     }
 
 
