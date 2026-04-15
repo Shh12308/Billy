@@ -6,40 +6,65 @@ import uuid
 import asyncio
 import logging
 import hashlib
+import zipfile
+import tempfile
+import mimetypes
+import shutil
 from io import BytesIO
 from enum import Enum
 from dataclasses import dataclass
-from typing import Optional, Dict, Any, List, Union
+from typing import Optional, Dict, Any, List, Union, Tuple
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 
-from fastapi import FastAPI, Request, Response, HTTPException, Depends, UploadFile, File
+from fastapi import FastAPI, Request, Response, HTTPException, Depends, UploadFile, File, Cookie, Header
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, validator
 from fastapi.responses import PlainTextResponse
+import time
 
 import httpx
-from supabase import create_client
-import time
+from supabase import create_client, create_async_client
 
 # =========================
 # CONFIG & LOGGING
 # =========================
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger("HeloXAi")
 
 # Environment Variables
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")
+SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")  # For admin operations
 GROQ_API_KEY = os.getenv("GROQ_API_KEY").strip() if os.getenv("GROQ_API_KEY") else None
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
 LOGO_URL = os.getenv("LOGO_URL", "https://heloxai.xyz/logo.png")
 
+# File handling config
+MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
+MAX_ZIP_SIZE = 100 * 1024 * 1024  # 100MB for zips
+MAX_ZIP_ENTRIES = 500
+MAX_EXTRACTED_SIZE = 200 * 1024 * 1024  # 200MB total extracted
+MAX_TEXT_LENGTH = 500000  # 500k characters max for text analysis
+CHUNK_SIZE = 1024 * 1024  # 1MB chunks for large files
+
+# Auth config
+SESSION_DURATION = 365 * 24 * 60 * 60  # 1 year in seconds
+REFRESH_THRESHOLD = 7 * 24 * 60 * 60  # Refresh session if less than 7 days remaining
+
 if not SUPABASE_URL or not SUPABASE_ANON_KEY:
     raise RuntimeError("SUPABASE_URL and SUPABASE_ANON_KEY must be set")
 
-app = FastAPI()
+app = FastAPI(
+    title="HeloxAi API",
+    description="Advanced AI Assistant Backend",
+    version="2.0.0"
+)
 
 # CORS
 app.add_middleware(
@@ -48,18 +73,921 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"]
 )
 
-# Database Client
+# Database Clients
 supabase = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
 
 # Global State for Stream Cancellation
 active_streams: Dict[str, asyncio.Task] = {}
 
+# Session cache for performance
+_session_cache: Dict[str, Dict[str, Any]] = {}
+_session_cache_ttl = 300  # 5 minutes
+_session_cache_last_cleanup = time.time()
+
+# =========================
+# FILE TYPE DEFINITIONS
+# =========================
+class FileCategory(Enum):
+    CODE = "code"
+    DOCUMENT = "document"
+    DATA = "data"
+    IMAGE = "image"
+    AUDIO = "audio"
+    VIDEO = "video"
+    ARCHIVE = "archive"
+    CONFIG = "config"
+    BINARY = "binary"
+    UNKNOWN = "unknown"
+
+# Comprehensive file type mappings
+CODE_EXTENSIONS = {
+    # Python
+    '.py', '.pyw', '.pyx', '.pyd', '.pyi', '.py3',
+    # JavaScript/TypeScript
+    '.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.mts', '.cts',
+    # Web
+    '.html', '.htm', '.css', '.scss', '.sass', '.less', '.styl',
+    '.vue', '.svelte', '.astro',
+    # Java/JVM
+    '.java', '.kt', '.kts', '.scala', '.groovy', '.gradle',
+    '.clj', '.cljs', '.hs',
+    # C/C++
+    '.c', '.h', '.cpp', '.hpp', '.cc', '.cxx', '.hxx', '.inl',
+    # C#
+    '.cs', '.csx',
+    # Go
+    '.go',
+    # Rust
+    '.rs',
+    # PHP
+    '.php', '.phtml',
+    # Ruby
+    '.rb', '.erb', '.rake', '.gemspec',
+    # Swift
+    '.swift',
+    # Dart/Flutter
+    '.dart',
+    # Shell
+    '.sh', '.bash', '.zsh', '.fish', '.ps1', '.psm1', '.bat', '.cmd',
+    # Lua
+    '.lua',
+    # Perl
+    '.pl', '.pm',
+    # R
+    '.r', '.R',
+    # SQL
+    '.sql', '.mysql', '.pgsql', '.sqlite',
+    # Config/Data formats
+    '.json', '.yaml', '.yml', '.toml', '.ini', '.cfg', '.conf',
+    '.env', '.properties', '.xml',
+    # Markup
+    '.md', '.rst', '.asciidoc', '.adoc', '.tex', '.latex',
+    # Other
+    '.dockerfile', '.makefile', '.cmake', '.proto', '.graphql', '.gql',
+    '.tf', '.hcl', '.sol', '.move', '.cairo',
+}
+
+DOCUMENT_EXTENSIONS = {
+    '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+    '.odt', '.ods', '.odp', '.rtf', '.txt', '.log', '.csv',
+}
+
+DATA_EXTENSIONS = {
+    '.csv', '.tsv', '.json', '.xml', '.yaml', '.yml', '.parquet',
+    '.arrow', '.feather', '.hdf5', '.h5', '.pickle', '.pkl',
+    '.npy', '.npz', '.spss', '.sav', '.sas7bdat', '.dta',
+}
+
+IMAGE_EXTENSIONS = {
+    '.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.bmp',
+    '.ico', '.tiff', '.tif', '.avif', '.heic', '.heif',
+}
+
+AUDIO_EXTENSIONS = {
+    '.mp3', '.wav', '.ogg', '.flac', '.aac', '.m4a', '.wma',
+    '.opus', '.aiff', '.ape',
+}
+
+VIDEO_EXTENSIONS = {
+    '.mp4', '.webm', '.avi', '.mov', '.mkv', '.flv', '.wmv',
+    '.m4v', '.ogv', '.3gp',
+}
+
+ARCHIVE_EXTENSIONS = {
+    '.zip', '.tar', '.gz', '.tgz', '.bz2', '.xz', '.7z',
+    '.rar', '.zst', '.lz4',
+}
+
+CONFIG_EXTENSIONS = {
+    '.json', '.yaml', '.yml', '.toml', '.ini', '.cfg', '.conf',
+    '.env', '.properties', '.xml', '.editorconfig', '.eslintrc',
+    '.prettierrc', '.gitignore', '.dockerignore', '.npmrc',
+}
+
+
+def get_file_category(filename: str) -> FileCategory:
+    """Determine file category from extension"""
+    if not filename:
+        return FileCategory.UNKNOWN
+    
+    ext = Path(filename).suffix.lower()
+    
+    if ext in CODE_EXTENSIONS:
+        return FileCategory.CODE
+    elif ext in DOCUMENT_EXTENSIONS:
+        return FileCategory.DOCUMENT
+    elif ext in DATA_EXTENSIONS:
+        return FileCategory.DATA
+    elif ext in IMAGE_EXTENSIONS:
+        return FileCategory.IMAGE
+    elif ext in AUDIO_EXTENSIONS:
+        return FileCategory.AUDIO
+    elif ext in VIDEO_EXTENSIONS:
+        return FileCategory.VIDEO
+    elif ext in ARCHIVE_EXTENSIONS:
+        return FileCategory.ARCHIVE
+    elif ext in CONFIG_EXTENSIONS:
+        return FileCategory.CONFIG
+    else:
+        return FileCategory.UNKNOWN
+
+
+def get_file_language(filename: str) -> Optional[str]:
+    """Get programming language from file extension for syntax highlighting"""
+    ext_lang_map = {
+        '.py': 'python', '.pyw': 'python', '.pyx': 'python',
+        '.js': 'javascript', '.jsx': 'javascript', '.mjs': 'javascript',
+        '.ts': 'typescript', '.tsx': 'typescript',
+        '.html': 'html', '.htm': 'html',
+        '.css': 'css', '.scss': 'scss', '.less': 'less',
+        '.vue': 'vue', '.svelte': 'svelte',
+        '.java': 'java', '.kt': 'kotlin', '.scala': 'scala',
+        '.c': 'c', '.h': 'c', '.cpp': 'cpp', '.hpp': 'cpp', '.cc': 'cpp',
+        '.cs': 'csharp',
+        '.go': 'go',
+        '.rs': 'rust',
+        '.php': 'php',
+        '.rb': 'ruby',
+        '.swift': 'swift',
+        '.dart': 'dart',
+        '.sh': 'bash', '.bash': 'bash', '.zsh': 'bash',
+        '.ps1': 'powershell', '.bat': 'batch',
+        '.lua': 'lua',
+        '.pl': 'perl',
+        '.r': 'r', '.R': 'r',
+        '.sql': 'sql',
+        '.json': 'json', '.xml': 'xml',
+        '.yaml': 'yaml', '.yml': 'yaml',
+        '.toml': 'toml',
+        '.md': 'markdown', '.rst': 'rst',
+        '.tex': 'latex',
+        '.dockerfile': 'dockerfile',
+        '.graphql': 'graphql', '.gql': 'graphql',
+        '.tf': 'hcl', '.hcl': 'hcl',
+        '.sol': 'solidity',
+    }
+    ext = Path(filename).suffix.lower()
+    return ext_lang_map.get(ext)
+
+
+def is_binary_file(filename: str, content: bytes = None) -> bool:
+    """Check if file is binary based on extension or content"""
+    ext = Path(filename).suffix.lower()
+    
+    # Known binary extensions
+    binary_exts = IMAGE_EXTENSIONS | AUDIO_EXTENSIONS | VIDEO_EXTENSIONS | {
+        '.exe', '.dll', '.so', '.dylib', '.bin', '.dat',
+        '.pyc', '.pyo', '.class', '.o', '.obj', '.a', '.lib',
+        '.zip', '.tar', '.gz', '.7z', '.rar',
+        '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+        '.sqlite', '.db', '.sqlite3',
+        '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.ico',
+        '.mp3', '.mp4', '.wav', '.avi', '.mov', '.mkv',
+        '.woff', '.woff2', '.ttf', '.otf', '.eot',
+        '.pak', '.bundle',
+    }
+    
+    if ext in binary_exts:
+        return True
+    
+    # Check content for null bytes (indicates binary)
+    if content and len(content) > 0:
+        # Check first 8192 bytes for null bytes
+        check_bytes = content[:8192]
+        if b'\x00' in check_bytes:
+            return True
+    
+    return False
+
+
+def format_file_size(size_bytes: int) -> str:
+    """Format file size in human-readable format"""
+    for unit in ['B', 'KB', 'MB', 'GB']:
+        if size_bytes < 1024.0:
+            return f"{size_bytes:.1f} {unit}"
+        size_bytes /= 1024.0
+    return f"{size_bytes:.1f} TB"
+
+
+# =========================
+# ADVANCED FILE EXTRACTOR
+# =========================
+class FileExtractionResult:
+    def __init__(
+        self,
+        content: str,
+        files: List[Dict[str, Any]] = None,
+        metadata: Dict[str, Any] = None,
+        truncated: bool = False,
+        original_size: int = 0
+    ):
+        self.content = content
+        self.files = files or []
+        self.metadata = metadata or {}
+        self.truncated = truncated
+        self.original_size = original_size
+
+    def to_dict(self) -> Dict:
+        return {
+            "content": self.content,
+            "files": self.files,
+            "metadata": self.metadata,
+            "truncated": self.truncated,
+            "original_size": self.original_size
+        }
+
+
+async def extract_file_content(
+    content: bytes,
+    filename: str,
+    max_length: int = MAX_TEXT_LENGTH
+) -> FileExtractionResult:
+    """
+    Extract text content from any file type.
+    Handles code files, documents, archives, and more.
+    """
+    original_size = len(content)
+    category = get_file_category(filename)
+    metadata = {
+        "filename": filename,
+        "category": category.value,
+        "size": original_size,
+        "size_formatted": format_file_size(original_size),
+        "language": get_file_language(filename),
+    }
+
+    try:
+        # Handle archives (zip files)
+        if category == FileCategory.ARCHIVE:
+            return await extract_archive_content(content, filename, max_length, metadata)
+
+        # Handle images
+        if category == FileCategory.IMAGE:
+            return FileExtractionResult(
+                content=f"[Image file: {filename} ({format_file_size(original_size)}) - Use image analysis endpoint for visual content]",
+                metadata=metadata,
+                original_size=original_size
+            )
+
+        # Handle audio/video
+        if category in (FileCategory.AUDIO, FileCategory.VIDEO):
+            return FileExtractionResult(
+                content=f"[{category.value.capitalize()} file: {filename} ({format_file_size(original_size)}) - Media file cannot be extracted as text]",
+                metadata=metadata,
+                original_size=original_size
+            )
+
+        # Handle PDF
+        if filename.lower().endswith('.pdf'):
+            return await extract_pdf_content(content, filename, max_length, metadata)
+
+        # Handle code and text files
+        if category in (FileCategory.CODE, FileCategory.CONFIG, FileCategory.UNKNOWN):
+            text, truncated = extract_text_with_fallback(content, max_length)
+            metadata["line_count"] = text.count('\n') + 1
+            return FileExtractionResult(
+                content=text,
+                metadata=metadata,
+                truncated=truncated,
+                original_size=original_size
+            )
+
+        # Handle documents and data files
+        if category in (FileCategory.DOCUMENT, FileCategory.DATA):
+            text, truncated = extract_text_with_fallback(content, max_length)
+            metadata["line_count"] = text.count('\n') + 1
+            return FileExtractionResult(
+                content=text,
+                metadata=metadata,
+                truncated=truncated,
+                original_size=original_size
+            )
+
+        # Handle binary files
+        if is_binary_file(filename, content):
+            return FileExtractionResult(
+                content=f"[Binary file: {filename} ({format_file_size(original_size)}) - Cannot extract text content]",
+                metadata=metadata,
+                original_size=original_size
+            )
+
+        # Fallback: try to decode as text
+        text, truncated = extract_text_with_fallback(content, max_length)
+        metadata["line_count"] = text.count('\n') + 1
+        return FileExtractionResult(
+            content=text,
+            metadata=metadata,
+            truncated=truncated,
+            original_size=original_size
+        )
+
+    except Exception as e:
+        logger.error(f"File extraction error for {filename}: {e}")
+        return FileExtractionResult(
+            content=f"[Error extracting {filename}: {str(e)}]",
+            metadata={**metadata, "error": str(e)},
+            original_size=original_size
+        )
+
+
+def extract_text_with_fallback(content: bytes, max_length: int) -> Tuple[str, bool]:
+    """Extract text with multiple encoding fallbacks"""
+    encodings = ['utf-8', 'utf-8-sig', 'latin-1', 'cp1252', 'iso-8859-1', 'ascii']
+    
+    for encoding in encodings:
+        try:
+            text = content.decode(encoding, errors='strict' if encoding != 'latin-1' else 'ignore')
+            truncated = len(text) > max_length
+            if truncated:
+                text = text[:max_length] + "\n\n[... Content truncated ...]"
+            return text, truncated
+        except (UnicodeDecodeError, LookupError):
+            continue
+    
+    # Final fallback: decode with error replacement
+    text = content.decode('utf-8', errors='replace')
+    truncated = len(text) > max_length
+    if truncated:
+        text = text[:max_length] + "\n\n[... Content truncated ...]"
+    return text, truncated
+
+
+async def extract_pdf_content(
+    content: bytes,
+    filename: str,
+    max_length: int,
+    metadata: Dict[str, Any]
+) -> FileExtractionResult:
+    """Extract text from PDF files"""
+    try:
+        from PyPDF2 import PdfReader
+        reader = PdfReader(BytesIO(content))
+        pages = []
+        
+        for i, page in enumerate(reader.pages):
+            page_text = page.extract_text() or ""
+            pages.append(f"--- Page {i + 1} ---\n{page_text}")
+        
+        full_text = "\n\n".join(pages)
+        metadata["page_count"] = len(reader.pages)
+        
+        truncated = len(full_text) > max_length
+        if truncated:
+            full_text = full_text[:max_length] + "\n\n[... Content truncated ...]"
+        
+        return FileExtractionResult(
+            content=full_text,
+            metadata=metadata,
+            truncated=truncated,
+            original_size=len(content)
+        )
+    except ImportError:
+        logger.warning("PyPDF2 not installed, returning placeholder for PDF")
+        return FileExtractionResult(
+            content=f"[PDF file: {filename} ({format_file_size(len(content))}) - PDF parsing not available on server]",
+            metadata=metadata,
+            original_size=len(content)
+        )
+
+
+async def extract_archive_content(
+    content: bytes,
+    filename: str,
+    max_length: int,
+    metadata: Dict[str, Any]
+) -> FileExtractionResult:
+    """Extract and read contents from archive files (zip, tar, etc.)"""
+    ext = Path(filename).suffix.lower()
+    
+    if ext == '.zip':
+        return await extract_zip_content(content, filename, max_length, metadata)
+    elif ext in ('.tar', '.gz', '.tgz', '.bz2', '.xz'):
+        return await extract_tar_content(content, filename, max_length, metadata)
+    elif ext in ('.7z', '.rar'):
+        return FileExtractionResult(
+            content=f"[{ext.upper()} archive: {filename} ({format_file_size(len(content))}) - This archive format requires additional server setup]",
+            metadata=metadata,
+            original_size=len(content)
+        )
+    else:
+        return FileExtractionResult(
+            content=f"[Archive: {filename} ({format_file_size(len(content))}) - Unsupported archive format]",
+            metadata=metadata,
+            original_size=len(content)
+        )
+
+
+async def extract_zip_content(
+    content: bytes,
+    filename: str,
+    max_length: int,
+    metadata: Dict[str, Any]
+) -> FileExtractionResult:
+    """Extract and read text contents from ZIP files"""
+    extracted_files = []
+    all_text_parts = []
+    total_extracted = 0
+    entry_count = 0
+    
+    try:
+        with zipfile.ZipFile(BytesIO(content)) as zf:
+            # Check for zip bombs
+            if len(zf.namelist()) > MAX_ZIP_ENTRIES:
+                return FileExtractionResult(
+                    content=f"[ZIP archive: {filename} - Too many entries ({len(zf.namelist())}). Maximum allowed: {MAX_ZIP_ENTRIES}]",
+                    metadata=metadata,
+                    original_size=len(content)
+                )
+            
+            # Sort by name for consistent output
+            entries = sorted(zf.namelist())
+            
+            for entry_name in entries:
+                # Skip directories and hidden files
+                if entry_name.endswith('/') or '/__MACOSX/' in entry_name:
+                    continue
+                if entry_name.startswith('__MACOSX') or entry_name.startswith('.'):
+                    continue
+                
+                entry_count += 1
+                
+                try:
+                    entry_info = zf.getinfo(entry_name)
+                    
+                    # Skip if single file is too large
+                    if entry_info.file_size > MAX_FILE_SIZE:
+                        extracted_files.append({
+                            "name": entry_name,
+                            "size": entry_info.file_size,
+                            "size_formatted": format_file_size(entry_info.file_size),
+                            "status": "skipped",
+                            "reason": f"File too large (max {format_file_size(MAX_FILE_SIZE)})"
+                        })
+                        continue
+                    
+                    # Check total extracted size
+                    if total_extracted + entry_info.file_size > MAX_EXTRACTED_SIZE:
+                        extracted_files.append({
+                            "name": entry_name,
+                            "size": entry_info.file_size,
+                            "size_formatted": format_file_size(entry_info.file_size),
+                            "status": "skipped",
+                            "reason": "Archive total size limit reached"
+                        })
+                        continue
+                    
+                    # Read entry content
+                    entry_content = zf.read(entry_name)
+                    total_extracted += len(entry_content)
+                    
+                    entry_category = get_file_category(entry_name)
+                    entry_language = get_file_language(entry_name)
+                    
+                    # Extract text from entry
+                    if entry_category in (FileCategory.IMAGE, FileCategory.AUDIO, FileCategory.VIDEO):
+                        file_info = {
+                            "name": entry_name,
+                            "size": len(entry_content),
+                            "size_formatted": format_file_size(len(entry_content)),
+                            "category": entry_category.value,
+                            "status": "media",
+                            "note": f"{entry_category.value} file - visual/audio content"
+                        }
+                    elif is_binary_file(entry_name, entry_content):
+                        file_info = {
+                            "name": entry_name,
+                            "size": len(entry_content),
+                            "size_formatted": format_file_size(len(entry_content)),
+                            "category": "binary",
+                            "status": "binary",
+                            "note": "Binary file - cannot extract text"
+                        }
+                    else:
+                        text, _ = extract_text_with_fallback(entry_content, max_length)
+                        
+                        if text.strip():
+                            file_info = {
+                                "name": entry_name,
+                                "size": len(entry_content),
+                                "size_formatted": format_file_size(len(entry_content)),
+                                "category": entry_category.value,
+                                "language": entry_language,
+                                "status": "extracted",
+                                "line_count": text.count('\n') + 1,
+                                "preview": text[:500] + ("..." if len(text) > 500 else "")
+                            }
+                            all_text_parts.append(f"\n{'='*60}\nFile: {entry_name}\n{'='*60}\n{text}")
+                        else:
+                            file_info = {
+                                "name": entry_name,
+                                "size": len(entry_content),
+                                "size_formatted": format_file_size(len(entry_content)),
+                                "category": entry_category.value,
+                                "status": "empty",
+                                "note": "File is empty"
+                            }
+                    
+                    extracted_files.append(file_info)
+                    
+                except Exception as e:
+                    extracted_files.append({
+                        "name": entry_name,
+                        "status": "error",
+                        "error": str(e)
+                    })
+        
+        # Combine all extracted text
+        full_text = f"ZIP Archive: {filename}\n"
+        full_text += f"Total entries: {len(zf.namelist())}, Processed: {entry_count}\n"
+        full_text += f"Extracted text files: {len(all_text_parts)}\n"
+        full_text += f"Total extracted size: {format_file_size(total_extracted)}\n\n"
+        
+        if all_text_parts:
+            full_text += "=".join(["="*30]) + "\n"
+            full_text += "EXTRACTED CONTENT\n"
+            full_text += "=".join(["="*30])
+            full_text += "".join(all_text_parts)
+        else:
+            full_text += "No text content could be extracted from this archive.\n\n"
+            full_text += "Files found:\n"
+            for f in extracted_files:
+                status = f.get('status', 'unknown')
+                full_text += f"  - {f['name']} ({f.get('size_formatted', '?')}) [{status}]\n"
+        
+        metadata.update({
+            "archive_type": "zip",
+            "entry_count": len(zf.namelist()),
+            "processed_count": entry_count,
+            "extracted_count": len(all_text_parts),
+            "total_extracted_size": total_extracted,
+            "files": extracted_files
+        })
+        
+        truncated = len(full_text) > max_length
+        if truncated:
+            full_text = full_text[:max_length] + "\n\n[... Content truncated ...]"
+        
+        return FileExtractionResult(
+            content=full_text,
+            files=extracted_files,
+            metadata=metadata,
+            truncated=truncated,
+            original_size=len(content)
+        )
+        
+    except zipfile.BadZipFile:
+        return FileExtractionResult(
+            content=f"[Error: {filename} is not a valid ZIP file or is corrupted]",
+            metadata=metadata,
+            original_size=len(content)
+        )
+    except Exception as e:
+        logger.error(f"ZIP extraction error: {e}")
+        return FileExtractionResult(
+            content=f"[Error extracting ZIP {filename}: {str(e)}]",
+            metadata={**metadata, "error": str(e)},
+            original_size=len(content)
+        )
+
+
+async def extract_tar_content(
+    content: bytes,
+    filename: str,
+    max_length: int,
+    metadata: Dict[str, Any]
+) -> FileExtractionResult:
+    """Extract and read text contents from TAR archives"""
+    import tarfile
+    
+    extracted_files = []
+    all_text_parts = []
+    
+    try:
+        with tarfile.open(fileobj=BytesIO(content)) as tf:
+            members = [m for m in tf.getmembers() if m.isfile()]
+            
+            if len(members) > MAX_ZIP_ENTRIES:
+                return FileExtractionResult(
+                    content=f"[TAR archive: {filename} - Too many entries ({len(members)})]",
+                    metadata=metadata,
+                    original_size=len(content)
+                )
+            
+            for member in members:
+                if member.name.startswith('./') or member.name.startswith('/'):
+                    member.name = member.name.lstrip('./')
+                
+                if member.name.startswith('__MACOSX') or member.name.startswith('.'):
+                    continue
+                
+                try:
+                    f = tf.extractfile(member)
+                    if f is None:
+                        continue
+                    
+                    entry_content = f.read()
+                    entry_category = get_file_category(member.name)
+                    
+                    if not is_binary_file(member.name, entry_content):
+                        text, _ = extract_text_with_fallback(entry_content, max_length)
+                        if text.strip():
+                            all_text_parts.append(f"\n{'='*60}\nFile: {member.name}\n{'='*60}\n{text}")
+                            extracted_files.append({
+                                "name": member.name,
+                                "size": member.size,
+                                "status": "extracted",
+                                "category": entry_category.value
+                            })
+                    else:
+                        extracted_files.append({
+                            "name": member.name,
+                            "size": member.size,
+                            "status": "binary",
+                            "category": entry_category.value
+                        })
+                        
+                except Exception as e:
+                    extracted_files.append({
+                        "name": member.name,
+                        "status": "error",
+                        "error": str(e)
+                    })
+        
+        full_text = f"TAR Archive: {filename}\n"
+        full_text += f"Entries: {len(members)}, Extracted: {len(all_text_parts)}\n\n"
+        
+        if all_text_parts:
+            full_text += "".join(all_text_parts)
+        
+        metadata.update({
+            "archive_type": "tar",
+            "entry_count": len(members),
+            "extracted_count": len(all_text_parts),
+            "files": extracted_files
+        })
+        
+        truncated = len(full_text) > max_length
+        if truncated:
+            full_text = full_text[:max_length] + "\n\n[... Content truncated ...]"
+        
+        return FileExtractionResult(
+            content=full_text,
+            files=extracted_files,
+            metadata=metadata,
+            truncated=truncated,
+            original_size=len(content)
+        )
+        
+    except Exception as e:
+        return FileExtractionResult(
+            content=f"[Error extracting TAR {filename}: {str(e)}]",
+            metadata={**metadata, "error": str(e)},
+            original_size=len(content)
+        )
+
+
+# =========================
+# PRODUCTION-GRADE AUTH SYSTEM
+# =========================
+PRIMARY_COOKIE = "HeloxAi_Session"
+FINGERPRINT_COOKIE = "HeloxAi_FP"
+BACKUP_COOKIE = "HeloxAi_ID"
+DEVICE_COOKIE = "HeloxAi_Dev"
+SESSION_TOKEN_COOKIE = "HeloxAi_Token"
+SESSION_EXPIRY_COOKIE = "HeloxAi_Expiry"
+
+# Cookie settings - production grade
+def get_cookie_settings(remember: bool = True) -> Dict:
+    """Get cookie settings based on remember preference"""
+    if remember:
+        return {
+            "max_age": SESSION_DURATION,
+            "httponly": True,
+            "secure": True,
+            "samesite": "none",
+            "path": "/"
+        }
+    else:
+        return {
+            "max_age": 24 * 60 * 60,  # Session only (24 hours)
+            "httponly": True,
+            "secure": True,
+            "samesite": "none",
+            "path": "/"
+        }
+
+
+def generate_device_fingerprint(request: Request) -> str:
+    """Generate a stable device fingerprint from request headers"""
+    fp_components = [
+        request.headers.get("user-agent", ""),
+        request.headers.get("accept-language", ""),
+        request.headers.get("accept-encoding", ""),
+        request.headers.get("sec-ch-ua-platform", ""),  # New API for platform
+        request.headers.get("sec-ch-ua-mobile", ""),    # Mobile detection
+        request.client.host if request.client else "",
+    ]
+    fp_string = "|".join(fp_components)
+    return hashlib.sha256(fp_string.encode()).hexdigest()[:32]
+
+
+def generate_session_token() -> str:
+    """Generate a secure session token"""
+    import secrets
+    return secrets.token_urlsafe(64)
+
+
+def set_session_cookies(
+    response: Response,
+    user_id: str,
+    fingerprint: str,
+    session_token: str,
+    remember: bool = True
+):
+    """Set all session cookies for maximum persistence"""
+    settings = get_cookie_settings(remember)
+    
+    # Calculate expiry timestamp
+    expiry = int(time.time()) + (SESSION_DURATION if remember else 24 * 60 * 60)
+    
+    response.set_cookie(key=PRIMARY_COOKIE, value=user_id, **settings)
+    response.set_cookie(key=FINGERPRINT_COOKIE, value=fingerprint, **settings)
+    response.set_cookie(key=BACKUP_COOKIE, value=user_id, **settings)
+    response.set_cookie(key=DEVICE_COOKIE, value=f"{fingerprint}_{user_id[:8]}", **settings)
+    response.set_cookie(key=SESSION_TOKEN_COOKIE, value=session_token, **settings)
+    response.set_cookie(key=SESSION_EXPIRY_COOKIE, value=str(expiry), **settings)
+
+
+def clear_session_cookies(response: Response):
+    """Clear all session cookies on logout"""
+    cookies_to_clear = [
+        PRIMARY_COOKIE, FINGERPRINT_COOKIE, BACKUP_COOKIE,
+        DEVICE_COOKIE, SESSION_TOKEN_COOKIE, SESSION_EXPIRY_COOKIE
+    ]
+    for cookie_name in cookies_to_clear:
+        response.delete_cookie(
+            key=cookie_name,
+            path="/",
+            secure=True,
+            samesite="none"
+        )
+
+
+def is_session_expired(expiry_str: str) -> bool:
+    """Check if session has expired"""
+    try:
+        expiry = int(expiry_str)
+        return time.time() > expiry
+    except (ValueError, TypeError):
+        return True
+
+
+def should_refresh_session(expiry_str: str) -> bool:
+    """Check if session should be refreshed"""
+    try:
+        expiry = int(expiry_str)
+        remaining = expiry - time.time()
+        return remaining < REFRESH_THRESHOLD
+    except (ValueError, TypeError):
+        return True
+
+
+async def validate_session_token(user_id: str, token: str) -> bool:
+    """Validate session token against stored value"""
+    try:
+        # Check cache first
+        if user_id in _session_cache:
+            cached = _session_cache[user_id]
+            if cached.get("token") == token:
+                return True
+        
+        # Query database
+        result = await _execute_supabase_with_retry(
+            supabase.table("user_sessions")
+            .select("token, expires_at")
+            .eq("user_id", user_id)
+            .eq("is_valid", True)
+            .order("created_at", desc=True)
+            .limit(1),
+            description="Validate Session Token"
+        )
+        
+        if result.data and result.data[0]["token"] == token:
+            # Update cache
+            _session_cache[user_id] = {
+                "token": token,
+                "expires_at": result.data[0].get("expires_at")
+            }
+            return True
+        
+        return False
+    except Exception as e:
+        logger.error(f"Session validation error: {e}")
+        return False
+
+
+async def create_user_session(
+    user_id: str,
+    fingerprint: str,
+    remember: bool = True
+) -> str:
+    """Create a new user session in the database"""
+    token = generate_session_token()
+    expires_at = datetime.now(timezone.utc) + timedelta(
+        seconds=SESSION_DURATION if remember else 24 * 60 * 60
+    )
+    
+    try:
+        # Invalidate old sessions for this device (optional - keeps sessions clean)
+        # await _execute_supabase_with_retry(
+        #     supabase.table("user_sessions")
+        #     .update({"is_valid": False})
+        #     .eq("user_id", user_id)
+        #     .eq("fingerprint", fingerprint),
+        #     description="Invalidate Old Sessions"
+        # )
+        
+        # Create new session
+        await _execute_supabase_with_retry(
+            supabase.table("user_sessions").insert({
+                "id": str(uuid.uuid4()),
+                "user_id": user_id,
+                "token": token,
+                "fingerprint": fingerprint,
+                "user_agent": "",  # Would need to pass from request
+                "ip_address": "",  # Would need to pass from request
+                "expires_at": expires_at.isoformat(),
+                "is_valid": True,
+                "created_at": datetime.now(timezone.utc).isoformat()
+            }),
+            description="Create User Session"
+        )
+        
+        # Update cache
+        _session_cache[user_id] = {
+            "token": token,
+            "expires_at": expires_at.isoformat()
+        }
+        
+        return token
+    except Exception as e:
+        logger.error(f"Failed to create session: {e}")
+        # Return a fallback token (less secure but doesn't break flow)
+        return token
+
+
+async def cleanup_session_cache():
+    """Periodically clean up expired session cache entries"""
+    global _session_cache_last_cleanup
+    now = time.time()
+    
+    if now - _session_cache_last_cleanup < _session_cache_ttl:
+        return
+    
+    _session_cache_last_cleanup = now
+    expired_keys = []
+    
+    for user_id, data in _session_cache.items():
+        expires_at = data.get("expires_at")
+        if expires_at:
+            try:
+                expiry_time = datetime.fromisoformat(expires_at).timestamp()
+                if now > expiry_time:
+                    expired_keys.append(user_id)
+            except:
+                expired_keys.append(user_id)
+    
+    for key in expired_keys:
+        del _session_cache[key]
+
+
 # =========================
 # BASE SYSTEM PROMPT - NO CREATOR MENTION
 # =========================
-BASE_SYSTEM_PROMPT = """You are HeloxAi, a helpful and capable AI assistant. Be accurate, friendly, and concise. Help users with whatever they ask."""
+BASE_SYSTEM_PROMPT = """You are HeloxAi, a helpful and capable AI assistant. Be accurate, friendly, and concise. Help users with whatever they ask. Your very advanced and can answer all questions about code, history, politics and more."""
 
 # =========================
 # CREATOR RESPONSE - ONLY USED WHEN ASKED
@@ -128,42 +1056,6 @@ def get_system_prompt(user_prompt: str) -> str:
     if is_creator_question(user_prompt):
         return BASE_SYSTEM_PROMPT + "\n\n" + CREATOR_RESPONSE_INSTRUCTION
     return BASE_SYSTEM_PROMPT
-
-
-# =========================
-# ADVANCED USER RECOGNITION SYSTEM
-# =========================
-PRIMARY_COOKIE = "HeloxAi_Session"
-FINGERPRINT_COOKIE = "HeloxAi_FP"
-BACKUP_COOKIE = "HeloxAi_ID"
-DEVICE_COOKIE = "HeloxAi_Dev"
-
-# Extended cookie settings for strong persistence
-COOKIE_SETTINGS = {
-    "max_age": 86400 * 365,  # 1 year
-    "httponly": True,
-    "secure": True,
-    "samesite": "none",
-    "path": "/"
-}
-
-def generate_device_fingerprint(request: Request) -> str:
-    """Generate a fingerprint from request headers"""
-    fp_components = [
-        request.headers.get("user-agent", ""),
-        request.headers.get("accept-language", ""),
-        request.headers.get("accept-encoding", ""),
-        request.client.host if request.client else "",
-    ]
-    fp_string = "|".join(fp_components)
-    return hashlib.sha256(fp_string.encode()).hexdigest()[:32]
-
-def set_all_cookies(response: Response, user_id: str, fingerprint: str):
-    """Set all cookies for maximum persistence"""
-    response.set_cookie(key=PRIMARY_COOKIE, value=user_id, **COOKIE_SETTINGS)
-    response.set_cookie(key=FINGERPRINT_COOKIE, value=fingerprint, **COOKIE_SETTINGS)
-    response.set_cookie(key=BACKUP_COOKIE, value=user_id, **COOKIE_SETTINGS)
-    response.set_cookie(key=DEVICE_COOKIE, value=f"{fingerprint}_{user_id[:8]}", **COOKIE_SETTINGS)
 
 
 # =========================
@@ -751,6 +1643,7 @@ class ChatRequest(BaseModel):
     prompt: str
     conversation_id: Optional[str] = None
     stream: bool = True
+    remember: bool = True  # New: persist session
 
 
 class RegenerateRequest(BaseModel):
@@ -768,6 +1661,13 @@ class IntentInfo(BaseModel):
     sub_intents: List[str]
     action_type: str
     tools: List[str]
+
+
+class FileAnalysisResponse(BaseModel):
+    content: str
+    metadata: Dict[str, Any]
+    files: List[Dict[str, Any]] = []
+    truncated: bool = False
 
 
 # =========================
@@ -800,31 +1700,75 @@ async def _execute_supabase_with_retry(query_builder, description="Supabase Oper
         raise last_exception
 
 
-async def get_user(request: Request, response: Response) -> Dict[str, Any]:
+async def get_user(
+    request: Request,
+    response: Response,
+    remember: Optional[bool] = None
+) -> Dict[str, Any]:
     """
-    Enhanced user recognition with multi-cookie strategy and device fingerprinting.
-    Priority: Primary Cookie > Backup Cookie > Device Fingerprint Match > Create New
+    Production-grade user recognition with:
+    - Session token validation
+    - Multi-cookie fallback strategy
+    - Device fingerprinting
+    - Session refresh logic
+    - Automatic session creation
     """
+    await cleanup_session_cache()
+    
+    # Get all cookie values
     primary_id = request.cookies.get(PRIMARY_COOKIE)
     backup_id = request.cookies.get(BACKUP_COOKIE)
     device_cookie = request.cookies.get(DEVICE_COOKIE)
     stored_fingerprint = request.cookies.get(FINGERPRINT_COOKIE)
+    session_token = request.cookies.get(SESSION_TOKEN_COOKIE)
+    session_expiry = request.cookies.get(SESSION_EXPIRY_COOKIE)
     
+    # Generate current fingerprint
     current_fingerprint = generate_device_fingerprint(request)
+    
+    # Determine remember preference
+    if remember is None:
+        # Default to True unless session is about to expire
+        remember = not is_session_expired(session_expiry or "0")
     
     user_obj = {
         "id": None,
         "email": None,
         "memory": "",
-        "fingerprint": current_fingerprint
+        "fingerprint": current_fingerprint,
+        "session_valid": False,
+        "session_token": None
     }
 
+    # Priority 1: Validate existing session token
     user_id = None
-    if primary_id:
-        user_id = primary_id
-    elif backup_id:
-        user_id = backup_id
+    if primary_id and session_token:
+        # Check if session is expired
+        if is_session_expired(session_expiry or "0"):
+            logger.info(f"Session expired for user {primary_id[:8]}...")
+            clear_session_cookies(response)
+        else:
+            # Validate token
+            token_valid = await validate_session_token(primary_id, session_token)
+            if token_valid:
+                user_id = primary_id
+                user_obj["session_valid"] = True
+                user_obj["session_token"] = session_token
+                
+                # Check if session should be refreshed
+                if should_refresh_session(session_expiry or "0"):
+                    logger.info(f"Refreshing session for user {user_id[:8]}...")
+                    new_token = await create_user_session(user_id, current_fingerprint, remember)
+                    user_obj["session_token"] = new_token
+            else:
+                logger.warning(f"Invalid session token for user {primary_id[:8]}...")
     
+    # Priority 2: Try backup cookie
+    if not user_id and backup_id:
+        user_id = backup_id
+        logger.info(f"User recovered via backup cookie: {user_id[:8]}...")
+    
+    # Priority 3: Try device fingerprint lookup
     if not user_id and device_cookie:
         try:
             fp_part = device_cookie.split("_")[0] if "_" in device_cookie else device_cookie
@@ -834,10 +1778,11 @@ async def get_user(request: Request, response: Response) -> Dict[str, Any]:
             )
             if fp_resp.data:
                 user_id = fp_resp.data[0]["id"]
-                logger.info(f"User recovered via fingerprint match: {user_id[:8]}...")
+                logger.info(f"User recovered via device fingerprint: {user_id[:8]}...")
         except Exception as e:
             logger.error(f"Fingerprint lookup failed: {e}")
 
+    # Priority 4: Try stored fingerprint
     if not user_id and stored_fingerprint:
         try:
             fp_resp = await _execute_supabase_with_retry(
@@ -850,6 +1795,7 @@ async def get_user(request: Request, response: Response) -> Dict[str, Any]:
         except Exception as e:
             logger.error(f"Stored fingerprint lookup failed: {e}")
 
+    # Load user data if we found an ID
     if user_id:
         try:
             user_resp = await _execute_supabase_with_retry(
@@ -865,8 +1811,12 @@ async def get_user(request: Request, response: Response) -> Dict[str, Any]:
                     "is_premium": u.get("is_premium", False),
                     "is_lifetime": u.get("is_lifetime", False),
                     "plan": u.get("plan", "free"),
-                    "fingerprint": current_fingerprint
+                    "fingerprint": current_fingerprint,
+                    "session_valid": user_obj.get("session_valid", False),
+                    "session_token": user_obj.get("session_token")
                 }
+                
+                # Update fingerprint if changed
                 if u.get("fingerprint") != current_fingerprint:
                     try:
                         await _execute_supabase_with_retry(
@@ -876,11 +1826,21 @@ async def get_user(request: Request, response: Response) -> Dict[str, Any]:
                     except Exception as e:
                         logger.warning(f"Failed to update fingerprint: {e}")
                 
-                set_all_cookies(response, user_id, current_fingerprint)
+                # Create or refresh session
+                if not user_obj["session_valid"]:
+                    new_token = await create_user_session(user_id, current_fingerprint, remember)
+                    user_obj["session_token"] = new_token
+                    user_obj["session_valid"] = True
+                
+                # Set all cookies
+                set_session_cookies(response, user_id, current_fingerprint, user_obj["session_token"], remember)
+                
+                logger.info(f"User authenticated: {user_id[:8]}... session_valid={user_obj['session_valid']}")
                 return user_obj
         except Exception as e:
             logger.error(f"User data fetch failed: {e}")
 
+    # Create new anonymous user
     new_id = str(uuid.uuid4())
     
     try:
@@ -892,7 +1852,7 @@ async def get_user(request: Request, response: Response) -> Dict[str, Any]:
         }
         
         await _execute_supabase_with_retry(
-            supabase.table("users").insert(new_user_data),
+            supabase.table("users").upsert(new_user_data, on_conflict="id"),
             description="Create Anonymous User"
         )
         
@@ -902,7 +1862,13 @@ async def get_user(request: Request, response: Response) -> Dict[str, Any]:
         logger.error(f"Failed to create anonymous user: {e}")
         user_obj["id"] = new_id
 
-    set_all_cookies(response, new_id, current_fingerprint)
+    # Create session for new user
+    new_token = await create_user_session(new_id, current_fingerprint, remember)
+    user_obj["session_token"] = new_token
+    user_obj["session_valid"] = True
+    
+    # Set all cookies
+    set_session_cookies(response, new_id, current_fingerprint, new_token, remember)
     
     logger.info(f"New user created: {new_id[:8]}... with fingerprint {current_fingerprint[:8]}...")
     
@@ -934,14 +1900,10 @@ async def fetch_logo_image() -> Optional[bytes]:
 
 
 async def add_watermark_to_video(video_url: str) -> str:
-    """
-    Add transparent watermark (logo.png) to bottom-right of video.
-    Returns the URL of the watermarked video.
-    """
+    """Add transparent watermark to video"""
     try:
         from moviepy.editor import VideoFileClip, ImageClip, CompositeVideoClip
         import tempfile
-        import os
         
         logo_bytes = await fetch_logo_image()
         if not logo_bytes:
@@ -967,20 +1929,16 @@ async def add_watermark_to_video(video_url: str) -> str:
             
             def process_video():
                 video = VideoFileClip(video_path)
-                
                 logo_width = int(video.w * 0.15)
                 logo = ImageClip(logo_path)
                 logo_aspect = logo.h / logo.w
                 logo_height = int(logo_width * logo_aspect)
                 logo = logo.resize((logo_width, logo_height))
-                
                 padding = 20
                 logo = logo.set_position((video.w - logo_width - padding, video.h - logo_height - padding))
                 logo = logo.set_duration(video.duration)
                 logo = logo.set_opacity(0.7)
-                
                 final = CompositeVideoClip([video, logo])
-                
                 final.write_videofile(
                     output_path,
                     codec="libx264",
@@ -989,11 +1947,9 @@ async def add_watermark_to_video(video_url: str) -> str:
                     remove_temp=True,
                     logger=None
                 )
-                
                 video.close()
                 logo.close()
                 final.close()
-                
                 return output_path
             
             output_path = await asyncio.to_thread(process_video)
@@ -1019,7 +1975,7 @@ async def add_watermark_to_video(video_url: str) -> str:
                 return f"data:video/mp4;base64,{b64_video}"
                 
     except ImportError:
-        logger.error("moviepy not installed. Install with: pip install moviepy")
+        logger.error("moviepy not installed")
         return video_url
     except Exception as e:
         logger.error(f"Watermark error: {e}")
@@ -1043,54 +1999,37 @@ async def save_message(user_id: str, conv_id: str, role: str, content: str):
     )
 
 
-async def universal_text_extractor(content: bytes, filename: str) -> str:
-    try:
-        if filename.endswith(".pdf"):
-            from PyPDF2 import PdfReader
-            reader = PdfReader(BytesIO(content))
-            return "\n".join([p.extract_text() or "" for p in reader.pages])
-
-        if filename.endswith((
-            ".py", ".js", ".ts", ".jsx", ".tsx",
-            ".java", ".cpp", ".c", ".cs",
-            ".go", ".rs", ".php", ".rb", ".swift"
-        )):
-            return content.decode("utf-8", errors="ignore")
-
-        if filename.endswith((".json", ".csv", ".xml", ".yaml", ".yml")):
-            return content.decode("utf-8", errors="ignore")
-
-        if filename.endswith((".txt", ".md", ".log")):
-            return content.decode("utf-8", errors="ignore")
-
-        if filename.endswith(".html"):
-            from bs4 import BeautifulSoup
-            soup = BeautifulSoup(content, "html.parser")
-            return soup.get_text()
-
-        return content.decode("utf-8", errors="ignore")
-
-    except Exception as e:
-        logger.error(f"[EXTRACT FAIL] {e}")
-        raise HTTPException(500, "Failed to extract file content")
-
-
-async def handle_text_analysis(text: str, stream: bool, user_prompt: str = ""):
-    text = text[:15000]
-
+async def handle_text_analysis(
+    text: str,
+    stream: bool,
+    user_prompt: str = "",
+    file_metadata: Dict[str, Any] = None
+):
+    text = text[:MAX_TEXT_LENGTH]
+    
+    # Build context from file metadata
+    file_context = ""
+    if file_metadata:
+        file_context = f"\n\nFile Information:\n"
+        for key, value in file_metadata.items():
+            if key != "files":  # Don't include full file list in prompt
+                file_context += f"- {key}: {value}\n"
+    
     messages = [
         {
             "role": "system",
-            "content": get_system_prompt(user_prompt) + """
+            "content": get_system_prompt(user_prompt) + f"""
 
-You also analyze files. Detect type automatically and respond accordingly:
+You analyze files and code. Detect the type automatically and respond accordingly:
 
-- Code → explain, find bugs, suggest improvements
-- PDF/docs → summarize + key insights
-- Data → extract patterns
-- Logs → find errors/issues
+- Code files → explain functionality, find bugs, suggest improvements, document
+- PDF/docs → summarize content, extract key insights
+- Data files → identify patterns, suggest analysis approaches
+- Logs → find errors, identify issues, suggest fixes
+- Archives → summarize extracted content from multiple files
 
-Be structured and clear."""
+Be structured and clear. Use code blocks with appropriate language tags.
+Preserve important technical details.{file_context}"""
         },
         {
             "role": "user",
@@ -1103,7 +2042,8 @@ Be structured and clear."""
             task = asyncio.current_task()
             try:
                 async for token in stream_groq_chat(messages):
-                    if task.cancelled(): break
+                    if task.cancelled():
+                        break
                     yield sse({"type": "token", "text": token})
                 yield sse({"type": "done"})
             except Exception as e:
@@ -1134,7 +2074,7 @@ async def handle_image_analysis(image_bytes: bytes, stream: bool, user_prompt: s
         "messages": [{
             "role": "user",
             "content": [
-                {"type": "text", "text": "Analyze this image."},
+                {"type": "text", "text": user_prompt or "Analyze this image in detail."},
                 {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}
             ]
         }]
@@ -1297,9 +2237,33 @@ async def preflight_handler(full_path: str):
 def robots():
     return PlainTextResponse("User-agent: *\nDisallow:")
 
+@app.get("/")
+async def root():
+    return {
+        "status": "running",
+        "service": "HeloxAi Backend",
+        "version": "2.0.0",
+        "features": {
+            "intent_detection": "advanced",
+            "user_recognition": "production-grade",
+            "file_handling": "comprehensive",
+            "session_management": "persistent"
+        }
+    }
+
+
 @app.post("/ask/universal")
 async def ask_universal(req: Request, res: Response):
     content_type = req.headers.get("content-type", "")
+    
+    # Get remember preference from request
+    remember = True
+    if "application/json" in content_type:
+        try:
+            body = await req.json()
+            remember = body.get("remember", True)
+        except Exception:
+            pass
 
     if "application/json" in content_type:
         try:
@@ -1315,13 +2279,17 @@ async def ask_universal(req: Request, res: Response):
             file: UploadFile = form["file"]
             content = await file.read()
 
-            logger.warning("File sent to /ask/universal instead of /analysis")
+            logger.info(f"File upload: {file.filename} ({format_file_size(len(content))})")
 
             if file.content_type and file.content_type.startswith("image/"):
                 return await handle_image_analysis(content, stream=True)
 
-            text = await universal_text_extractor(content, file.filename)
-            return await handle_text_analysis(text, stream=True)
+            result = await extract_file_content(content, file.filename)
+            return await handle_text_analysis(
+                result.content,
+                stream=True,
+                file_metadata=result.metadata
+            )
     else:
         raise HTTPException(415, f"Unsupported content-type: {content_type}")
 
@@ -1332,7 +2300,7 @@ async def ask_universal(req: Request, res: Response):
     if not prompt:
         raise HTTPException(400, "Prompt required")
 
-    user = await get_user(req, res)
+    user = await get_user(req, res, remember=remember)
 
     conversation_exists = False
     
@@ -1476,6 +2444,256 @@ async def ask_universal(req: Request, res: Response):
             reply = r.json()["choices"][0]["message"]["content"]
             await save_message(user["id"], conv_id, "assistant", reply)
             return {"reply": reply}
+
+
+# =========================
+# ENHANCED FILE ANALYSIS ENDPOINT
+# =========================
+@app.post("/analysis")
+async def analyze_file(
+    req: Request,
+    file: UploadFile = File(...),
+    stream: bool = True
+):
+    """
+    Enhanced file analysis endpoint supporting:
+    - All code files (.py, .js, .ts, .java, .cpp, .go, .rs, etc.)
+    - Archives (.zip, .tar, .gz, etc.) - extracts and analyzes contents
+    - Documents (.pdf, .txt, .md, .csv, etc.)
+    - Images (visual analysis)
+    - Large files (up to 50MB single, 100MB archives)
+    """
+    user = await get_user(req, Response())
+    
+    # Read file content
+    content = await file.read()
+    filename = file.filename or "unknown"
+    content_type = file.content_type or ""
+    file_size = len(content)
+    
+    logger.info(f"[FILE] Upload: {filename} ({format_file_size(file_size)}, type={content_type})")
+    
+    if not content:
+        raise HTTPException(400, "Empty file")
+    
+    # Check file size limits
+    category = get_file_category(filename)
+    max_allowed = MAX_ZIP_SIZE if category == FileCategory.ARCHIVE else MAX_FILE_SIZE
+    
+    if file_size > max_allowed:
+        raise HTTPException(
+            400, 
+            f"File too large ({format_file_size(file_size)}). Maximum: {format_file_size(max_allowed)}"
+        )
+    
+    # Handle images separately
+    if content_type.startswith("image/") or category == FileCategory.IMAGE:
+        return await handle_image_analysis(content, stream)
+
+    # Extract content from file
+    result = await extract_file_content(content, filename)
+    
+    logger.info(
+        f"[FILE] Extracted: {filename} -> "
+        f"category={result.metadata.get('category')}, "
+        f"truncated={result.truncated}, "
+        f"content_len={len(result.content)}"
+    )
+    
+    # Handle archives with multiple files
+    if category == FileCategory.ARCHIVE and result.files:
+        return await handle_archive_analysis(result, stream)
+    
+    # Handle single file analysis
+    return await handle_text_analysis(
+        result.content,
+        stream,
+        file_metadata=result.metadata
+    )
+
+
+async def handle_archive_analysis(
+    result: FileExtractionResult,
+    stream: bool
+):
+    """Special handling for archive files with multiple extracted files"""
+    
+    # Build a comprehensive analysis prompt
+    files_summary = []
+    code_files = []
+    text_files = []
+    
+    for f in result.files:
+        status = f.get("status", "unknown")
+        if status == "extracted":
+            files_summary.append(f"- {f['name']} ({f.get('size_formatted', '?')}) - {f.get('category', '?')}")
+            if f.get("category") == "code":
+                code_files.append(f)
+            else:
+                text_files.append(f)
+        elif status in ("binary", "media"):
+            files_summary.append(f"- {f['name']} ({f.get('size_formatted', '?')}) - {status}")
+        elif status == "skipped":
+            files_summary.append(f"- {f['name']} - skipped: {f.get('reason', '?')}")
+        else:
+            files_summary.append(f"- {f['name']} - {status}")
+    
+    summary_intro = f"""Archive Analysis: {result.metadata.get('filename', 'unknown')}
+Total entries: {result.metadata.get('entry_count', 0)}
+Processed: {result.metadata.get('processed_count', 0)}
+Text files extracted: {result.metadata.get('extracted_count', 0)}
+
+Files found:
+{chr(10).join(files_summary)}
+
+"""
+
+    full_content = summary_intro + result.content
+    
+    messages = [
+        {
+            "role": "system",
+            "content": get_system_prompt("") + """
+
+You are analyzing an archive file (ZIP, TAR, etc.). The archive contents have been extracted and provided below.
+
+Your task:
+1. Provide an overview of what this archive contains
+2. Identify the main purpose/type of the project or files
+3. If it's a code project, describe the structure, technologies used, and main functionality
+4. Highlight any important files or configurations
+5. Note any potential issues, missing files, or areas of concern
+6. If appropriate, provide a summary of the code functionality
+
+Be organized and clear in your analysis."""
+        },
+        {
+            "role": "user",
+            "content": full_content
+        }
+    ]
+
+    if stream:
+        async def gen():
+            task = asyncio.current_task()
+            try:
+                # First, send metadata
+                yield sse({
+                    "type": "file_metadata",
+                    "metadata": result.metadata,
+                    "files": result.files
+                })
+                
+                async for token in stream_groq_chat(messages):
+                    if task.cancelled():
+                        break
+                    yield sse({"type": "token", "text": token})
+                yield sse({"type": "done"})
+            except Exception as e:
+                logger.error(f"Archive analysis stream error: {e}")
+                yield sse({"type": "error", "message": "Analysis failed."})
+
+        return StreamingResponse(gen(), media_type="text/event-stream")
+
+    async with httpx.AsyncClient() as client:
+        r = await client.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers=get_groq_headers(),
+            json={"model": "llama-3.3-70b-versatile", "messages": messages}
+        )
+        r.raise_for_status()
+
+    return {
+        "analysis": r.json()["choices"][0]["message"]["content"],
+        "metadata": result.metadata,
+        "files": result.files
+    }
+
+
+@app.get("/file-types")
+async def get_supported_file_types():
+    """Return list of supported file types"""
+    return {
+        "code": sorted(list(CODE_EXTENSIONS)),
+        "document": sorted(list(DOCUMENT_EXTENSIONS)),
+        "data": sorted(list(DATA_EXTENSIONS)),
+        "image": sorted(list(IMAGE_EXTENSIONS)),
+        "audio": sorted(list(AUDIO_EXTENSIONS)),
+        "video": sorted(list(VIDEO_EXTENSIONS)),
+        "archive": sorted(list(ARCHIVE_EXTENSIONS)),
+        "limits": {
+            "max_file_size": format_file_size(MAX_FILE_SIZE),
+            "max_zip_size": format_file_size(MAX_ZIP_SIZE),
+            "max_zip_entries": MAX_ZIP_ENTRIES,
+            "max_extracted_size": format_file_size(MAX_EXTRACTED_SIZE),
+            "max_text_length": format_file_size(MAX_TEXT_LENGTH)
+        }
+    }
+
+
+# =========================
+# SESSION MANAGEMENT ENDPOINTS
+# =========================
+@app.post("/session/validate")
+async def validate_session(req: Request, res: Response):
+    """Validate current session and return user info"""
+    user = await get_user(req, res)
+    return {
+        "valid": user.get("session_valid", False),
+        "user_id": user["id"],
+        "fingerprint": user.get("fingerprint", "")[:8] + "...",
+        "is_authenticated": bool(user.get("email") and not user["email"].startswith("anon+"))
+    }
+
+
+@app.post("/session/refresh")
+async def refresh_session(req: Request, res: Response):
+    """Manually refresh the current session"""
+    body = await req.json() if req.headers.get("content-type") == "application/json" else {}
+    remember = body.get("remember", True)
+    
+    user = await get_user(req, res, remember=remember)
+    
+    # Force session refresh
+    new_token = await create_user_session(
+        user["id"],
+        user.get("fingerprint", ""),
+        remember
+    )
+    
+    set_session_cookies(res, user["id"], user.get("fingerprint", ""), new_token, remember)
+    
+    return {
+        "status": "refreshed",
+        "user_id": user["id"],
+        "expires_in": SESSION_DURATION if remember else 24 * 60 * 60
+    }
+
+
+@app.post("/session/logout")
+async def logout(req: Request, res: Response):
+    """Logout and clear all session data"""
+    user_id = req.cookies.get(PRIMARY_COOKIE)
+    
+    if user_id:
+        try:
+            # Invalidate all sessions for this user
+            await _execute_supabase_with_retry(
+                supabase.table("user_sessions")
+                .update({"is_valid": False})
+                .eq("user_id", user_id),
+                description="Invalidate User Sessions"
+            )
+        except Exception as e:
+            logger.error(f"Failed to invalidate sessions: {e}")
+        
+        # Clear cache
+        if user_id in _session_cache:
+            del _session_cache[user_id]
+    
+    clear_session_cookies(res)
+    
+    return {"status": "logged_out"}
 
 
 # =========================
@@ -1854,7 +3072,6 @@ async def regenerate(req: Request, res: Response):
         try:
             history = await get_history(conv_id)
             
-            # Use the last user prompt to check for creator questions
             last_prompt = last_user_msg.get("content", "")
             base_system = get_system_prompt(last_prompt)
             user_memory = user.get("memory", "")
@@ -1909,7 +3126,9 @@ async def get_user_info(req: Request, res: Response):
     return {
         "user_id": user["id"],
         "fingerprint": user.get("fingerprint", "")[:8] + "...",
-        "is_identified": True
+        "is_identified": True,
+        "session_valid": user.get("session_valid", False),
+        "is_authenticated": bool(user.get("email") and not user["email"].startswith("anon+"))
     }
 
 
@@ -1939,7 +3158,8 @@ async def merge_user(req: Request, res: Response):
         )
         
         fingerprint = user.get("fingerprint", "")
-        set_all_cookies(res, target_id, fingerprint)
+        session_token = await create_user_session(target_id, fingerprint, True)
+        set_session_cookies(res, target_id, fingerprint, session_token, True)
         
         return {"status": "merged", "new_user_id": target_id}
     
@@ -2002,31 +3222,6 @@ async def text_to_speech(req: Request):
 
         return Response(content=r.content, media_type="audio/mpeg")
 
-@app.post("/analysis")
-async def analyze_file(
-        req: Request,
-        file: UploadFile = File(...),
-        stream: bool = True
-):
-    user = await get_user(req, Response())
-
-    content = await file.read()
-    filename = file.filename.lower()
-    content_type = file.content_type or ""
-
-    if not content:
-        raise HTTPException(400, "Empty file")
-
-    if len(content) > 15_000_000:
-        raise HTTPException(400, "File too large (15MB max)")
-
-    if content_type.startswith("image/"):
-        return await handle_image_analysis(content, stream)
-
-    text = await universal_text_extractor(content, filename)
-    return await handle_text_analysis(text, stream)
-
-
 @app.get("/tts/voices")
 async def get_voices():
     return {
@@ -2080,7 +3275,6 @@ async def handle_image_generation(
         if stream:
             async def gen():
                 yield sse({"type": "error", "message": msg})
-
             return StreamingResponse(gen(), media_type="text/event-stream")
         return {"error": msg}
 
@@ -2217,9 +3411,7 @@ async def handle_video_generation(prompt, user: Dict[str, Any], conv_id: str, st
                         headers=headers,
                         json={
                             "version": "your-model-version-id",
-                            "input": {
-                                "prompt": prompt
-                            }
+                            "input": {"prompt": prompt}
                         }
                     )
                     create_res.raise_for_status()
@@ -2302,16 +3494,57 @@ async def handle_video_generation(prompt, user: Dict[str, Any], conv_id: str, st
 
 
 # =========================
-# ROOT
+# DATABASE MIGRATION HELPER
 # =========================
-@app.get("/")
-async def root():
-    return {
-        "status": "running",
-        "service": "HeloxAi Backend",
-        "intent_detection": "advanced",
-        "user_recognition": "multi-cookie-fingerprint"
-    }
+@app.get("/setup/sessions-table")
+async def setup_sessions_table():
+    """
+    SQL to create the user_sessions table.
+    Run this in your Supabase SQL editor.
+    """
+    sql = """
+    -- Create user_sessions table for production-grade session management
+    CREATE TABLE IF NOT EXISTS user_sessions (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        token TEXT NOT NULL,
+        fingerprint TEXT,
+        user_agent TEXT,
+        ip_address TEXT,
+        expires_at TIMESTAMPTZ NOT NULL,
+        is_valid BOOLEAN DEFAULT TRUE,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    -- Index for fast token lookups
+    CREATE INDEX IF NOT EXISTS idx_user_sessions_token ON user_sessions(user_id, token);
+    CREATE INDEX IF NOT EXISTS idx_user_sessions_valid ON user_sessions(user_id, is_valid) WHERE is_valid = TRUE;
+    CREATE INDEX IF NOT EXISTS idx_user_sessions_expiry ON user_sessions(expires_at);
+
+    -- Enable RLS
+    ALTER TABLE user_sessions ENABLE ROW LEVEL SECURITY;
+
+    -- Policy: Users can only see their own sessions
+    CREATE POLICY "Users can view own sessions" ON user_sessions
+        FOR SELECT USING (user_id = auth.uid());
+
+    -- Policy: Users can insert their own sessions
+    CREATE POLICY "Users can insert own sessions" ON user_sessions
+        FOR INSERT WITH CHECK (user_id = auth.uid());
+
+    -- Policy: Users can update their own sessions
+    CREATE POLICY "Users can update own sessions" ON user_sessions
+        FOR UPDATE USING (user_id = auth.uid());
+
+    -- Clean up expired sessions automatically (run as scheduled job)
+    -- CREATE OR REPLACE FUNCTION clean_expired_sessions()
+    -- RETURNS void AS $$     -- BEGIN
+    --     UPDATE user_sessions SET is_valid = FALSE WHERE expires_at < NOW() AND is_valid = TRUE;
+    -- END;
+    -- $$ LANGUAGE plpgsql;
+    """
+    return {"sql": sql, "note": "Run this SQL in your Supabase SQL editor"}
 
 
 if __name__ == "__main__":
