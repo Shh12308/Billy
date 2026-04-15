@@ -2080,7 +2080,8 @@ async def handle_image_analysis(image_bytes: bytes, stream: bool, user_prompt: s
         }]
     }
 
-    async with httpx.AsyncClient() as client:
+    # FIXED: Added timeout=60.0 to prevent ReadTimeout errors
+    async with httpx.AsyncClient(timeout=60.0) as client:
         r = await client.post(
             "https://api.openai.com/v1/chat/completions",
             headers=get_openai_headers(),
