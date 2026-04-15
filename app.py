@@ -3258,239 +3258,91 @@ async def speech_to_text(file: UploadFile = File(...)):
 # =========================
 # MEDIA GENERATION HANDLERS
 # =========================
-async def handle_image_generation(
-        prompt: str,
-        user: Dict[str, Any],
-        conv_id: str,
-        stream: bool,
-        style: str = None,
-        size: str = "1024x1024",
-        num_images: int = 1
-):
+async def handle_image_generation(prompt: str, user: Dict[str, Any], conv_id: str, stream: bool, style: str = None, size: str = "1024x1024", num_images: int = 1):
     MAX_PROMPT_LEN = 3000
-    MAX_IMAGES = 4
-
     if not OPENAI_API_KEY:
         msg = "No API Key"
-        if stream:
-            async def gen():
-                yield sse({"type": "error", "message": msg})
-            return StreamingResponse(gen(), media_type="text/event-stream")
+        if stream: return StreamingResponse((sse({"type": "error", "message": msg}) for _ in range(1)), media_type="text/event-stream")
         return {"error": msg}
-
-    if not prompt or not prompt.strip():
-        raise HTTPException(400, "Prompt is required")
-
-    original_len = len(prompt)
-    if original_len > MAX_PROMPT_LEN:
-        logger.warning(f"[IMG] Prompt trimmed from {original_len} → {MAX_PROMPT_LEN}")
-        prompt = prompt[:MAX_PROMPT_LEN]
-
-    num_images = max(1, min(num_images, MAX_IMAGES))
-
-    STYLES = {
-        "realistic": "ultra realistic, 4k, highly detailed",
-        "cartoon": "cartoon style, vibrant colors",
-        "anime": "anime style, studio ghibli inspired",
-        "cinematic": "cinematic lighting, dramatic shadows",
-        "cyberpunk": "cyberpunk, neon futuristic, high contrast",
-    }
-
-    if style in STYLES:
-        prompt = f"{prompt}, {STYLES[style]}"
-
-    start_time = time.time()
-    logger.info(f"[IMG] Generating image | user={user['id']} | len={len(prompt)}")
-
+    if not prompt or not prompt.strip(): raise HTTPException(400, "Prompt is required")
+    if len(prompt) > MAX_PROMPT_LEN: prompt = prompt[:MAX_PROMPT_LEN]
+    
+    # FIX: DALL-E 3 only supports n=1
+    num_images = 1
+    
+    STYLES = {"realistic": "ultra realistic, 4k, highly detailed", "cartoon": "cartoon style, vibrant colors", "anime": "anime style", "cinematic": "cinematic lighting", "cyberpunk": "cyberpunk, neon"}
+    if style in STYLES: prompt = f"{prompt}, {STYLES[style]}"
+    
     try:
         async with httpx.AsyncClient(timeout=60) as client:
-            r = await client.post(
-                "https://api.openai.com/v1/images/generations",
-                headers=get_openai_headers(),
-                json={
-                    "model": "dall-e-3",
-                    "prompt": prompt,
-                    "size": size,
-                    "n": num_images
-                }
-            )
-
-            if r.status_code != 200:
-                logger.error(f"[IMG ERROR] {r.status_code}: {r.text}")
-
+            r = await client.post("https://api.openai.com/v1/images/generations", headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}, json={"model": "dall-e-3", "prompt": prompt, "size": size, "n": num_images})
             r.raise_for_status()
             data = r.json()
-
-        latency = int((time.time() - start_time) * 1000)
-        logger.info(f"[IMG] Image latency: {latency}ms")
-
-    except httpx.HTTPStatusError as e:
-        logger.error(f"[IMG FAIL] HTTP error: {str(e)}")
-
-        if stream:
-            async def gen():
-                yield sse({
-                    "type": "error",
-                    "message": "Image generation failed",
-                    "details": str(e)
-                })
-
-            return StreamingResponse(gen(), media_type="text/event-stream")
-
-        return {"error": "Image generation failed", "details": str(e)}
-
     except Exception as e:
-        logger.error(f"[IMG FAIL] Unexpected error: {str(e)}")
-
-        if stream:
-            async def gen():
-                yield sse({
-                    "type": "error",
-                    "message": "Unexpected error",
-                    "details": str(e)
-                })
-
-            return StreamingResponse(gen(), media_type="text/event-stream")
-
-        return {"error": "Unexpected error", "details": str(e)}
-
+        if stream: return StreamingResponse((sse({"type": "error", "message": str(e)}) for _ in range(1)), media_type="text/event-stream")
+        return {"error": str(e)}
+    
     images = []
-
     for item in data.get("data", []):
-        try:
-            b64 = item.get("b64_json")
-            url = item.get("url")
-
-            if url:
-                images.append({"url": url})
-            elif b64:
-                img_bytes = base64.b64decode(b64)
+        b64 = item.get("b64_json")
+        url = item.get("url")
+        if url: images.append({"url": url})
+        elif b64:
+            img_bytes = base64.b64decode(b64)
+            try:
                 fname = f"{uuid.uuid4().hex}.png"
                 path = f"public/{fname}"
-
-                try:
-                    await asyncio.to_thread(
-                        lambda: supabase.storage.from_("ai-images").upload(
-                            path, img_bytes, {"content-type": "image/png"}
-                        )
-                    )
-                    url = f"{SUPABASE_URL}/storage/v1/object/public/ai-images/{path}"
-                except Exception as storage_err:
-                    logger.warning(f"[IMG STORAGE FAIL] {storage_err}")
-                    url = "data:image/png;base64," + b64
-                
+                await asyncio.to_thread(lambda: supabase.storage.from_("ai-images").upload(path, img_bytes, {"content-type": "image/png"}))
+                url = f"{SUPABASE_URL}/storage/v1/object/public/ai-images/{path}"
                 images.append({"url": url})
-
-        except Exception as decode_err:
-            logger.error(f"[IMG DECODE FAIL] {decode_err}")
-
-    if stream:
-        async def gen():
-            yield sse({"type": "images", "images": images})
-            yield sse({"type": "done"})
-
-        return StreamingResponse(gen(), media_type="text/event-stream")
-
+            except: images.append({"url": f"data:image/png;base64,{b64}"})
+    
+    if stream: return StreamingResponse((sse({"type": "images", "images": images}) for _ in [None]) + (sse({"type": "done"}) for _ in [None]), media_type="text/event-stream")
     return {"images": images}
 
-
-async def handle_video_generation(prompt, user: Dict[str, Any], conv_id: str, stream):
-    headers = {
-        "Authorization": f"Token {REPLICATE_API_TOKEN}",
-        "Content-Type": "application/json",
-    }
-
-    if stream:
-        async def gen():
-            try:
-                yield sse({"type": "status", "message": "Starting video generation..."})
-                
-                async with httpx.AsyncClient(timeout=120) as client:
-                    create_res = await client.post(
-                        "https://api.replicate.com/v1/predictions",
-                        headers=headers,
-                        json={
-                            "version": "your-model-version-id",
-                            "input": {"prompt": prompt}
-                        }
-                    )
-                    create_res.raise_for_status()
-                    prediction = create_res.json()
-                    prediction_id = prediction["id"]
-                    
-                    yield sse({"type": "status", "message": "Processing video..."})
-
-                    max_polls = 120
-                    poll_count = 0
-                    
-                    while poll_count < max_polls:
-                        poll_res = await client.get(
-                            f"https://api.replicate.com/v1/predictions/{prediction_id}",
-                            headers=headers
-                        )
-                        poll_res.raise_for_status()
-                        data = poll_res.json()
-
-                        if data["status"] == "succeeded":
-                            raw_video_url = data["output"]
-                            
-                            yield sse({"type": "status", "message": "Adding watermark..."})
-                            watermarked_url = await add_watermark_to_video(raw_video_url)
-                            
-                            yield sse({"type": "video", "url": watermarked_url})
-                            yield sse({"type": "done"})
-                            return
-                            
-                        elif data["status"] == "failed":
-                            error_msg = data.get("error", "Unknown error")
-                            yield sse({"type": "error", "message": f"Video generation failed: {error_msg}"})
-                            return
-                        
-                        else:
-                            poll_count += 1
-                            await asyncio.sleep(2)
-
-                    yield sse({"type": "error", "message": "Video generation timed out"})
-                    
-            except httpx.HTTPStatusError as e:
-                logger.error(f"Video gen HTTP error: {e}")
-                yield sse({"type": "error", "message": f"API error: {e.response.status_code}"})
-            except Exception as e:
-                logger.error(f"Video gen error: {e}")
-                yield sse({"type": "error", "message": str(e)})
-
-        return StreamingResponse(gen(), media_type="text/event-stream")
+async def handle_video_generation(prompt: str, user: Dict[str, Any], conv_id: str, stream: bool):
+    # FIX: Use a valid model version hash for Replicate
+    # Using Stable Video Diffusion (SVD) version as a placeholder for functional video generation
+    MODEL_VERSION = "3f0457e4619daac51203dedb472816fd4af51f3149fa7a9e0b5ffcf1b8172438"
     
-    else:
-        async with httpx.AsyncClient(timeout=300) as client:
-            create_res = await client.post(
-                "https://api.replicate.com/v1/predictions",
-                headers=headers,
-                json={
-                    "version": "your-model-version-id",
-                    "input": {"prompt": prompt}
-                }
-            )
-            create_res.raise_for_status()
-            prediction = create_res.json()
-            prediction_id = prediction["id"]
+    headers = {"Authorization": f"Token {REPLICATE_API_TOKEN}", "Content-Type": "application/json"}
+    
+    async def gen():
+        try:
+            yield sse({"type": "status", "message": "Starting video generation..."})
+            async with httpx.AsyncClient(timeout=300) as client:
+                # Create prediction
+                r = await client.post("https://api.replicate.com/v1/predictions", headers=headers, json={"version": MODEL_VERSION, "input": {"prompt": prompt}})
+                r.raise_for_status()
+                prediction = r.json()
+                prediction_id = prediction["id"]
+                
+                yield sse({"type": "status", "message": "Processing video..."})
+                poll_count = 0
+                while poll_count < 120:
+                    r = await client.get(f"https://api.replicate.com/v1/predictions/{prediction_id}", headers=headers)
+                    r.raise_for_status()
+                    data = r.json()
+                    if data["status"] == "succeeded":
+                        raw_video_url = data["output"]
+                        yield sse({"type": "status", "message": "Adding watermark..."})
+                        watermarked_url = await add_watermark_to_video(raw_video_url)
+                        yield sse({"type": "video", "url": watermarked_url})
+                        yield sse({"type": "done"})
+                        return
+                    elif data["status"] == "failed":
+                        yield sse({"type": "error", "message": f"Video generation failed: {data.get('error')}"})
+                        return
+                    else:
+                        poll_count += 1
+                        await asyncio.sleep(2)
+                yield sse({"type": "error", "message": "Video generation timed out"})
+        except Exception as e:
+            logger.error(f"Video gen error: {e}")
+            yield sse({"type": "error", "message": str(e)})
+    
+    return StreamingResponse(gen(), media_type="text/event-stream")
 
-            while True:
-                poll_res = await client.get(
-                    f"https://api.replicate.com/v1/predictions/{prediction_id}",
-                    headers=headers
-                )
-                poll_res.raise_for_status()
-                data = poll_res.json()
-
-                if data["status"] == "succeeded":
-                    raw_video_url = data["output"]
-                    watermarked_url = await add_watermark_to_video(raw_video_url)
-                    return {"video_url": watermarked_url}
-                elif data["status"] == "failed":
-                    raise HTTPException(500, f"Video generation failed: {data.get('error')}")
-
-                await asyncio.sleep(2)
 
 
 # =========================
