@@ -38,7 +38,7 @@ logger = logging.getLogger("HeloxAi")
 
 # Environment Variables
 SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY") # FIXED TYPO
+SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")  # CRITICAL: Backend Admin Key
 GROQ_API_KEY = os.getenv("GROQ_API_KEY").strip() if os.getenv("GROQ_API_KEY") else None
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -881,7 +881,7 @@ def clear_session_cookies(response: Response):
 def is_session_expired(expiry_str: str) -> bool:
     """Check if session has expired"""
     try:
-        expiry = int(expiry_usage)
+        expiry = int(expiry_str)
         return time.time() > expiry
     except (ValueError, TypeError):
         return True
@@ -1017,7 +1017,7 @@ async def check_daily_limits(user_id: str, intent_type: str) -> Dict[str, Any]:
 
     user = user_res.data
     is_premium = user.get("is_premium", False)
-    is_lifetime = user_res.get("is_lifetime", False)
+    is_lifetime = user.get("is_lifetime", False)
     
     # If premium or lifetime, allow all
     if is_premium or is_lifetime:
@@ -1069,7 +1069,7 @@ async def check_daily_limits(user_id: str, intent_type: str) -> Dict[str, Any]:
             }
         else:
             # Increment count
-            await _execute_supabase-en-supabase_with_retry(
+            await _execute_supabase_with_retry(
                 supabase.table("daily_usage")
                 .insert({
                     "id": str(uuid.uuid4()),
@@ -1542,7 +1542,7 @@ class AdvancedIntentDetector:
             IntentCategory.WEB_DEVELOPMENT: "web",
             IntentCategory.API_DEVELOPMENT: "api",
             IntentCategory.DATABASE: "database",
-            IntentCategory.TRANSLATION: "fixed", # Fixed from "translation" to "translation" based on prompt intent
+            IntentCategory.TRANSLATION: "translation", 
             IntentCategory.SUMMARIZATION: "summary",
             IntentCategory.EXPLANATION: "explanation",
             IntentCategory.CREATIVE_WRITING: "creative",
@@ -1569,6 +1569,21 @@ class AdvancedIntentDetector:
             IntentCategory.DATA_VISUALIZATION: ["code_exec", "llm"],
             IntentCategory.WEB_DEVELOPMENT: ["web", "llm"],
         }
+        return tool_map.get(intent.intent, ["llm"])
+    
+    def get_code_system_prompt(self, prompt: str) -> str:
+        # Placeholder for code specific prompt logic if needed
+        return get_system_prompt(prompt)
+
+# Singleton instance
+_detector = None
+def get_detector() -> AdvancedIntentDetector:
+    global _detector
+    if _detector is None:
+        _detector = AdvancedIntentDetector()
+    return _detector
+
+
 async def setup_sessions_table():
     """
     SQL to create the user_sessions table.
@@ -1619,7 +1634,7 @@ async def setup_sessions_table():
 # DATABASE SCHEMA HELPERS
 # =========================
 @app.get("/setup/sessions-table")
-async def setup_sessions_table():
+async def setup_sessions_table_endpoint():
     """
     SQL to create the user_sessions table.
     Run this in your Supabase SQL editor.
@@ -1703,7 +1718,7 @@ def is_document_request(prompt: str) -> bool:
 
 
 def is_data_request(prompt: str) -> bool:
-    return get_detect_action_type(prompt) == "data"
+    return get_detector().get_action_type(prompt) == "data"
 
 
 # =========================
@@ -1886,7 +1901,7 @@ async def get_user(
     # Priority 4: Try stored fingerprint
     if not user_id and stored_fingerprint:
         try:
-            fp_resp = await _execute_supabase.lookup_by_fingerprint_with_retry(
+            fp_resp = await _execute_supabase_with_retry(
                 supabase.table("users").select("id").eq("fingerprint", stored_fingerprint).limit(1),
                 description="User Lookup by Stored Fingerprint"
             )
@@ -1910,7 +1925,8 @@ async def get_user(
                 user_obj["email"] = u.get("email")
                 user_obj["plan"] = u.get("plan", "free")
                 user_obj["is_premium"] = bool(u.get("is_premium", False))
-                user_obj["is_lifetime"] = bool(u.get("is_lifetime", False)
+                # FIXED SYNTAX ERROR HERE: Added missing closing parenthesis
+                user_obj["is_lifetime"] = bool(u.get("is_lifetime", False))
                 user_obj["memory"] = u.get("memory", "")
                 
                 # Check if plan is lifetime/premium (backend enforced unlimited)
@@ -2173,8 +2189,8 @@ Preserve important technical details.{file_context}"""
                     yield sse({"type": "token", "text": token})
                 yield sse({"type": "done"})
             except Exception as e:
-            logger.error(f"Text analysis stream error: {e}")
-            yield sse({"type": "error", "message": "Analysis failed."})
+                logger.error(f"Text analysis stream error: {e}")
+                yield sse({"type": "error", "message": "Analysis failed."})
 
         return StreamingResponse(gen(), media_type="text/event-stream")
 
@@ -2189,7 +2205,7 @@ Preserve important technical details.{file_context}"""
         )
         r.raise_for_status()
 
-    return {"analysis": r.json()["choices"][0]["message"]["content"]
+    return {"analysis": r.json()["choices"][0]["message"]["content"]}
 
 
 async def handle_image_analysis(image_bytes: bytes, stream: bool, user_prompt: str = ""):
@@ -2224,8 +2240,8 @@ async def handle_image_analysis(image_bytes: bytes, stream: bool, user_prompt: s
                 yield sse({"type": "text", "text": result})
                 yield sse({"type": "done"})
             except Exception as e:
-            logger.error(f"Image analysis stream error: {e}")
-            yield sse({"type": "error", "message": "Analysis failed."})
+                logger.error(f"Image analysis stream error: {e}")
+                yield sse({"type": "error", "message": "Analysis failed."})
 
         return StreamingResponse(gen(), media_type="text/event-stream")
 
@@ -2356,69 +2372,6 @@ async def handle_code_assistant(prompt: str, user: Dict[str, Any], conv_id: str,
     return {"reply": reply}
 
 
-async def handle_video_generation(prompt: str, user: Dict[str, Any], conv_id: str, stream: bool):
-    # Logic for backend limits (Free users: 2 videos/day)
-    # Fetch User Plan
-    user_plan = "free"
-    
-    if user and (user.get("is_premium") or user.get("is_lifetime")):
-        user_plan = "premium"
-
-    # Check Limits
-    limits = await check_daily_limits(user["id"], "video_generation")
-    
-    if not limits["allowed"]:
-        raise HTTPException(429, limits.get("reason", "Daily limit reached.")
-
-    # FIX: Use a valid Replicate model version hash
-    MODEL_VERSION = "3f0457e4619daac51203dedb472816fd4af51f3149fa7a9e0b5ffcf1b8172438243838"
-
-    headers = {"Authorization": f"Token {REPLICATE_API_TOKEN}", "Content-Type": "application/json"}
-    
-    async def gen():
-        try:
-            yield sse({"type": "status", "message": "Starting video generation..."})
-            
-            async with httpx.AsyncClient(timeout=300) as client:
-                # Create prediction
-                r = await client.post("https://api.replicate.com/v1/predictions", headers=headers, json={"version": MODEL_VERSION, "input": {"prompt": prompt}})
-                r.raise_for_status()
-                prediction = r.json()
-                prediction_id = prediction["id"]
-                
-                yield sse({"type": "status", "message": "Processing video..."})
-                
-                poll_count = 0
-                while poll_count < 120:
-                    r = await client.get(f"https://api.replicate.com/v1/predictions/{prediction_id}", headers=headers)
-                    r.raise_for_status()
-                    data = r.json()
-                    
-                    if data["status"] == "succeeded":
-                        raw_video_url = data["output"]
-                        yield sse({"type": "status", "message": "Adding watermark..."})
-                        watermarked_url = await add_watermark_to_video(raw_video_url)
-                        yield sse({"type": "video", "url": watermarked_url})
-                        yield sse({"type": "done"})
-                        return
-                    elif data["status"] == "failed":
-                        yield sse({
-    "type": "error",
-    "message": f"Video generation failed: {data.get('error')}"
-})
-                        return
-                    else:
-                        poll_count += 1
-                        await asyncio.sleep(2)
-                
-                yield sse({"type": "error", "message": "Video generation timed out"})
-        except Exception as e:
-            logger.error(f"Video gen error: {e}")
-            yield sse({"type": "error", "message": str(e)})
-    
-    return StreamingResponse(gen(), media_type="text/event-stream")
-
-
 @app.get("/tts/voices")
 async def get_voices():
     """Return list of voices"""
@@ -2431,8 +2384,6 @@ async def get_voices():
             {"id": "onyx", "name": "Onyx"},
             {"id": "nova", "name": "Nova"},
             {"id": "shimmer", "name": "Shimmer"},
-            {"id": "shimmer", "name": "Shimmer"} # Dup in provided code
-            {"id": "shimmer", "name": "Shimmer"} # Dup in provided code
         ]
     }
 
@@ -2836,107 +2787,6 @@ async def text_to_speech(req: Request):
             )
 
         return Response(content=r.content, media_type="audio/mpeg")
-
-
-@app.get("/tts/voices")
-async def get_voices():
-    """Return list of voices"""
-    # FIXED: Ensure key names match frontend expectations
-    return {
-        "voices": [
-            {"id": "alloy", "name": "Alloy"},
-            {"id": "echo", "name": "Echo"},
-            {"id": "fable", "name": "Fable"},
-            {"id": "onyx", "name": "Onyx"},
-            {"id": "nova", "name": "nova"},
-            {"id": "shimmer", "name": "shimmer"},
-            
-        ]
-    }
-
-
-@app.post("/stt")
-async def speech_to_text(file: UploadFile = File(...)):
-    if not OPENAI_API_KEY:
-        raise HTTPException(500, "OpenAI Key missing")
-
-    content = await file.read()
-
-    async with httpx.AsyncClient(timeout=120) as client:
-        files = {"file": (file.filename, content, file.content_type)}
-        data = {"model": "whisper-1"}
-        r = await client.post(
-            "https://api.openai.com/v1/audio/transcriptions",
-            headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
-            files=files, data=data
-        )
-        r.raise_for_status()
-        return r.json()
-
-
-@app.get("/setup/sessions-table")
-async def setup_sessions_table():
-    """
-    SQL to create the user_sessions and daily_usage tables for limits.
-    Run this in your Supabase SQL editor.
-    """
-    sql = """
-    -- Create user_sessions table for production-grade session management
-    CREATE TABLE IF NOT EXISTS user_sessions (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        token TEXT NOT NULL,
-        fingerprint TEXT,
-        user_agent TEXT,
-        ip_address TEXT,
-        expires_at TIMESTAMPTZ NOT NULL,
-        is_valid BOOLEAN DEFAULT TRUE,
-        created_at TIMESTAMPTZ DEFAULT NOW(),
-        updated_at TIMESTAMPTZ DEFAULT NOW()
-    );
-
-    -- Index for fast token lookups
-    CREATE INDEX IF NOT EXISTS idx_user_sessions_token ON user_sessions(user_id, token);
-    CREATE INDEX IF NOT EXISTS idx_user_sessions_valid ON user_sessions(user_id, is_valid) WHERE is_valid = TRUE;
-    CREATE INDEX IF NOT EXISTS idx_user_sessions_expiry ON user_sessions(expires_at);
-
-    -- Enable RLS
-    ALTER TABLE user_sessions ENABLE ROW LEVEL SECURITY;
-
-    -- IMPORTANT: Since we are using Service Key for backend logic, we must allow the service role (or anon if we switch back) to manage these.
-    -- However, standard RLS policies for 'users' table usually block anon inserts.
-    -- Since we are using a custom backend with SERVICE_KEY, we can technically bypass RLS,
-    -- but having policies ensures safety if keys leak.
-    
-    -- Policy: Service Role (or backend) can do anything
-    CREATE POLICY "Service full access" ON user_sessions
-        USING (true) WITH CHECK (true);
-
-    -- Daily Usage Table
-    CREATE TABLE IF NOT EXISTS daily_usage (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        date DATE NOT NULL,
-        images_generated INT DEFAULT 0,
-        videos_generated INT DEFAULT 0,
-        created_at TIMESTAMPTZ DEFAULT NOW()
-    );
-
-    -- Clean up old usage records automatically
-    CREATE OR REPLACE FUNCTION clean_old_usage() RETURNS TRIGGER
-    -- RETURNS void AS $$ 
-    --     UPDATE daily_usage SET images_generated = images_generated + 1, videos_generated = videos_generated + 1 WHERE date = CURRENT_DATE;
-    -- END;
-    -- $$ LANGUAGE plpgsql;
-    
-    -- Clean up function to reset daily limits daily
-    CREATE OR REPLACE FUNCTION reset_daily_usage() RETURNS TRIGGER
-    -- RETURNS void AS $$ 
-    --     UPDATE daily_usage SET images_generated = 0, videos_generated = 0 WHERE date = CURRENT_DATE;
-    -- END;
-    -- $$ LANGUAGE plpgsql;
-    """
-    return {"sql": sql, "note": "Run this SQL in your Supabase SQL editor"}
 
 
 if __name__ == "__main__":
