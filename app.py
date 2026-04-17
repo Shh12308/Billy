@@ -2401,7 +2401,10 @@ async def handle_video_generation(prompt: str, user: Dict[str, Any], conv_id: st
                         yield sse({"type": "done"})
                         return
                     elif data["status"] == "failed":
-                        yield sse({"type": "error", "message": f"Video generation failed: {data.get('error')}")
+                        yield sse({
+    "type": "error",
+    "message": f"Video generation failed: {data.get('error')}"
+})
                         return
                     else:
                         poll_count += 1
