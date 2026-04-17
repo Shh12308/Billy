@@ -95,9 +95,9 @@ _session_cache_last_cleanup = time.time()
 class FileCategory(Enum):
     CODE = "code"
     DOCUMENT = "document"
-    DATA = " "data"
+    DATA = "data"
     IMAGE = "image"
-    AUDIO = " "audio"
+    AUDIO = "audio"
     VIDEO = "video"
     ARCHIVE = "archive"
     CONFIG = "config"
@@ -2804,7 +2804,7 @@ async def get_voices():
             {"id": "onyx", "name": "Onyx"},
             {"id": "nova", "name": "nova"},
             {"id": "shimmer", "name": "shimmer"},
-            {"id": "shimmer", "name": "shimmer"} # Fixed duplicate in provided code
+            
         ]
     }
 
