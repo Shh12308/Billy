@@ -17,7 +17,7 @@ from typing import Optional, Dict, Any, List, Union, Tuple
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
-from fastapi import FastAPI, Request, Response, HTTPException, Depends, UploadFile, File, Cookie, Header
+from fastapi import FastAPI, Request, Response, HTTPException, Depends, UploadFile, File, Cookie, Header, Form
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, validator
@@ -1737,6 +1737,16 @@ class FileAnalysisResponse(BaseModel):
     files: List[Dict[str, Any]] = []
     truncated: bool = False
 
+# NEW MODEL FOR UNIVERSAL ASK
+class UniversalChatRequest(BaseModel):
+    prompt: str
+    conversation_id: Optional[str] = None
+    stream: bool = True
+    # Optional parameters for image/video generation
+    style: Optional[str] = None
+    size: Optional[str] = None
+    num_images: Optional[int] = 1
+
 
 # =========================
 # HELPERS
@@ -2471,6 +2481,55 @@ async def handle_video_generation(prompt: str, user: Dict[str, Any], conv_id: st
             yield sse({"type": "error", "message": str(e)})
     
     return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+# =========================
+# NEW UNIVERSAL ENDPOINT
+# =========================
+
+@app.post("/ask/universal")
+async def universal_ask(req: Request, res: Response, body: UniversalChatRequest):
+    """
+    Universal endpoint that handles Chat, Image Generation, and Video Generation
+    based on intent detection.
+    """
+    # 1. Authenticate User
+    user = await get_user(req, res)
+
+    # 2. Detect Intent
+    # We use the global detect_intent helper
+    intent_result = detect_intent(body.prompt)
+    
+    # 3. Route based on Intent
+    # If intent is clearly Image Generation, route to Image Handler
+    if intent_result and intent_result.intent == IntentCategory.IMAGE_GENERATION:
+        return await handle_image_generation(
+            prompt=body.prompt,
+            user=user,
+            conv_id=body.conversation_id,
+            stream=body.stream,
+            style=body.style,
+            size=body.size,
+            num_images=body.num_images if body.num_images else 1
+        )
+    
+    # If intent is clearly Video Generation, route to Video Handler
+    elif intent_result and intent_result.intent == IntentCategory.VIDEO_GENERATION:
+        return await handle_video_generation(
+            prompt=body.prompt,
+            user=user,
+            conv_id=body.conversation_id,
+            stream=body.stream
+        )
+    
+    # Default: Treat as Chat/Code Assistant
+    else:
+        return await handle_code_assistant(
+            prompt=body.prompt,
+            user=user,
+            conv_id=body.conversation_id,
+            stream=body.stream
+        )
 
 
 @app.get("/tts/voices")
