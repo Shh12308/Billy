@@ -64,7 +64,7 @@ if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
 app = FastAPI(
     title="HeloxAi API",
     description="Advanced AI Assistant Backend",
-    version="2.0.2" # Version bump
+    version="2.0.2"
 )
 
 # CORS
@@ -1584,52 +1584,6 @@ def get_detector() -> AdvancedIntentDetector:
     return _detector
 
 
-async def setup_sessions_table():
-    """
-    SQL to create the user_sessions table.
-    Run this in your Supabase SQL editor.
-    """
-    sql = """
-    -- Create user_sessions table for production-grade session management
-    CREATE TABLE IF NOT EXISTS user_sessions (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        token TEXT NOT NULL,
-        fingerprint TEXT,
-        user_agent TEXT,
-        ip_address TEXT,
-        expires_at TIMESTAMPTZ NOT NULL,
-        is_valid BOOLEAN DEFAULT TRUE,
-        created_at TIMESTAMPTZ DEFAULT NOW(),
-        updated_at TIMESTAMPTZ DEFAULT NOW()
-    );
-
-    -- Index for fast token lookups
-    CREATE INDEX IF NOT EXISTS idx_user_sessions_token ON user_sessions(user_id, token);
-    CREATE INDEX IF NOT EXISTS idx_user_sessions_valid ON user_sessions(user_id, is_valid) WHERE is_valid = TRUE;
-    CREATE INDEX IF NOT EXISTS idx_user_sessions_expiry ON user_sessions(expires_at);
-
-    -- Enable RLS
-    ALTER TABLE user_sessions ENABLE ROW LEVEL SECURITY;
-
-    -- IMPORTANT: Since we are using Service Key for backend logic, we must allow the service role (or anon if we switch back) to manage these.
-    -- However, standard RLS policies for 'users' table usually block anon inserts.
-    -- Since we are using a custom backend with SERVICE_KEY, we can technically bypass RLS,
-    -- but having policies ensures safety if keys leak.
-    
-    -- Policy: Service Role (or backend) can do anything
-    CREATE POLICY "Service full access" ON user_sessions
-        USING (true) WITH CHECK (true);
-
-    -- Clean up expired sessions automatically (run as scheduled job)
-    -- CREATE OR REPLACE FUNCTION clean_expired_sessions()
-    -- RETURNS void AS $$ 
-    --     UPDATE user_sessions SET is_valid = FALSE WHERE expires_at < NOW() AND is_valid = TRUE;
-    -- END;
-    -- $$ LANGUAGE plpgsql;
-    """
-    return {"sql": sql, "note": "Run this SQL in your Supabase SQL editor"}
-
 # =========================
 # DATABASE SCHEMA HELPERS
 # =========================
@@ -1673,10 +1627,10 @@ async def setup_sessions_table_endpoint():
 
     -- Clean up expired sessions automatically (run as scheduled job)
     CREATE OR REPLACE FUNCTION clean_expired_sessions()
-    -- RETURNS void AS $$ 
-    --     UPDATE user_sessions SET is_valid = FALSE WHERE expires_at < NOW() AND is_valid = TRUE;
-    -- END;
-    -- $$ LANGUAGE plpgsql;
+    RETURNS void AS $$ 
+        UPDATE user_sessions SET is_valid = FALSE WHERE expires_at < NOW() AND is_valid = TRUE;
+    END;
+    $$ LANGUAGE plpgsql;
 
     -- Daily Usage Table for Limits
     CREATE TABLE IF NOT EXISTS daily_usage (
@@ -1688,13 +1642,12 @@ async def setup_sessions_table_endpoint():
         created_at TIMESTAMPTZ DEFAULT NOW()
     );
 
-    -- Clean up old usage records
-    CREATE OR REPLACE FUNCTION clean_old_usage() RETURNS TRIGGER
-    LANGUAGE plpgsql;
-    $$         BEGIN
-            DELETE FROM daily_usage WHERE date < (CURRENT_DATE - INTERVAL '7 days');
-        $$         END;
-    $$     LANGUAGE plpgsql;
+    -- Clean up old usage records automatically (corrected SQL syntax)
+    CREATE OR REPLACE FUNCTION clean_old_usage() RETURNS TRIGGER AS $$     BEGIN
+        DELETE FROM daily_usage WHERE date < (CURRENT_DATE - INTERVAL '7 days');
+        RETURN NULL;
+    END;
+    $$ LANGUAGE plpgsql;
     """
     return {"sql": sql, "note": "Run this SQL in your Supabase SQL editor"}
 
@@ -2372,41 +2325,6 @@ async def handle_code_assistant(prompt: str, user: Dict[str, Any], conv_id: str,
     return {"reply": reply}
 
 
-@app.get("/tts/voices")
-async def get_voices():
-    """Return list of voices"""
-    # FIXED: Ensure keys and names match frontend expectations
-    return {
-        "voices": [
-            {"id": "alloy", "name": "Alloy"},
-            {"id": "echo", "name": "Echo"},
-            {"id": "fable", "name": "Fable"},
-            {"id": "onyx", "name": "Onyx"},
-            {"id": "nova", "name": "Nova"},
-            {"id": "shimmer", "name": "Shimmer"},
-        ]
-    }
-
-
-@app.post("/stt")
-async def speech_to_text(file: UploadFile = File(...)):
-    if not OPENAI_API_KEY:
-        raise HTTPException(500, "OpenAI Key missing")
-
-    content = await file.read()
-
-    async with httpx.AsyncClient(timeout=120) as client:
-        files = {"file": (file.filename, content, file.content_type)}
-        data = {"model": "whisper-1"}
-        r = await client.post(
-            "https://api.openai.com/v1/audio/transcriptions",
-            headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
-            files=files, data=data
-        )
-        r.raise_for_status()
-        return r.json()
-
-
 # =========================
 # MEDIA GENERATION HANDLERS
 # =========================
@@ -2549,6 +2467,41 @@ async def handle_video_generation(prompt: str, user: Dict[str, Any], conv_id: st
             yield sse({"type": "error", "message": str(e)})
     
     return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+@app.get("/tts/voices")
+async def get_voices():
+    """Return list of voices"""
+    # FIXED: Ensure keys and names match frontend expectations
+    return {
+        "voices": [
+            {"id": "alloy", "name": "Alloy"},
+            {"id": "echo", "name": "Echo"},
+            {"id": "fable", "name": "Fable"},
+            {"id": "onyx", "name": "Onyx"},
+            {"id": "nova", "name": "Nova"},
+            {"id": "shimmer", "name": "Shimmer"},
+        ]
+    }
+
+
+@app.post("/stt")
+async def speech_to_text(file: UploadFile = File(...)):
+    if not OPENAI_API_KEY:
+        raise HTTPException(500, "OpenAI Key missing")
+
+    content = await file.read()
+
+    async with httpx.AsyncClient(timeout=120) as client:
+        files = {"file": (file.filename, content, file.content_type)}
+        data = {"model": "whisper-1"}
+        r = await client.post(
+            "https://api.openai.com/v1/audio/transcriptions",
+            headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+            files=files, data=data
+        )
+        r.raise_for_status()
+        return r.json()
 
 
 # =========================
