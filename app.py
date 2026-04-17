@@ -936,7 +936,7 @@ async def create_user_session(
     fingerprint: str,
     remember: bool = True
 ) -> str:
-    """Create a new user session in the database"""
+    """Create a new user session in database"""
     token = generate_session_token()
     expires_at = datetime.now(timezone.utc) + timedelta(
         seconds=SESSION_DURATION if remember else 24 * 60 * 60
@@ -1590,7 +1590,7 @@ def get_detector() -> AdvancedIntentDetector:
 @app.get("/setup/sessions-table")
 async def setup_sessions_table_endpoint():
     """
-    SQL to create the user_sessions table.
+    SQL to create user_sessions table.
     Run this in your Supabase SQL editor.
     """
     sql = """
@@ -1908,7 +1908,7 @@ async def get_user(
                     logger.warning(f"Failed to update fingerprint: {e}")
 
             # Create or refresh session
-            if not user_obj["session_valid"]:
+            if not user_obj.get("session_valid", False):
                 new_token = await create_user_session(user_id, current_fingerprint, remember)
                 user_obj["session_token"] = new_token
                 user_obj["session_valid"] = True
@@ -1918,6 +1918,10 @@ async def get_user(
             
             logger.info(f"User authenticated: {user_id[:8]}... session_valid={user_obj['session_valid']}, plan={user_obj['plan']}")
             return user_obj
+
+        except Exception as e:
+            logger.error(f"Error loading user data: {e}")
+            # Fall through to creating a new user if loading fails catastrophically
 
     # Create new anonymous user
     new_id = str(uuid.uuid4())
