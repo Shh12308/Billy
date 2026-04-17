@@ -50,7 +50,7 @@ MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
 MAX_ZIP_SIZE = 100 * 1024 * 1024  # 100MB for zips
 MAX_ZIP_ENTRIES = 500
 MAX_EXTRACTED_SIZE = 200 * 1024 * 1024  # 200MB total extracted
-MAX_TEXT_LENGTH = 500000  # 500k characters max for text analysis
+MAX_TEXT_LENGTH = 380000  
 CHUNK_SIZE = 1024 * 1024  # 1MB chunks for large files
 
 # Auth config
