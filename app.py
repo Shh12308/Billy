@@ -293,7 +293,7 @@ class FileExtractionResult:
     def to_dict(self) -> Dict:
         return {
             "content": self.content,
-            " "files": self.files,
+            "files": self.files,
             "metadata": self.metadata,
             "truncated": self.truncated,
             "original_size": self.original_size
