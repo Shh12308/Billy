@@ -1540,7 +1540,7 @@ class AdvancedIntentDetector:
             IntentCategory.DATA_ANALYSIS: "data",
             IntentCategory.DATA_VISUALIZATION: "data",
             IntentCategory.WEB_DEVELOPMENT: "web",
-            IntentCategory.API_DEVELOPMENT: " "api",
+            IntentCategory.API_DEVELOPMENT: "api",
             IntentCategory.DATABASE: "database",
             IntentCategory.TRANSLATION: "fixed", # Fixed from "translation" to "translation" based on prompt intent
             IntentCategory.SUMMARIZATION: "summary",
