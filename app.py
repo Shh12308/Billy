@@ -1909,7 +1909,7 @@ async def get_user(
                 user_obj["id"] = u["id"]
                 user_obj["email"] = u.get("email")
                 user_obj["plan"] = u.get("plan", "free")
-                user_obj["is_premium"] = bool(u.get("is_premium", False)
+                user_obj["is_premium"] = bool(u.get("is_premium", False))
                 user_obj["is_lifetime"] = bool(u.get("is_lifetime", False)
                 user_obj["memory"] = u.get("memory", "")
                 
