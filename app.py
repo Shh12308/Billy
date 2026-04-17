@@ -572,13 +572,13 @@ async def extract_zip_content(
                     
                     # Check total extracted size
                     if total_extracted + entry_info.file_size > MAX_EXTRACTED_SIZE:
-    extracted_files.append({
+                        extracted_files.append({
         "name": entry_name,
         "size": entry_info.file_size,
         "size_formatted": format_file_size(entry_info.file_size),
         "status": "skipped",
         "reason": "Archive total size limit reached"
-    })
+                        })
     continue
                     
                     # Read entry content
