@@ -1567,7 +1567,7 @@ class AdvancedIntentDetector:
             IntentCategory.DOCUMENT_CREATION: ["doc_gen", "llm"],
             IntentCategory.DATA_ANALYSIS: ["code_exec", "data_processing", "llm"],
             IntentCategory.DATA_VISUALIZATION: ["code_exec", "llm"],
-            IntentCategory.WEB_DEVELOPMENT:setup_sessions_table() # Added session table creation SQL
+            IntentCategory.WEB_DEVELOPMENT: ["web", "llm"],
 async def setup_sessions_table():
     """
     SQL to create the user_sessions table.
