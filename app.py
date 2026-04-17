@@ -1886,7 +1886,7 @@ async def get_user(
     # Priority 4: Try stored fingerprint
     if not user_id and stored_fingerprint:
         try:
-            fp_resp = await _execute_supabase lookup_by_fingerprint_with_retry(
+            fp_resp = await _execute_supabase.lookup_by_fingerprint_with_retry(
                 supabase.table("users").select("id").eq("fingerprint", stored_fingerprint).limit(1),
                 description="User Lookup by Stored Fingerprint"
             )
