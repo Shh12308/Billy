@@ -379,7 +379,7 @@ async def extract_file_content(
             return FileExtractionResult(
                 content=f"[{category.value.capitalize()} file: {filename} ({format_file_size(original_size)}) - Media file cannot be extracted as text]",
                 metadata=metadata,
-                original_size===original_size
+                original_size=original_size
             )
 
         # Handle PDF
