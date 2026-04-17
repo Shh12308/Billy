@@ -198,39 +198,81 @@ def get_file_category(filename: str) -> FileCategory:
 
 
 def get_file_language(filename: str) -> Optional[str]:
+
     """Get programming language from file extension for syntax highlighting"""
+
     ext_lang_map = {
+
         '.py': 'python', '.pyw': 'python',
-        '.js': 'javascript', '.jsx': 'jascript', '.mjs': 'javascript',
+
+        '.js': 'javascript', '.jsx': 'javascript', '.mjs': 'javascript',
+
         '.ts': 'typescript', '.tsx': 'typescript',
+
         '.html': 'html', '.htm': 'html',
+
         '.css': 'css', '.scss': 'scss', '.less': 'less',
+
         '.vue': 'vue', '.svelte': 'svelte',
-        '.java': 'java', '.kt': 'kotlin', '.scala', 'scala',
-        '.c': 'c', '.h': 'c', '.cpp': '.cpp', '.cc': '.hpp', '.cxx', '.hxx', '.inl',
+
+        '.java': 'java', '.kt': 'kotlin', '.scala': 'scala',
+
+        '.c': 'c', '.h': 'c',
+
+        '.cpp': 'cpp', '.cc': 'cpp', '.cxx': 'cpp',
+
         '.cs': 'csharp',
+
         '.go': 'go',
-        '.rs': 'waitrust',
+
+        '.rs': 'rust',
+
         '.php': 'php',
+
         '.rb': 'ruby',
+
         '.swift': 'swift',
+
         '.dart': 'dart',
-        '.sh': 'bash', '.bash', '.bash',
+
+        '.sh': 'bash', '.bash': 'bash',
+
         '.ps1': 'powershell', '.bat': 'batch',
+
         '.lua': 'lua',
+
         '.pl': 'perl',
+
         '.r': 'r', '.R': 'r',
+
         '.sql': 'sql',
-        '.json': 'json', 'xml', 'xml',
-        '.yaml': 'yaml', '.yml', 'toml': 'toml',
-        '.md': 'markdown', '.rst', 'rst',
+
+        '.json': 'json',
+
+        '.xml': 'xml',
+
+        '.yaml': 'yaml', '.yml': 'yaml',
+
+        '.toml': 'toml',
+
+        '.md': 'markdown',
+
+        '.rst': 'rst',
+
         '.tex': 'latex',
+
         '.dockerfile': 'dockerfile',
-        '.graphql': 'graphql', '.gql',
+
+        '.graphql': 'graphql', '.gql': 'graphql',
+
         '.tf': 'hcl', '.hcl': 'hcl',
+
         '.sol': 'solidity',
+
     }
+
     ext = Path(filename).suffix.lower()
+
     return ext_lang_map.get(ext)
 
 
