@@ -3414,58 +3414,114 @@ async def handle_image_generation(prompt: str, user: Dict[str, Any], conv_id: st
     return {"images": images}
 
 async def handle_video_generation(prompt: str, user: Dict[str, Any], conv_id: str, stream: bool):
-    # Fix: Use a valid model version hash for Replicate
-    # Using Stable Video Diffusion (SVD) version
-    MODEL_VERSION = "3f0457e4619daac51203dedb472816fd4af51f3148fa7a9e0b5ffcf1b8172438"
+    """
+    Updated video handler with Model Routing.
+    Routes to Luma for Realistic, Pika for Anime/Cartoon.
+    """
     
+    # 1. Detect Style
+    # Simple keyword check or use your existing intent detector
+    # (Assuming you might update IntentDetector to detect 'anime' vs 'realistic')
+    prompt_lower = prompt.lower()
+    is_anime = any(k in prompt_lower for k in ['anime', 'manga', 'cartoon', '2d animation', 'studio ghibli'])
+    
+    # 2. Select Model based on intent
+    if is_anime:
+        # Use Pika for Anime/Cartoon styles
+        MODEL_VERSION = "pika-labs/pika-1.0" 
+        # Pika inputs often differ slightly, check docs, but usually support 'prompt'
+        model_name = "Pika"
+    else:
+        # Use Luma Dream Machine for Realistic/Cinematic/General
+        MODEL_VERSION = "luma-dream-machine"
+        model_name = "Luma"
+
     headers = {"Authorization": f"Token {REPLICATE_API_TOKEN}", "Content-Type": "application/json"}
     
     async def gen():
         try:
-            yield sse({"type": "status", "message": "Starting video generation..."})
+            yield sse({"type": "status", "message": f"Initializing {model_name} AI..."})
+            
             async with httpx.AsyncClient(timeout=300) as client:
-                # Create prediction
-                r = await client.post("https://api.replicate.com/v1/predictions", headers=headers, json={"version": MODEL_VERSION, "input": {"prompt": prompt}})
+                # NOTE: Inputs differ slightly between models. 
+                # Luma usually takes: prompt, loop, aspect_ratio.
+                # Pika takes: prompt, frame_rate, motion_bucket_id.
+                
+                input_payload = {"prompt": prompt}
+                
+                if model_name == "Luma":
+                    input_payload["loop"] = False
+                    # Luma supports specific aspect ratios like "16:9", "9:16"
+                    if "vertical" in prompt_lower or "portrait" in prompt_lower or "phone" in prompt_lower:
+                        input_payload["aspect_ratio"] = "9:16"
+                    else:
+                        input_payload["aspect_ratio"] = "16:9"
+                
+                elif model_name == "Pika":
+                    # Pika specific settings
+                    input_payload["frame_rate"] = 24
+                    # Higher motion_bucket_id = more movement (0-255)
+                    input_payload["motion_bucket_id"] = 150 
+                
+                r = await client.post(
+                    "https://api.replicate.com/v1/predictions", 
+                    headers=headers, 
+                    json={"version": MODEL_VERSION, "input": input_payload}
+                )
+                
+                if r.status_code == 402:
+                     logger.error(f"Video gen billing error (402): Insufficient credits.")
+                     yield sse({"type": "error", "message": "Video generation requires paid credits on Replicate."})
+                     return
+
                 r.raise_for_status()
                 prediction = r.json()
                 prediction_id = prediction["id"]
                 
-                yield sse({"type": "status", "message": "Processing video..."})
+                yield sse({"type": "status", "message": f"Generating video ({model_name})..."})
+                
                 poll_count = 0
-                while poll_count < 120:
+                while poll_count < 180: # Luma can take longer, 6 mins max
                     r = await client.get(f"https://api.replicate.com/v1/predictions/{prediction_id}", headers=headers)
                     r.raise_for_status()
                     data = r.json()
+                    
                     if data["status"] == "succeeded":
                         raw_video_url = data["output"]
-                        yield sse({"type": "status", "message": "Adding watermark..."})
+                        
+                        # Handle list outputs (some models return a list)
+                        if isinstance(raw_video_url, list):
+                            raw_video_url = raw_video_url[0]
+                            
+                        yield sse({"type": "status", "message": "Applying watermark..."})
+                        
+                        # Only watermark if user is not premium (optional logic)
                         watermarked_url = await add_watermark_to_video(raw_video_url)
+                        
                         yield sse({"type": "video", "url": watermarked_url})
                         yield sse({"type": "done"})
                         return
+                    
                     elif data["status"] == "failed":
-                        yield sse({"type": "error", "message": f"Video generation failed: {data.get('error')}"})
+                        error_detail = data.get('error', 'Unknown error')
+                        logger.error(f"{model_name} prediction failed: {error_detail}")
+                        yield sse({"type": "error", "message": f"Video generation failed: {error_detail}"})
                         return
-                    else:
-                        poll_count += 1
-                        await asyncio.sleep(2)
-                yield sse({"type": "error", "message": "Video generation timed out"})
+                    
+                    poll_count += 1
+                    await asyncio.sleep(2)
+                
+                yield sse({"type": "error", "message": "Video generation timed out."})
+                
         except httpx.HTTPStatusError as e:
-            # FIX: Catch 402 specifically for a better UX
-            if e.response.status_code == 402:
-                logger.error(f"Video gen billing error: {e}")
-                yield sse({"type": "error", "message": "Video generation requires paid credits on Replicate. Please add funds to your account."})
-            else:
-                logger.error(f"Video gen HTTP error: {e}")
-                yield sse({"type": "error", "message": f"Video service error: {e.response.status_code}"})
+            logger.error(f"Video gen HTTP error: {e.response.status_code} - {e.response.text}")
+            yield sse({"type": "error", "message": f"Service error: {e.response.status_code}"})
         except Exception as e:
-            logger.error(f"Video gen error: {e}")
+            logger.error(f"Video gen unexpected error: {e}", exc_info=True)
             yield sse({"type": "error", "message": str(e)})
     
     return StreamingResponse(gen(), media_type="text/event-stream")
-
-
-
+    
 # =========================
 # DATABASE MIGRATION HELPER
 # =========================
