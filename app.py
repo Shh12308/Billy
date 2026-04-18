@@ -190,6 +190,25 @@ CONFIG_EXTENSIONS = {
     '.prettierrc', '.gitignore', '.dockerignore', '.npmrc',
 }
 
+# Patterns to ignore completely to save tokens
+IGNORED_FOLDERS = {
+    'node_modules', 'dist', 'build', '.next', '.nuxt', 
+    '.git', 'target', 'bin', 'obj', 'out', '__pycache__'
+}
+
+IGNORED_EXTENSIONS = {
+    '.png', '.jpg', '.jpeg', '.gif', '.svg', '.ico', 
+    '.mp4', '.mp3', '.woff', '.woff2', '.ttf', '.lock'
+}
+
+# Critical files we MUST read for deployment check
+PRIORITY_FILES = {
+    'package.json', 'package-lock.json', 'pnpm-lock.yaml', 'yarn.lock',
+    '.env', '.env.example', '.env.production',
+    'vite.config.js', 'next.config.js', 'webpack.config.js',
+    'dockerfile', '.dockerignore', 'vercel.json', 'netlify.toml'
+}
+
 
 def get_file_category(filename: str) -> FileCategory:
     """Determine file category from extension"""
@@ -2523,6 +2542,19 @@ async def analyze_file(
             400, 
             f"File too large ({format_file_size(file_size)}). Maximum: {format_file_size(max_allowed)}"
         )
+
+    # In your POST /analysis endpoint (or similar)
+if category == FileCategory.ARCHIVE:
+    # Check if user query implies an audit
+    audit_keywords = ["deploy", "ready", "audit", "check", "review", "production"]
+    is_audit = any(k in user_query.lower() for k in audit_keywords)
+    
+    if is_audit:
+        # Use the Smart Auditor
+        return await smart_audit_archive(content, filename, user_query)
+    else:
+        # Use standard analysis for other questions
+        return await handle_archive_analysis(result, stream=True)
     
     # Handle images separately
     if content_type.startswith("image/") or category == FileCategory.IMAGE:
@@ -3382,6 +3414,82 @@ async def handle_image_generation(prompt: str, user: Dict[str, Any], conv_id: st
     if stream: return StreamingResponse((sse({"type": "images", "images": images}) for _ in [None]) + (sse({"type": "done"}) for _ in [None]), media_type="text/event-stream")
     return {"images": images}
 
+async def smart_audit_archive(
+    content: bytes, 
+    filename: str, 
+    user_query: str
+):
+    """
+    Analyzes a project for deployment readiness.
+    Reads critical files fully, scans others superficially.
+    """
+    
+    with zipfile.ZipFile(BytesIO(content)) as zf:
+        # Sort for consistent reading
+        entries = sorted(zf.namelist())
+        
+        config_context = []
+        file_structure = []
+        
+        for entry_name in entries:
+            # 1. Skip Directories
+            if entry_name.endswith('/'): continue
+            
+            # 2. Skip Ignored Folders
+            if any(f'/{ig}/' in entry_name or entry_name.startswith(f'{ig}/') for ig in IGNORED_FOLDERS):
+                continue
+                
+            # 3. Skip Ignored Extensions
+            ext = Path(entry_name).suffix.lower()
+            if ext in IGNORED_EXTENSIONS:
+                continue
+            
+            # 4. Process Priority Files (Read Content)
+            base_name = Path(entry_name).name.lower()
+            if base_name in PRIORITY_FILES:
+                try:
+                    entry_content = zf.read(entry_name).decode('utf-8', errors='ignore')
+                    # Truncate extremely large config files just in case
+                    if len(entry_content) > 10000:
+                        entry_content = entry_content[:10000] + "\n\n[... Config Truncated ...]"
+                    
+                    config_context.append(f"\n===== FILE: {entry_name} =====\n{entry_content}\n")
+                except Exception as e:
+                    config_context.append(f"\n===== FILE: {entry_name} =====\nError reading file: {e}\n")
+            
+            # 5. Map Source Files (Read Names Only)
+            else:
+                # Just list it so the AI knows what exists
+                file_structure.append(entry_name)
+
+    # 6. Construct the Prompt
+    structure_str = "\n".join(file_structure[:100]) # Limit to first 100 source files found
+        
+    prompt = f"""
+ACT AS A SENIOR DEVOPS ENGINEER.
+
+CONTEXT:
+User uploaded a project and asked: "{user_query}"
+
+I have scanned the archive. Below are the CRITICAL CONFIGURATION FILES read fully:
+{"".join(config_context)}
+
+Below is the list of other SOURCE FILES found in the project (structure only):
+{structure_str}
+
+TASK:
+Perform a Deployment Readiness Audit.
+1.  **Analyze Configs:** Check `package.json` for missing start/build scripts or vulnerable dependencies.
+2.  **Environment:** Check if `.env` is missing or if secrets might be hardcoded in config files.
+3.  **Structure:** Analyze the file structure. Is it a standard React/Vue/Node setup? Are `node_modules` or `dist` folders present (which shouldn't be uploaded)?
+4.  **Readiness:** Give a verdict: READY, NEEDS FIXES, or BROKEN.
+
+Provide a detailed report with specific file references and code suggestions.
+"""
+
+    # 7. Send to Groq
+    return await stream_groq_chat([{"role": "system", "content": "You are a helpful DevOps expert."}, {"role": "user", "content": prompt}])
+    
 async def handle_video_generation(prompt: str, user: Dict[str, Any], conv_id: str, stream: bool):
     # FIX: Use a valid model version hash for Replicate
     # Using Stable Video Diffusion (SVD) version as a placeholder for functional video generation
