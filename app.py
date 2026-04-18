@@ -3414,9 +3414,9 @@ async def handle_image_generation(prompt: str, user: Dict[str, Any], conv_id: st
     return {"images": images}
 
 async def handle_video_generation(prompt: str, user: Dict[str, Any], conv_id: str, stream: bool):
-    # FIX: Use a valid model version hash for Replicate
-    # Using Stable Video Diffusion (SVD) version as a placeholder for functional video generation
-    MODEL_VERSION = "3f0457e4619daac51203dedb472816fd4af51f3149fa7a9e0b5ffcf1b8172438"
+    # Fix: Use a valid model version hash for Replicate
+    # Using Stable Video Diffusion (SVD) version
+    MODEL_VERSION = "3f0457e4619daac51203dedb472816fd4af51f3148fa7a9e0b5ffcf1b8172438"
     
     headers = {"Authorization": f"Token {REPLICATE_API_TOKEN}", "Content-Type": "application/json"}
     
@@ -3450,6 +3450,14 @@ async def handle_video_generation(prompt: str, user: Dict[str, Any], conv_id: st
                         poll_count += 1
                         await asyncio.sleep(2)
                 yield sse({"type": "error", "message": "Video generation timed out"})
+        except httpx.HTTPStatusError as e:
+            # FIX: Catch 402 specifically for a better UX
+            if e.response.status_code == 402:
+                logger.error(f"Video gen billing error: {e}")
+                yield sse({"type": "error", "message": "Video generation requires paid credits on Replicate. Please add funds to your account."})
+            else:
+                logger.error(f"Video gen HTTP error: {e}")
+                yield sse({"type": "error", "message": f"Video service error: {e.response.status_code}"})
         except Exception as e:
             logger.error(f"Video gen error: {e}")
             yield sse({"type": "error", "message": str(e)})
