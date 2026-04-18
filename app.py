@@ -3341,10 +3341,10 @@ async def speech_to_text(file: UploadFile = File(...)):
 # MEDIA GENERATION HANDLERS
 # =========================
 async def handle_image_generation(prompt: str, user: Dict[str, Any], conv_id: str, stream: bool, style: str = None, size: str = "1024x1024", num_images: int = 1):
-    MAX_PROMPT_LEN = 3000
+    MAX_PROMPT_LEN = 4000  # DALL-E 3 limit is approx 4000 chars
     if not OPENAI_API_KEY:
         msg = "No API Key"
-        # Use async generator here as well for consistency
+        
         async def err_gen():
             yield sse({"type": "error", "message": msg})
         if stream: return StreamingResponse(err_gen(), media_type="text/event-stream")
@@ -3353,10 +3353,11 @@ async def handle_image_generation(prompt: str, user: Dict[str, Any], conv_id: st
     if not prompt or not prompt.strip(): 
         raise HTTPException(400, "Prompt is required")
     
+    # Truncate prompt if too long
     if len(prompt) > MAX_PROMPT_LEN: 
         prompt = prompt[:MAX_PROMPT_LEN]
     
-    # FIX: DALL-E 3 only supports n=1
+    # DALL-E 3 only supports n=1
     num_images = 1
     
     STYLES = {
@@ -3379,31 +3380,66 @@ async def handle_image_generation(prompt: str, user: Dict[str, Any], conv_id: st
             )
             r.raise_for_status()
             data = r.json()
-    except Exception as e:
-        # Fixed error streaming
+    except httpx.HTTPStatusError as e:
+        # Capture error message in local variable to avoid scope issues in generator
+        error_detail = e.response.text
+        logger.error(f"Image gen HTTP error {e.response.status_code}: {error_detail}")
+        
+        # User-friendly message for 400 errors (likely content policy or prompt issues)
+        if e.response.status_code == 400:
+            msg = "Image generation failed: Invalid prompt or content policy violation."
+        else:
+            msg = f"Service error ({e.response.status_code}). Please try again."
+            
         async def err_gen():
-            yield sse({"type": "error", "message": str(e)})
+            yield sse({"type": "error", "message": msg})
+        
         if stream: return StreamingResponse(err_gen(), media_type="text/event-stream")
-        return {"error": str(e)}
+        return {"error": msg}
+        
+    except Exception as e:
+        # Capture generic exception
+        error_msg = str(e)
+        logger.error(f"Image gen unexpected error: {error_msg}")
+        
+        async def err_gen():
+            yield sse({"type": "error", "message": "An unexpected error occurred."})
+        
+        if stream: return StreamingResponse(err_gen(), media_type="text/event-stream")
+        return {"error": error_msg}
     
+    # Process successful response
     images = []
-    for item in data.get("data", []):
-        b64 = item.get("b64_json")
-        url = item.get("url")
-        if url: 
-            images.append({"url": url})
-        elif b64:
-            img_bytes = base64.b64decode(b64)
-            try:
-                fname = f"{uuid.uuid4().hex}.png"
-                path = f"public/{fname}"
-                await asyncio.to_thread(lambda: supabase.storage.from_("ai-images").upload(path, img_bytes, {"content-type": "image/png"}))
-                url = f"{SUPABASE_URL}/storage/v1/object/public/ai-images/{path}"
+    try:
+        for item in data.get("data", []):
+            b64 = item.get("b64_json")
+            url = item.get("url")
+            if url: 
                 images.append({"url": url})
-            except: 
-                images.append({"url": f"data:image/png;base64,{b64}"})
+            elif b64:
+                img_bytes = base64.b64decode(b64)
+                try:
+                    fname = f"{uuid.uuid4().hex}.png"
+                    path = f"public/{fname}"
+                    # Upload to Supabase Storage
+                    await asyncio.to_thread(
+                        lambda: supabase.storage.from_("ai-images").upload(path, img_bytes, {"content-type": "image/png"})
+                    )
+                    url = f"{SUPABASE_URL}/storage/v1/object/public/ai-images/{path}"
+                    images.append({"url": url})
+                except Exception as upload_err:
+                    logger.error(f"Failed to upload image to storage: {upload_err}")
+                    # Fallback to base64 if storage fails
+                    images.append({"url": f"data:image/png;base64,{b64}"})
+    except Exception as e:
+        logger.error(f"Failed to parse image response: {e}")
+        msg = "Failed to process generated image."
+        async def err_gen():
+            yield sse({"type": "error", "message": msg})
+        if stream: return StreamingResponse(err_gen(), media_type="text/event-stream")
+        return {"error": msg}
     
-    # --- FIXED STREAMING LOGIC BELOW ---
+    # Stream results
     if stream:
         async def event_gen():
             yield sse({"type": "images", "images": images})
@@ -3412,7 +3448,7 @@ async def handle_image_generation(prompt: str, user: Dict[str, Any], conv_id: st
         return StreamingResponse(event_gen(), media_type="text/event-stream")
     
     return {"images": images}
-
+    
 async def handle_video_generation(prompt: str, user: Dict[str, Any], conv_id: str, stream: bool):
     """
     Updated video handler with Model Routing.
