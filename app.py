@@ -3344,31 +3344,54 @@ async def handle_image_generation(prompt: str, user: Dict[str, Any], conv_id: st
     MAX_PROMPT_LEN = 3000
     if not OPENAI_API_KEY:
         msg = "No API Key"
-        if stream: return StreamingResponse((sse({"type": "error", "message": msg}) for _ in range(1)), media_type="text/event-stream")
+        # Use async generator here as well for consistency
+        async def err_gen():
+            yield sse({"type": "error", "message": msg})
+        if stream: return StreamingResponse(err_gen(), media_type="text/event-stream")
         return {"error": msg}
-    if not prompt or not prompt.strip(): raise HTTPException(400, "Prompt is required")
-    if len(prompt) > MAX_PROMPT_LEN: prompt = prompt[:MAX_PROMPT_LEN]
+    
+    if not prompt or not prompt.strip(): 
+        raise HTTPException(400, "Prompt is required")
+    
+    if len(prompt) > MAX_PROMPT_LEN: 
+        prompt = prompt[:MAX_PROMPT_LEN]
     
     # FIX: DALL-E 3 only supports n=1
     num_images = 1
     
-    STYLES = {"realistic": "ultra realistic, 4k, highly detailed", "cartoon": "cartoon style, vibrant colors", "anime": "anime style", "cinematic": "cinematic lighting", "cyberpunk": "cyberpunk, neon"}
-    if style in STYLES: prompt = f"{prompt}, {STYLES[style]}"
+    STYLES = {
+        "realistic": "ultra realistic, 4k, highly detailed", 
+        "cartoon": "cartoon style, vibrant colors", 
+        "anime": "anime style", 
+        "cinematic": "cinematic lighting", 
+        "cyberpunk": "cyberpunk, neon"
+    }
+    
+    if style in STYLES: 
+        prompt = f"{prompt}, {STYLES[style]}"
     
     try:
         async with httpx.AsyncClient(timeout=60) as client:
-            r = await client.post("https://api.openai.com/v1/images/generations", headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}, json={"model": "dall-e-3", "prompt": prompt, "size": size, "n": num_images})
+            r = await client.post(
+                "https://api.openai.com/v1/images/generations", 
+                headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}, 
+                json={"model": "dall-e-3", "prompt": prompt, "size": size, "n": num_images}
+            )
             r.raise_for_status()
             data = r.json()
     except Exception as e:
-        if stream: return StreamingResponse((sse({"type": "error", "message": str(e)}) for _ in range(1)), media_type="text/event-stream")
+        # Fixed error streaming
+        async def err_gen():
+            yield sse({"type": "error", "message": str(e)})
+        if stream: return StreamingResponse(err_gen(), media_type="text/event-stream")
         return {"error": str(e)}
     
     images = []
     for item in data.get("data", []):
         b64 = item.get("b64_json")
         url = item.get("url")
-        if url: images.append({"url": url})
+        if url: 
+            images.append({"url": url})
         elif b64:
             img_bytes = base64.b64decode(b64)
             try:
@@ -3377,9 +3400,17 @@ async def handle_image_generation(prompt: str, user: Dict[str, Any], conv_id: st
                 await asyncio.to_thread(lambda: supabase.storage.from_("ai-images").upload(path, img_bytes, {"content-type": "image/png"}))
                 url = f"{SUPABASE_URL}/storage/v1/object/public/ai-images/{path}"
                 images.append({"url": url})
-            except: images.append({"url": f"data:image/png;base64,{b64}"})
+            except: 
+                images.append({"url": f"data:image/png;base64,{b64}"})
     
-    if stream: return StreamingResponse((sse({"type": "images", "images": images}) for _ in [None]) + (sse({"type": "done"}) for _ in [None]), media_type="text/event-stream")
+    # --- FIXED STREAMING LOGIC BELOW ---
+    if stream:
+        async def event_gen():
+            yield sse({"type": "images", "images": images})
+            yield sse({"type": "done"})
+        
+        return StreamingResponse(event_gen(), media_type="text/event-stream")
+    
     return {"images": images}
 
 async def handle_video_generation(prompt: str, user: Dict[str, Any], conv_id: str, stream: bool):
