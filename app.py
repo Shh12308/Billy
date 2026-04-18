@@ -3341,10 +3341,9 @@ async def speech_to_text(file: UploadFile = File(...)):
 # MEDIA GENERATION HANDLERS
 # =========================
 async def handle_image_generation(prompt: str, user: Dict[str, Any], conv_id: str, stream: bool, style: str = None, size: str = "1024x1024", num_images: int = 1):
-    MAX_PROMPT_LEN = 4000  # DALL-E 3 limit is approx 4000 chars
+    MAX_PROMPT_LEN = 4000 
     if not OPENAI_API_KEY:
         msg = "No API Key"
-        
         async def err_gen():
             yield sse({"type": "error", "message": msg})
         if stream: return StreamingResponse(err_gen(), media_type="text/event-stream")
@@ -3353,11 +3352,9 @@ async def handle_image_generation(prompt: str, user: Dict[str, Any], conv_id: st
     if not prompt or not prompt.strip(): 
         raise HTTPException(400, "Prompt is required")
     
-    # Truncate prompt if too long
     if len(prompt) > MAX_PROMPT_LEN: 
         prompt = prompt[:MAX_PROMPT_LEN]
     
-    # DALL-E 3 only supports n=1
     num_images = 1
     
     STYLES = {
@@ -3380,31 +3377,36 @@ async def handle_image_generation(prompt: str, user: Dict[str, Any], conv_id: st
             )
             r.raise_for_status()
             data = r.json()
-    except httpx.HTTPStatusError as e:
-        # Capture error message in local variable to avoid scope issues in generator
-        error_detail = e.response.text
-        logger.error(f"Image gen HTTP error {e.response.status_code}: {error_detail}")
-        
-        # User-friendly message for 400 errors (likely content policy or prompt issues)
-        if e.response.status_code == 400:
-            msg = "Image generation failed: Invalid prompt or content policy violation."
-        else:
-            msg = f"Service error ({e.response.status_code}). Please try again."
             
+    except httpx.HTTPStatusError as e:
+        # Parse the JSON response to get the specific error message
+        user_facing_msg = "Image generation failed. Please try a different prompt."
+        
+        try:
+            error_json = e.response.json()
+            # Extract the specific "message" field from OpenAI's error structure
+            # Structure: { "error": { "message": "...", "code": "..." } }
+            if "error" in error_json and "message" in error_json["error"]:
+                user_facing_msg = error_json["error"]["message"]
+            else:
+                user_facing_msg = e.response.text
+        except Exception:
+            # Fallback if JSON parsing fails
+            user_facing_msg = f"Service error ({e.response.status_code})."
+            
+        logger.error(f"Image gen HTTP error {e.response.status_code}: {user_facing_msg}")
+        
         async def err_gen():
-            yield sse({"type": "error", "message": msg})
+            yield sse({"type": "error", "message": user_facing_msg})
         
         if stream: return StreamingResponse(err_gen(), media_type="text/event-stream")
-        return {"error": msg}
+        return {"error": user_facing_msg}
         
     except Exception as e:
-        # Capture generic exception
         error_msg = str(e)
         logger.error(f"Image gen unexpected error: {error_msg}")
-        
         async def err_gen():
             yield sse({"type": "error", "message": "An unexpected error occurred."})
-        
         if stream: return StreamingResponse(err_gen(), media_type="text/event-stream")
         return {"error": error_msg}
     
@@ -3421,7 +3423,6 @@ async def handle_image_generation(prompt: str, user: Dict[str, Any], conv_id: st
                 try:
                     fname = f"{uuid.uuid4().hex}.png"
                     path = f"public/{fname}"
-                    # Upload to Supabase Storage
                     await asyncio.to_thread(
                         lambda: supabase.storage.from_("ai-images").upload(path, img_bytes, {"content-type": "image/png"})
                     )
@@ -3429,7 +3430,6 @@ async def handle_image_generation(prompt: str, user: Dict[str, Any], conv_id: st
                     images.append({"url": url})
                 except Exception as upload_err:
                     logger.error(f"Failed to upload image to storage: {upload_err}")
-                    # Fallback to base64 if storage fails
                     images.append({"url": f"data:image/png;base64,{b64}"})
     except Exception as e:
         logger.error(f"Failed to parse image response: {e}")
@@ -3439,12 +3439,10 @@ async def handle_image_generation(prompt: str, user: Dict[str, Any], conv_id: st
         if stream: return StreamingResponse(err_gen(), media_type="text/event-stream")
         return {"error": msg}
     
-    # Stream results
     if stream:
         async def event_gen():
             yield sse({"type": "images", "images": images})
             yield sse({"type": "done"})
-        
         return StreamingResponse(event_gen(), media_type="text/event-stream")
     
     return {"images": images}
