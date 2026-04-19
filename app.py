@@ -2068,7 +2068,7 @@ Preserve important technical details.{file_context}"""
 
     async with httpx.AsyncClient() as client:
         r = await client.post(
-            f"https://api-inference.huggingface.co/models/{HF_MODEL}/v1/chat/completions",
+            f"POST https://api-inference.huggingface.co/models/Qwen/CodeQwen2.5-7B-Instruct",
             headers=get_hf_headers(),
             json={
                 "model": HF_MODEL,
