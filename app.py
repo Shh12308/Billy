@@ -69,7 +69,7 @@ if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
 
 app = FastAPI(
     title="HeloxAi API",
-    description="Advanced AI Assistant Backend - Powered by Hugging Face",
+    description="Advanced AI Assistant Backend",
     version="2.0.4"
 )
 
@@ -1889,7 +1889,7 @@ async def update_user_memory(user_id: str, new_memory: str):
 
 
 def get_hf_headers():
-    return {"Authorization": f"Bearer {HUGGINGFACE_API_KEY}"}
+    return {"Authorization": f"Bearer {HF_API_KEY}"}
 
 
 def get_openai_headers():
