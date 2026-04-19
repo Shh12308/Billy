@@ -41,10 +41,12 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")  # CRITICAL: Used for backend Admin access
 
-# UPDATED: Using Groq API Key (Free Tier)
-GROQ_API_KEY = os.getenv("GROQ_API_KEY").strip() if os.getenv("GROQ_API_KEY") else None
+# UPDATED: Using Hugging Face Inference API (Free Tier)
+HUGGINGFACE_API_KEY = os.getenv("HUGGINGFACE_API_KEY").strip() if os.getenv("HUGGINGFACE_API_KEY") else None
+# Model Selection: Qwen 2.5 Coder is an excellent open-source code model
+HF_MODEL = "Qwen/CodeQwen2.5-7B-Instruct" 
 
-# Kept for Vision, Images, and TTS
+# Kept for Vision, Images, and TTS (OpenAI has the best integration for these)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
 LOGO_URL = os.getenv("LOGO_URL", "https://heloxai.xyz/logo.png")
@@ -67,8 +69,8 @@ if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
 
 app = FastAPI(
     title="HeloxAi API",
-    description="Advanced AI Assistant Backend - Powered by Groq",
-    version="2.0.3"
+    description="Advanced AI Assistant Backend - Powered by Hugging Face",
+    version="2.0.4"
 )
 
 # CORS
@@ -1886,8 +1888,8 @@ async def update_user_memory(user_id: str, new_memory: str):
         logger.error(f"Failed to update user memory: {e}")
 
 
-def get_groq_headers():
-    return {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
+def get_hf_headers():
+    return {"Authorization": f"Bearer {HUGGINGFACE_API_KEY}"}
 
 
 def get_openai_headers():
@@ -2052,8 +2054,8 @@ Preserve important technical details.{file_context}"""
         async def gen():
             task = asyncio.current_task()
             try:
-                # Using Groq for analysis
-                async for token in stream_groq_chat(messages, model="llama-3.3-70b-versatile"):
+                # Using HF for analysis
+                async for token in stream_hf_chat(messages, model=HF_MODEL):
                     if task.cancelled():
                         break
                     yield sse({"type": "token", "text": token})
@@ -2066,11 +2068,12 @@ Preserve important technical details.{file_context}"""
 
     async with httpx.AsyncClient() as client:
         r = await client.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers=get_groq_headers(),
+            f"https://api-inference.huggingface.co/models/{HF_MODEL}/v1/chat/completions",
+            headers=get_hf_headers(),
             json={
-                "model": "llama-3.3-70b-versatile",
-                "messages": messages
+                "model": HF_MODEL,
+                "messages": messages,
+                "max_tokens": 4096
             }
         )
         r.raise_for_status()
@@ -2130,20 +2133,21 @@ async def get_history(conv_id: str, limit: int = 10):
     return [{"role": m["role"], "content": m["content"]} for m in (res.data or [])]
 
 
-async def stream_groq_chat(messages: list, model: str = "llama-3.3-70b-versatile", max_tokens: int = 4096):
-    """Stream chat completion using Groq API"""
+async def stream_hf_chat(messages: list, model: str = HF_MODEL, max_tokens: int = 4096):
+    """Stream chat completion using Hugging Face Inference API"""
     try:
+        url = f"https://api-inference.huggingface.co/models/{model}/v1/chat/completions"
         async with httpx.AsyncClient(timeout=None) as client:
             async with client.stream(
                 "POST",
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers=get_groq_headers(),
+                url,
+                headers=get_hf_headers(),
                 json={"model": model, "messages": messages, "stream": True, "max_tokens": max_tokens}
             ) as resp:
                 
                 if resp.status_code != 200:
                     error_text = await resp.aread()
-                    logger.error(f"Groq API Error {resp.status_code}: {error_text}")
+                    logger.error(f"HF API Error {resp.status_code}: {error_text}")
                     raise Exception(f"AI Service Error ({resp.status_code})")
 
                 async for line in resp.aiter_lines():
@@ -2159,7 +2163,7 @@ async def stream_groq_chat(messages: list, model: str = "llama-3.3-70b-versatile
                         except:
                             pass
     except httpx.ConnectError:
-        logger.error("Failed to connect to Groq API.")
+        logger.error("Failed to connect to Hugging Face API.")
         raise Exception("Connection to AI service failed.")
     except Exception as e:
         logger.error(f"Stream generation error: {e}")
@@ -2188,16 +2192,14 @@ async def handle_code_assistant(prompt: str, user: Dict[str, Any], conv_id: str,
             active_streams[user["id"]] = task
             try:
                 full_text = ""
-                # Use Groq for code tasks. Llama 3.3 is excellent at code.
-                async for token in stream_groq_chat(messages, model="llama-3.3-70b-versatile"):
+                # Use Hugging Face for code tasks. Qwen2.5 is excellent at code.
+                async for token in stream_hf_chat(messages, model=HF_MODEL):
                     if task.cancelled():
                         break
                     full_text += token
                     yield sse({"type": "token", "text": token})
 
                 # MEMORY UPDATE LOGIC: Update user memory with a summary of the interaction
-                # For a production app, you might want to extract specific facts rather than appending full text.
-                # Here we append a truncated summary to ensure the "memory" feature works.
                 if user_memory:
                     new_memory = user_memory + "\n" + full_text[-500:]
                 else:
@@ -2227,9 +2229,9 @@ async def handle_code_assistant(prompt: str, user: Dict[str, Any], conv_id: str,
 
     async with httpx.AsyncClient(timeout=60) as client:
         r = await client.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers=get_groq_headers(),
-            json={"model": "llama-3.3-70b-versatile", "messages": messages, "max_tokens": 4096}
+            f"https://api-inference.huggingface.co/models/{HF_MODEL}/v1/chat/completions",
+            headers=get_hf_headers(),
+            json={"model": HF_MODEL, "messages": messages, "max_tokens": 4096}
         )
         r.raise_for_status()
         reply = r.json()["choices"][0]["message"]["content"]
@@ -2275,8 +2277,8 @@ async def root():
     return {
         "status": "running",
         "service": "HeloxAi Backend",
-        "version": "2.0.3",
-        "llm_provider": "Groq (Free Tier)",
+        "version": "2.0.4",
+        "llm_provider": "Hugging Face (Free Inference)",
         "features": {
             "intent_detection": "advanced",
             "user_recognition": "production-grade",
@@ -2439,8 +2441,8 @@ async def ask_universal(req: Request, res: Response):
                 full_history = [{"role": "system", "content": base_system}] + history
                 
                 full_text = ""
-                # Use Groq for general purpose
-                async for token in stream_groq_chat(full_history, model="llama-3.3-70b-versatile"):
+                # Use HF for general purpose
+                async for token in stream_hf_chat(full_history, model=HF_MODEL):
                     if task.cancelled():
                         break
                     full_text += token
@@ -2479,9 +2481,9 @@ async def ask_universal(req: Request, res: Response):
         
         async with httpx.AsyncClient() as client:
             r = await client.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers=get_groq_headers(),
-                json={"model": "llama-3.3-70b-versatile", "messages": full_history, "max_tokens": 4096}
+                f"https://api-inference.huggingface.co/models/{HF_MODEL}/v1/chat/completions",
+                headers=get_hf_headers(),
+                json={"model": HF_MODEL, "messages": full_history, "max_tokens": 4096}
             )
             r.raise_for_status()
             reply = r.json()["choices"][0]["message"]["content"]
@@ -2606,7 +2608,7 @@ You are analyzing an archive file (ZIP, TAR, etc.). The archive contents have be
 
 Your task:
 1. Provide an overview of what this archive contains
-2. Identify the main purpose/type of the project or files
+2. Identify the main purpose/type of project or files
 3. If it's a code project, describe the structure, technologies used, and main functionality
 4. Highlight any important files or configurations
 5. Note any potential issues, missing files, or areas of concern
@@ -2631,7 +2633,7 @@ Be organized and clear in your analysis."""
                     "files": result.files
                 })
                 
-                async for token in stream_groq_chat(messages, model="llama-3.3-70b-versatile"):
+                async for token in stream_hf_chat(messages, model=HF_MODEL):
                     if task.cancelled():
                         break
                     yield sse({"type": "token", "text": token})
@@ -2644,9 +2646,9 @@ Be organized and clear in your analysis."""
 
     async with httpx.AsyncClient() as client:
         r = await client.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers=get_groq_headers(),
-            json={"model": "llama-3.3-70b-versatile", "messages": messages}
+            f"https://api-inference.huggingface.co/models/{HF_MODEL}/v1/chat/completions",
+            headers=get_hf_headers(),
+            json={"model": HF_MODEL, "messages": messages}
         )
         r.raise_for_status()
 
@@ -2771,7 +2773,7 @@ Format complex equations clearly using LaTeX-style notation where appropriate.""
             active_streams[user["id"]] = task
             try:
                 full_text = ""
-                async for token in stream_groq_chat(messages, model="llama-3.3-70b-versatile"):
+                async for token in stream_hf_chat(messages, model=HF_MODEL):
                     if task.cancelled():
                         break
                     full_text += token
@@ -2799,9 +2801,9 @@ Format complex equations clearly using LaTeX-style notation where appropriate.""
 
     async with httpx.AsyncClient(timeout=60) as client:
         r = await client.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers=get_groq_headers(),
-            json={"model": "llama-3.3-70b-versatile", "messages": messages, "max_tokens": 4096}
+            f"https://api-inference.huggingface.co/models/{HF_MODEL}/v1/chat/completions",
+            headers=get_hf_headers(),
+            json={"model": HF_MODEL, "messages": messages, "max_tokens": 4096}
         )
         r.raise_for_status()
         reply = r.json()["choices"][0]["message"]["content"]
@@ -2838,7 +2840,7 @@ Be thorough but concise."""
             active_streams[user["id"]] = task
             try:
                 full_text = ""
-                async for token in stream_groq_chat(messages, model="llama-3.3-70b-versatile", max_tokens=8192):
+                async for token in stream_hf_chat(messages, model=HF_MODEL, max_tokens=8192):
                     if task.cancelled():
                         break
                     full_text += token
@@ -2866,9 +2868,9 @@ Be thorough but concise."""
 
     async with httpx.AsyncClient(timeout=60) as client:
         r = await client.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers=get_groq_headers(),
-            json={"model": "llama-3.3-70b-versatile", "messages": messages, "max_tokens": 8192}
+            f"https://api-inference.huggingface.co/models/{HF_MODEL}/v1/chat/completions",
+            headers=get_hf_headers(),
+            json={"model": HF_MODEL, "messages": messages, "max_tokens": 8192}
         )
         r.raise_for_status()
         reply = r.json()["choices"][0]["message"]["content"]
@@ -2905,7 +2907,7 @@ Adapt your style to the specific creative request."""
             active_streams[user["id"]] = task
             try:
                 full_text = ""
-                async for token in stream_groq_chat(messages, model="llama-3.3-70b-versatile"):
+                async for token in stream_hf_chat(messages, model=HF_MODEL):
                     if task.cancelled():
                         break
                     full_text += token
@@ -2933,9 +2935,9 @@ Adapt your style to the specific creative request."""
 
     async with httpx.AsyncClient(timeout=60) as client:
         r = await client.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers=get_groq_headers(),
-            json={"model": "llama-3.3-70b-versatile", "messages": messages, "max_tokens": 4096}
+            f"https://api-inference.huggingface.co/models/{HF_MODEL}/v1/chat/completions",
+            headers=get_hf_headers(),
+            json={"model": HF_MODEL, "messages": messages, "max_tokens": 4096}
         )
         r.raise_for_status()
         reply = r.json()["choices"][0]["message"]["content"]
@@ -2952,7 +2954,7 @@ async def handle_translation_request(prompt: str, user: Dict[str, Any], conv_id:
     system_prompt = get_system_prompt(prompt) + """
 
 You are also a professional translator. When translating:
-1. Preserve the meaning and tone of the original
+1. Preserve meaning and tone of the original
 2. Use natural, idiomatic language in the target
 3. Handle cultural nuances appropriately
 4. Maintain formatting where possible
@@ -2972,7 +2974,7 @@ Always indicate the source and target languages."""
             active_streams[user["id"]] = task
             try:
                 full_text = ""
-                async for token in stream_groq_chat(messages, model="llama-3.3-70b-versatile"):
+                async for token in stream_hf_chat(messages, model=HF_MODEL):
                     if task.cancelled():
                         break
                     full_text += token
@@ -3000,9 +3002,9 @@ Always indicate the source and target languages."""
 
     async with httpx.AsyncClient(timeout=60) as client:
         r = await client.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers=get_groq_headers(),
-            json={"model": "llama-3.3-70b-versatile", "messages": messages, "max_tokens": 4096}
+            f"https://api-inference.huggingface.co/models/{HF_MODEL}/v1/chat/completions",
+            headers=get_hf_headers(),
+            json={"model": HF_MODEL, "messages": messages, "max_tokens": 4096}
         )
         r.raise_for_status()
         reply = r.json()["choices"][0]["message"]["content"]
@@ -3039,7 +3041,7 @@ Tailor the summary length to the complexity of the content."""
             active_streams[user["id"]] = task
             try:
                 full_text = ""
-                async for token in stream_groq_chat(messages, model="llama-3.3-70b-versatile"):
+                async for token in stream_hf_chat(messages, model=HF_MODEL):
                     if task.cancelled():
                         break
                     full_text += token
@@ -3067,9 +3069,9 @@ Tailor the summary length to the complexity of the content."""
 
     async with httpx.AsyncClient(timeout=60) as client:
         r = await client.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers=get_groq_headers(),
-            json={"model": "llama-3.3-70b-versatile", "messages": messages, "max_tokens": 4096}
+            f"https://api-inference.huggingface.co/models/{HF_MODEL}/v1/chat/completions",
+            headers=get_hf_headers(),
+            json={"model": HF_MODEL, "messages": messages, "max_tokens": 4096}
         )
         r.raise_for_status()
         reply = r.json()["choices"][0]["message"]["content"]
@@ -3167,8 +3169,8 @@ async def regenerate(req: Request, res: Response):
             full_history = [{"role": "system", "content": base_system}] + history
             
             full_text = ""
-            # Using Groq for regeneration
-            async for token in stream_groq_chat(full_history, model="llama-3.3-70b-versatile"):
+            # Using HF for regeneration
+            async for token in stream_hf_chat(full_history, model=HF_MODEL):
                 if task and task.cancelled():
                     break
                 full_text += token
@@ -3350,7 +3352,7 @@ async def speech_to_text(file: UploadFile = File(...)):
 # =========================
 # MEDIA GENERATION HANDLERS
 # =========================
-async def handle_image_generation(prompt: str, user: Dict[str, Any], conv_id: str, stream: bool, style: str = None, size: str = "1024x1024", num_images: int = 1):
+async def handle_image_generation(prompt: str, user: Dict[str, Any], conv_id: str, stream: bool, style: str = None, size: str = "1024x1024", num_images: int =1):
     MAX_PROMPT_LEN = 4000 
     if not OPENAI_API_KEY:
         msg = "No API Key"
