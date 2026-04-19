@@ -2066,9 +2066,10 @@ Preserve important technical details.{file_context}"""
 
         return StreamingResponse(gen(), media_type="text/event-stream")
 
+    # --- CORRECTED NON-STREAMING BLOCK ---
     async with httpx.AsyncClient() as client:
         r = await client.post(
-            f"POST https://api-inference.huggingface.co/models/Qwen/CodeQwen2.5-7B-Instruct",
+            "https://api-inference.huggingface.co/v1/chat/completions", # CORRECT URL
             headers=get_hf_headers(),
             json={
                 "model": HF_MODEL,
@@ -2136,7 +2137,9 @@ async def get_history(conv_id: str, limit: int = 10):
 async def stream_hf_chat(messages: list, model: str = HF_MODEL, max_tokens: int = 4096):
     """Stream chat completion using Hugging Face Inference API"""
     try:
-        url = f"https://api-inference.huggingface.co/models/{model}/v1/chat/completions"
+        # CORRECT URL: Removed model name from path, it goes in the JSON body
+        url = "https://api-inference.huggingface.co/v1/chat/completions"
+        
         async with httpx.AsyncClient(timeout=None) as client:
             async with client.stream(
                 "POST",
@@ -2168,7 +2171,6 @@ async def stream_hf_chat(messages: list, model: str = HF_MODEL, max_tokens: int 
     except Exception as e:
         logger.error(f"Stream generation error: {e}")
         raise e
-
 
 async def handle_code_assistant(prompt: str, user: Dict[str, Any], conv_id: str, stream: bool):
     system_prompt = get_detector().get_code_system_prompt(prompt)
