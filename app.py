@@ -40,7 +40,11 @@ logger = logging.getLogger("HeloXAi")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")  # CRITICAL: Used for backend Admin access
-GROQ_API_KEY = os.getenv("GROQ_API_KEY").strip() if os.getenv("GROQ_API_KEY") else None
+
+# UPDATED: Using DeepSeek API Key
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY").strip() if os.getenv("DEEPSEEK_API_KEY") else None
+
+# Kept for Vision, Images, and TTS
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
 LOGO_URL = os.getenv("LOGO_URL", "https://heloxai.xyz/logo.png")
@@ -63,8 +67,8 @@ if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
 
 app = FastAPI(
     title="HeloxAi API",
-    description="Advanced AI Assistant Backend",
-    version="2.0.1"
+    description="Advanced AI Assistant Backend - Powered by DeepSeek",
+    version="2.0.2"
 )
 
 # CORS
@@ -1882,8 +1886,8 @@ async def update_user_memory(user_id: str, new_memory: str):
         logger.error(f"Failed to update user memory: {e}")
 
 
-def get_groq_headers():
-    return {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
+def get_deepseek_headers():
+    return {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
 
 
 def get_openai_headers():
@@ -2048,7 +2052,8 @@ Preserve important technical details.{file_context}"""
         async def gen():
             task = asyncio.current_task()
             try:
-                async for token in stream_groq_chat(messages):
+                # Using deepseek-chat for analysis
+                async for token in stream_deepseek_chat(messages, model="deepseek-chat"):
                     if task.cancelled():
                         break
                     yield sse({"type": "token", "text": token})
@@ -2061,10 +2066,10 @@ Preserve important technical details.{file_context}"""
 
     async with httpx.AsyncClient() as client:
         r = await client.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers=get_groq_headers(),
+            "https://api.deepseek.com/chat/completions",
+            headers=get_deepseek_headers(),
             json={
-                "model": "llama-3.3-70b-versatile",
+                "model": "deepseek-chat",
                 "messages": messages
             }
         )
@@ -2125,19 +2130,20 @@ async def get_history(conv_id: str, limit: int = 10):
     return [{"role": m["role"], "content": m["content"]} for m in (res.data or [])]
 
 
-async def stream_groq_chat(messages: list, model: str = "llama-3.3-70b-versatile", max_tokens: int = 1024):
+async def stream_deepseek_chat(messages: list, model: str = "deepseek-chat", max_tokens: int = 4096):
+    """Stream chat completion using DeepSeek API"""
     try:
         async with httpx.AsyncClient(timeout=None) as client:
             async with client.stream(
                 "POST",
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers=get_groq_headers(),
+                "https://api.deepseek.com/chat/completions",
+                headers=get_deepseek_headers(),
                 json={"model": model, "messages": messages, "stream": True, "max_tokens": max_tokens}
             ) as resp:
                 
                 if resp.status_code != 200:
                     error_text = await resp.aread()
-                    logger.error(f"Groq API Error {resp.status_code}: {error_text}")
+                    logger.error(f"DeepSeek API Error {resp.status_code}: {error_text}")
                     raise Exception(f"AI Service Error ({resp.status_code})")
 
                 async for line in resp.aiter_lines():
@@ -2153,7 +2159,7 @@ async def stream_groq_chat(messages: list, model: str = "llama-3.3-70b-versatile
                         except:
                             pass
     except httpx.ConnectError:
-        logger.error("Failed to connect to Groq API.")
+        logger.error("Failed to connect to DeepSeek API.")
         raise Exception("Connection to AI service failed.")
     except Exception as e:
         logger.error(f"Stream generation error: {e}")
@@ -2182,7 +2188,8 @@ async def handle_code_assistant(prompt: str, user: Dict[str, Any], conv_id: str,
             active_streams[user["id"]] = task
             try:
                 full_text = ""
-                async for token in stream_groq_chat(messages):
+                # Use deepseek-coder for code tasks
+                async for token in stream_deepseek_chat(messages, model="deepseek-coder"):
                     if task.cancelled():
                         break
                     full_text += token
@@ -2220,9 +2227,9 @@ async def handle_code_assistant(prompt: str, user: Dict[str, Any], conv_id: str,
 
     async with httpx.AsyncClient(timeout=60) as client:
         r = await client.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers=get_groq_headers(),
-            json={"model": "llama-3.3-70b-versatile", "messages": messages, "max_tokens": 2048}
+            "https://api.deepseek.com/chat/completions",
+            headers=get_deepseek_headers(),
+            json={"model": "deepseek-coder", "messages": messages, "max_tokens": 4096}
         )
         r.raise_for_status()
         reply = r.json()["choices"][0]["message"]["content"]
@@ -2268,7 +2275,8 @@ async def root():
     return {
         "status": "running",
         "service": "HeloxAi Backend",
-        "version": "2.0.1",
+        "version": "2.0.2",
+        "llm_provider": "DeepSeek",
         "features": {
             "intent_detection": "advanced",
             "user_recognition": "production-grade",
@@ -2431,7 +2439,8 @@ async def ask_universal(req: Request, res: Response):
                 full_history = [{"role": "system", "content": base_system}] + history
                 
                 full_text = ""
-                async for token in stream_groq_chat(full_history):
+                # Use deepseek-chat for general purpose
+                async for token in stream_deepseek_chat(full_history, model="deepseek-chat"):
                     if task.cancelled():
                         break
                     full_text += token
@@ -2470,9 +2479,9 @@ async def ask_universal(req: Request, res: Response):
         
         async with httpx.AsyncClient() as client:
             r = await client.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers=get_groq_headers(),
-                json={"model": "llama-3.3-70b-versatile", "messages": full_history, "max_tokens": 1024}
+                "https://api.deepseek.com/chat/completions",
+                headers=get_deepseek_headers(),
+                json={"model": "deepseek-chat", "messages": full_history, "max_tokens": 4096}
             )
             r.raise_for_status()
             reply = r.json()["choices"][0]["message"]["content"]
@@ -2622,7 +2631,7 @@ Be organized and clear in your analysis."""
                     "files": result.files
                 })
                 
-                async for token in stream_groq_chat(messages):
+                async for token in stream_deepseek_chat(messages, model="deepseek-chat"):
                     if task.cancelled():
                         break
                     yield sse({"type": "token", "text": token})
@@ -2635,9 +2644,9 @@ Be organized and clear in your analysis."""
 
     async with httpx.AsyncClient() as client:
         r = await client.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers=get_groq_headers(),
-            json={"model": "llama-3.3-70b-versatile", "messages": messages}
+            "https://api.deepseek.com/chat/completions",
+            headers=get_deepseek_headers(),
+            json={"model": "deepseek-chat", "messages": messages}
         )
         r.raise_for_status()
 
@@ -2762,7 +2771,7 @@ Format complex equations clearly using LaTeX-style notation where appropriate.""
             active_streams[user["id"]] = task
             try:
                 full_text = ""
-                async for token in stream_groq_chat(messages):
+                async for token in stream_deepseek_chat(messages, model="deepseek-chat"):
                     if task.cancelled():
                         break
                     full_text += token
@@ -2790,9 +2799,9 @@ Format complex equations clearly using LaTeX-style notation where appropriate.""
 
     async with httpx.AsyncClient(timeout=60) as client:
         r = await client.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers=get_groq_headers(),
-            json={"model": "llama-3.3-70b-versatile", "messages": messages, "max_tokens": 2048}
+            "https://api.deepseek.com/chat/completions",
+            headers=get_deepseek_headers(),
+            json={"model": "deepseek-chat", "messages": messages, "max_tokens": 4096}
         )
         r.raise_for_status()
         reply = r.json()["choices"][0]["message"]["content"]
@@ -2829,7 +2838,7 @@ Be thorough but concise."""
             active_streams[user["id"]] = task
             try:
                 full_text = ""
-                async for token in stream_groq_chat(messages, max_tokens=2048):
+                async for token in stream_deepseek_chat(messages, model="deepseek-chat", max_tokens=8192):
                     if task.cancelled():
                         break
                     full_text += token
@@ -2857,9 +2866,9 @@ Be thorough but concise."""
 
     async with httpx.AsyncClient(timeout=60) as client:
         r = await client.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers=get_groq_headers(),
-            json={"model": "llama-3.3-70b-versatile", "messages": messages, "max_tokens": 2048}
+            "https://api.deepseek.com/chat/completions",
+            headers=get_deepseek_headers(),
+            json={"model": "deepseek-chat", "messages": messages, "max_tokens": 8192}
         )
         r.raise_for_status()
         reply = r.json()["choices"][0]["message"]["content"]
@@ -2896,7 +2905,7 @@ Adapt your style to the specific creative request."""
             active_streams[user["id"]] = task
             try:
                 full_text = ""
-                async for token in stream_groq_chat(messages, max_tokens=2048):
+                async for token in stream_deepseek_chat(messages, model="deepseek-chat"):
                     if task.cancelled():
                         break
                     full_text += token
@@ -2924,9 +2933,9 @@ Adapt your style to the specific creative request."""
 
     async with httpx.AsyncClient(timeout=60) as client:
         r = await client.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers=get_groq_headers(),
-            json={"model": "llama-3.3-70b-versatile", "messages": messages, "max_tokens": 2048}
+            "https://api.deepseek.com/chat/completions",
+            headers=get_deepseek_headers(),
+            json={"model": "deepseek-chat", "messages": messages, "max_tokens": 4096}
         )
         r.raise_for_status()
         reply = r.json()["choices"][0]["message"]["content"]
@@ -2963,7 +2972,7 @@ Always indicate the source and target languages."""
             active_streams[user["id"]] = task
             try:
                 full_text = ""
-                async for token in stream_groq_chat(messages):
+                async for token in stream_deepseek_chat(messages, model="deepseek-chat"):
                     if task.cancelled():
                         break
                     full_text += token
@@ -2991,9 +3000,9 @@ Always indicate the source and target languages."""
 
     async with httpx.AsyncClient(timeout=60) as client:
         r = await client.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers=get_groq_headers(),
-            json={"model": "llama-3.3-70b-versatile", "messages": messages, "max_tokens": 2048}
+            "https://api.deepseek.com/chat/completions",
+            headers=get_deepseek_headers(),
+            json={"model": "deepseek-chat", "messages": messages, "max_tokens": 4096}
         )
         r.raise_for_status()
         reply = r.json()["choices"][0]["message"]["content"]
@@ -3030,7 +3039,7 @@ Tailor the summary length to the complexity of the content."""
             active_streams[user["id"]] = task
             try:
                 full_text = ""
-                async for token in stream_groq_chat(messages):
+                async for token in stream_deepseek_chat(messages, model="deepseek-chat"):
                     if task.cancelled():
                         break
                     full_text += token
@@ -3058,9 +3067,9 @@ Tailor the summary length to the complexity of the content."""
 
     async with httpx.AsyncClient(timeout=60) as client:
         r = await client.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers=get_groq_headers(),
-            json={"model": "llama-3.3-70b-versatile", "messages": messages, "max_tokens": 2048}
+            "https://api.deepseek.com/chat/completions",
+            headers=get_deepseek_headers(),
+            json={"model": "deepseek-chat", "messages": messages, "max_tokens": 4096}
         )
         r.raise_for_status()
         reply = r.json()["choices"][0]["message"]["content"]
@@ -3158,7 +3167,9 @@ async def regenerate(req: Request, res: Response):
             full_history = [{"role": "system", "content": base_system}] + history
             
             full_text = ""
-            async for token in stream_groq_chat(full_history):
+            # Using deepseek-chat for regeneration unless specific code intent is detected, 
+            # but for simplicity we use chat model in regeneration or could re-detect intent.
+            async for token in stream_deepseek_chat(full_history, model="deepseek-chat"):
                 if task and task.cancelled():
                     break
                 full_text += token
@@ -3379,19 +3390,14 @@ async def handle_image_generation(prompt: str, user: Dict[str, Any], conv_id: st
             data = r.json()
             
     except httpx.HTTPStatusError as e:
-        # Parse the JSON response to get the specific error message
         user_facing_msg = "Image generation failed. Please try a different prompt."
-        
         try:
             error_json = e.response.json()
-            # Extract the specific "message" field from OpenAI's error structure
-            # Structure: { "error": { "message": "...", "code": "..." } }
             if "error" in error_json and "message" in error_json["error"]:
                 user_facing_msg = error_json["error"]["message"]
             else:
                 user_facing_msg = e.response.text
         except Exception:
-            # Fallback if JSON parsing fails
             user_facing_msg = f"Service error ({e.response.status_code})."
             
         logger.error(f"Image gen HTTP error {e.response.status_code}: {user_facing_msg}")
@@ -3410,7 +3416,6 @@ async def handle_image_generation(prompt: str, user: Dict[str, Any], conv_id: st
         if stream: return StreamingResponse(err_gen(), media_type="text/event-stream")
         return {"error": error_msg}
     
-    # Process successful response
     images = []
     try:
         for item in data.get("data", []):
@@ -3453,20 +3458,13 @@ async def handle_video_generation(prompt: str, user: Dict[str, Any], conv_id: st
     Routes to Luma for Realistic, Pika for Anime/Cartoon.
     """
     
-    # 1. Detect Style
-    # Simple keyword check or use your existing intent detector
-    # (Assuming you might update IntentDetector to detect 'anime' vs 'realistic')
     prompt_lower = prompt.lower()
     is_anime = any(k in prompt_lower for k in ['anime', 'manga', 'cartoon', '2d animation', 'studio ghibli'])
     
-    # 2. Select Model based on intent
     if is_anime:
-        # Use Pika for Anime/Cartoon styles
         MODEL_VERSION = "pika-labs/pika-1.0" 
-        # Pika inputs often differ slightly, check docs, but usually support 'prompt'
         model_name = "Pika"
     else:
-        # Use Luma Dream Machine for Realistic/Cinematic/General
         MODEL_VERSION = "luma-dream-machine"
         model_name = "Luma"
 
@@ -3477,24 +3475,17 @@ async def handle_video_generation(prompt: str, user: Dict[str, Any], conv_id: st
             yield sse({"type": "status", "message": f"Initializing {model_name} AI..."})
             
             async with httpx.AsyncClient(timeout=300) as client:
-                # NOTE: Inputs differ slightly between models. 
-                # Luma usually takes: prompt, loop, aspect_ratio.
-                # Pika takes: prompt, frame_rate, motion_bucket_id.
-                
                 input_payload = {"prompt": prompt}
                 
                 if model_name == "Luma":
                     input_payload["loop"] = False
-                    # Luma supports specific aspect ratios like "16:9", "9:16"
                     if "vertical" in prompt_lower or "portrait" in prompt_lower or "phone" in prompt_lower:
                         input_payload["aspect_ratio"] = "9:16"
                     else:
                         input_payload["aspect_ratio"] = "16:9"
                 
                 elif model_name == "Pika":
-                    # Pika specific settings
                     input_payload["frame_rate"] = 24
-                    # Higher motion_bucket_id = more movement (0-255)
                     input_payload["motion_bucket_id"] = 150 
                 
                 r = await client.post(
@@ -3515,7 +3506,7 @@ async def handle_video_generation(prompt: str, user: Dict[str, Any], conv_id: st
                 yield sse({"type": "status", "message": f"Generating video ({model_name})..."})
                 
                 poll_count = 0
-                while poll_count < 180: # Luma can take longer, 6 mins max
+                while poll_count < 180: 
                     r = await client.get(f"https://api.replicate.com/v1/predictions/{prediction_id}", headers=headers)
                     r.raise_for_status()
                     data = r.json()
@@ -3523,13 +3514,11 @@ async def handle_video_generation(prompt: str, user: Dict[str, Any], conv_id: st
                     if data["status"] == "succeeded":
                         raw_video_url = data["output"]
                         
-                        # Handle list outputs (some models return a list)
                         if isinstance(raw_video_url, list):
                             raw_video_url = raw_video_url[0]
                             
                         yield sse({"type": "status", "message": "Applying watermark..."})
                         
-                        # Only watermark if user is not premium (optional logic)
                         watermarked_url = await add_watermark_to_video(raw_video_url)
                         
                         yield sse({"type": "video", "url": watermarked_url})
@@ -3588,11 +3577,6 @@ async def setup_sessions_table():
     -- Enable RLS
     ALTER TABLE user_sessions ENABLE ROW LEVEL SECURITY;
 
-    -- IMPORTANT: Since we are using Service Key for backend logic, we must allow the service role (or anon if we switch back) to manage these.
-    -- However, standard RLS policies for 'users' table usually block anon inserts.
-    -- Since we are using a custom backend with SERVICE KEY, we can technically bypass RLS,
-    -- but having the policies ensures safety if keys leak.
-    
     -- Policy: Service Role (or backend) can do anything
     CREATE POLICY "Service full access" ON user_sessions
         USING (true) WITH CHECK (true);
