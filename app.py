@@ -42,7 +42,7 @@ SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")  # CRITICAL: Used for backend Admin access
 
 # UPDATED: Using Hugging Face Inference API (Free Tier)
-HUGGINGFACE_API_KEY = os.getenv("HUGGINGFACE_API_KEY").strip() if os.getenv("HUGGINGFACE_API_KEY") else None
+HF_API_KEY = os.getenv("HF_API_KEY").strip() if os.getenv("HF_API_KEY") else None
 # Model Selection: Qwen 2.5 Coder is an excellent open-source code model
 HF_MODEL = "Qwen/CodeQwen2.5-7B-Instruct" 
 
