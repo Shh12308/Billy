@@ -1512,7 +1512,7 @@ class AdvancedIntentDetector:
             IntentCategory.CODE_DEBUG: """
 
 You are also an expert debugger. When analyzing code issues:
-1. Identify the root cause of the bug/error
+1. Identify root cause of bug/error
 2. Explain WHY it's happening (not just what)
 3. Provide the exact fix with clear code blocks
 4. Suggest how to prevent similar issues
@@ -1875,7 +1875,7 @@ async def get_user(
     return user_obj
 
 async def update_user_memory(user_id: str, new_memory: str):
-    """Update the user's long-term memory in the database."""
+    """Update user's long-term memory in the database."""
     try:
         await _execute_supabase_with_retry(
             supabase.table("users").update({"memory": new_memory}).eq("id", user_id),
@@ -1900,7 +1900,7 @@ def get_openai_headers():
 # VIDEO WATERMARK SYSTEM
 # =========================
 async def fetch_logo_image() -> Optional[bytes]:
-    """Fetch the logo.png from the configured URL"""
+    """Fetch logo.png from configured URL"""
     try:
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.get(LOGO_URL)
@@ -2228,26 +2228,27 @@ async def handle_code_assistant(prompt: str, user: Dict[str, Any], conv_id: str,
 
         return StreamingResponse(gen(), media_type="text/event-stream")
 
-async with httpx.AsyncClient(timeout=60) as client:
-    r = await client.post(
-        "https://api-inference.huggingface.co/v1/chat/completions",
-        headers=get_hf_headers(),
-        json={
-            "model": HF_MODEL,
-            "messages": messages,
-            "max_tokens": 4096
-        }
-    )
-    r.raise_for_status()
-    reply = r.json()["choices"][0]["message"]["content"]
-        
-        # Sync memory update for non-streaming
-        new_memory = (user_memory + "\n" + reply[-500:]) if user_memory else reply[-1000:]
-        asyncio.create_task(update_user_memory(user["id"], new_memory))
+    else:
+        async with httpx.AsyncClient(timeout=60) as client:
+            r = await client.post(
+                "https://api-inference.huggingface.co/v1/chat/completions",
+                headers=get_hf_headers(),
+                json={
+                    "model": HF_MODEL,
+                    "messages": messages,
+                    "max_tokens": 4096
+                }
+            )
+            r.raise_for_status()
+            reply = r.json()["choices"][0]["message"]["content"]
+                
+            # Sync memory update for non-streaming
+            new_memory = (user_memory + "\n" + reply[-500:]) if user_memory else reply[-1000:]
+            asyncio.create_task(update_user_memory(user["id"], new_memory))
 
-    if conv_id:
-        await save_message(user["id"], conv_id, "assistant", reply)
-    return {"reply": reply}
+        if conv_id:
+            await save_message(user["id"], conv_id, "assistant", reply)
+        return {"reply": reply}
 
 
 # LAZY LOADING FOR VISION
@@ -2485,12 +2486,11 @@ async def ask_universal(req: Request, res: Response):
         full_history = [{"role": "system", "content": base_system}] + history
         
         async with httpx.AsyncClient() as client:
-            # NEW (CORRECT)
-r = await client.post(
-    "https://api-inference.huggingface.co/v1/chat/completions",
-    headers=get_hf_headers(),
-    json={"model": HF_MODEL, "messages": messages, "max_tokens": 4096}
-)
+            r = await client.post(
+                "https://api-inference.huggingface.co/v1/chat/completions",
+                headers=get_hf_headers(),
+                json={"model": HF_MODEL, "messages": full_history, "max_tokens": 4096}
+            )
             r.raise_for_status()
             reply = r.json()["choices"][0]["message"]["content"]
             
@@ -2650,20 +2650,20 @@ Be organized and clear in your analysis."""
 
         return StreamingResponse(gen(), media_type="text/event-stream")
 
-    async with httpx.AsyncClient() as client:
-        # NEW (CORRECT)
-r = await client.post(
-    "https://api-inference.huggingface.co/v1/chat/completions",
-    headers=get_hf_headers(),
-    json={"model": HF_MODEL, "messages": messages, "max_tokens": 4096}
-)
-        r.raise_for_status()
+    else:
+        async with httpx.AsyncClient() as client:
+            r = await client.post(
+                "https://api-inference.huggingface.co/v1/chat/completions",
+                headers=get_hf_headers(),
+                json={"model": HF_MODEL, "messages": messages, "max_tokens": 4096}
+            )
+            r.raise_for_status()
 
-    return {
-        "analysis": r.json()["choices"][0]["message"]["content"],
-        "metadata": result.metadata,
-        "files": result.files
-    }
+        return {
+            "analysis": r.json()["choices"][0]["message"]["content"],
+            "metadata": result.metadata,
+            "files": result.files
+        }
 
 
 @app.get("/file-types")
@@ -2806,22 +2806,22 @@ Format complex equations clearly using LaTeX-style notation where appropriate.""
 
         return StreamingResponse(gen(), media_type="text/event-stream")
 
-    async with httpx.AsyncClient(timeout=60) as client:
-        # NEW (CORRECT)
-r = await client.post(
-    "https://api-inference.huggingface.co/v1/chat/completions",
-    headers=get_hf_headers(),
-    json={"model": HF_MODEL, "messages": messages, "max_tokens": 4096}
-)
-        r.raise_for_status()
-        reply = r.json()["choices"][0]["message"]["content"]
+    else:
+        async with httpx.AsyncClient(timeout=60) as client:
+            r = await client.post(
+                "https://api-inference.huggingface.co/v1/chat/completions",
+                headers=get_hf_headers(),
+                json={"model": HF_MODEL, "messages": messages, "max_tokens": 4096}
+            )
+            r.raise_for_status()
+            reply = r.json()["choices"][0]["message"]["content"]
 
-    # MEMORY UPDATE
-    new_memory = (user_memory + "\n" + reply[-500:]) if user_memory else reply[-1000:]
-    asyncio.create_task(update_user_memory(user["id"], new_memory))
+        # MEMORY UPDATE
+        new_memory = (user_memory + "\n" + reply[-500:]) if user_memory else reply[-1000:]
+        asyncio.create_task(update_user_memory(user["id"], new_memory))
 
-    await save_message(user["id"], conv_id, "assistant", reply)
-    return {"reply": reply}
+        await save_message(user["id"], conv_id, "assistant", reply)
+        return {"reply": reply}
 
 
 async def handle_research_request(prompt: str, user: Dict[str, Any], conv_id: str, stream: bool):
@@ -2874,22 +2874,22 @@ Be thorough but concise."""
 
         return StreamingResponse(gen(), media_type="text/event-stream")
 
-    async with httpx.AsyncClient(timeout=60) as client:
-        # NEW (CORRECT)
-r = await client.post(
-    "https://api-inference.huggingface.co/v1/chat/completions",
-    headers=get_hf_headers(),
-    json={"model": HF_MODEL, "messages": messages, "max_tokens": 4096}
-)
-        r.raise_for_status()
-        reply = r.json()["choices"][0]["message"]["content"]
+    else:
+        async with httpx.AsyncClient(timeout=60) as client:
+            r = await client.post(
+                "https://api-inference.huggingface.co/v1/chat/completions",
+                headers=get_hf_headers(),
+                json={"model": HF_MODEL, "messages": messages, "max_tokens": 4096}
+            )
+            r.raise_for_status()
+            reply = r.json()["choices"][0]["message"]["content"]
 
-    # MEMORY UPDATE
-    new_memory = (user_memory + "\n" + reply[-500:]) if user_memory else reply[-1000:]
-    asyncio.create_task(update_user_memory(user["id"], new_memory))
+        # MEMORY UPDATE
+        new_memory = (user_memory + "\n" + reply[-500:]) if user_memory else reply[-1000:]
+        asyncio.create_task(update_user_memory(user["id"], new_memory))
 
-    await save_message(user["id"], conv_id, "assistant", reply)
-    return {"reply": reply}
+        await save_message(user["id"], conv_id, "assistant", reply)
+        return {"reply": reply}
 
 
 async def handle_creative_request(prompt: str, user: Dict[str, Any], conv_id: str, stream: bool):
@@ -2942,29 +2942,29 @@ Adapt your style to the specific creative request."""
 
         return StreamingResponse(gen(), media_type="text/event-stream")
 
-    async with httpx.AsyncClient(timeout=60) as client:
-     # NEW (CORRECT)
-r = await client.post(
-    "https://api-inference.huggingface.co/v1/chat/completions",
-    headers=get_hf_headers(),
-    json={"model": HF_MODEL, "messages": messages, "max_tokens": 4096}
-)
-        r.raise_for_status()
-        reply = r.json()["choices"][0]["message"]["content"]
+    else:
+        async with httpx.AsyncClient(timeout=60) as client:
+            r = await client.post(
+                "https://api-inference.huggingface.co/v1/chat/completions",
+                headers=get_hf_headers(),
+                json={"model": HF_MODEL, "messages": messages, "max_tokens": 4096}
+            )
+            r.raise_for_status()
+            reply = r.json()["choices"][0]["message"]["content"]
 
-    # MEMORY UPDATE
-    new_memory = (user_memory + "\n" + reply[-500:]) if user_memory else reply[-1000:]
-    asyncio.create_task(update_user_memory(user["id"], new_memory))
+        # MEMORY UPDATE
+        new_memory = (user_memory + "\n" + reply[-500:]) if user_memory else reply[-1000:]
+        asyncio.create_task(update_user_memory(user["id"], new_memory))
 
-    await save_message(user["id"], conv_id, "assistant", reply)
-    return {"reply": reply}
+        await save_message(user["id"], conv_id, "assistant", reply)
+        return {"reply": reply}
 
 
 async def handle_translation_request(prompt: str, user: Dict[str, Any], conv_id: str, stream: bool):
     system_prompt = get_system_prompt(prompt) + """
 
 You are also a professional translator. When translating:
-1. Preserve meaning and tone of the original
+1. Preserve meaning and tone of original
 2. Use natural, idiomatic language in the target
 3. Handle cultural nuances appropriately
 4. Maintain formatting where possible
@@ -3010,22 +3010,22 @@ Always indicate the source and target languages."""
 
         return StreamingResponse(gen(), media_type="text/event-stream")
 
-    async with httpx.AsyncClient(timeout=60) as client:
-        # NEW (CORRECT)
-r = await client.post(
-    "https://api-inference.huggingface.co/v1/chat/completions",
-    headers=get_hf_headers(),
-    json={"model": HF_MODEL, "messages": messages, "max_tokens": 4096}
-)
-        r.raise_for_status()
-        reply = r.json()["choices"][0]["message"]["content"]
+    else:
+        async with httpx.AsyncClient(timeout=60) as client:
+            r = await client.post(
+                "https://api-inference.huggingface.co/v1/chat/completions",
+                headers=get_hf_headers(),
+                json={"model": HF_MODEL, "messages": messages, "max_tokens": 4096}
+            )
+            r.raise_for_status()
+            reply = r.json()["choices"][0]["message"]["content"]
 
-    # MEMORY UPDATE
-    new_memory = (user_memory + "\n" + reply[-500:]) if user_memory else reply[-1000:]
-    asyncio.create_task(update_user_memory(user["id"], new_memory))
+        # MEMORY UPDATE
+        new_memory = (user_memory + "\n" + reply[-500:]) if user_memory else reply[-1000:]
+        asyncio.create_task(update_user_memory(user["id"], new_memory))
 
-    await save_message(user["id"], conv_id, "assistant", reply)
-    return {"reply": reply}
+        await save_message(user["id"], conv_id, "assistant", reply)
+        return {"reply": reply}
 
 
 async def handle_summary_request(prompt: str, user: Dict[str, Any], conv_id: str, stream: bool):
@@ -3078,22 +3078,22 @@ Tailor the summary length to the complexity of the content."""
 
         return StreamingResponse(gen(), media_type="text/event-stream")
 
-    async with httpx.AsyncClient(timeout=60) as client:
-        # NEW (CORRECT)
-r = await client.post(
-    "https://api-inference.huggingface.co/v1/chat/completions",
-    headers=get_hf_headers(),
-    json={"model": HF_MODEL, "messages": messages, "max_tokens": 4096}
-)
-        r.raise_for_status()
-        reply = r.json()["choices"][0]["message"]["content"]
+    else:
+        async with httpx.AsyncClient(timeout=60) as client:
+            r = await client.post(
+                "https://api-inference.huggingface.co/v1/chat/completions",
+                headers=get_hf_headers(),
+                json={"model": HF_MODEL, "messages": messages, "max_tokens": 4096}
+            )
+            r.raise_for_status()
+            reply = r.json()["choices"][0]["message"]["content"]
 
-    # MEMORY UPDATE
-    new_memory = (user_memory + "\n" + reply[-500:]) if user_memory else reply[-1000:]
-    asyncio.create_task(update_user_memory(user["id"], new_memory))
+        # MEMORY UPDATE
+        new_memory = (user_memory + "\n" + reply[-500:]) if user_memory else reply[-1000:]
+        asyncio.create_task(update_user_memory(user["id"], new_memory))
 
-    await save_message(user["id"], conv_id, "assistant", reply)
-    return {"reply": reply}
+        await save_message(user["id"], conv_id, "assistant", reply)
+        return {"reply": reply}
 
 
 # =========================
