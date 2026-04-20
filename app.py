@@ -17,7 +17,7 @@ from typing import Optional, Dict, Any, List, Union, Tuple
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
-from fastapi import FastAPI, Request, Response, HTTPException, Depends, UploadFile, File, Cookie, Header
+from fastapi import FastAPI, Request, Response, HTTPException, Depends, UploadFile, File, Cookie, Header, Form
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, validator
@@ -2073,15 +2073,73 @@ Preserve important technical details.{file_context}"""
     return {"analysis": r.json()["choices"][0]["message"]["content"]}
 
 
-async def handle_image_analysis(image_bytes: bytes, stream: bool, user_prompt: str = ""):
-    b64 = base64.b64encode(image_bytes).decode()
+async def upload_image_bytes_to_storage(image_bytes: bytes, filename: str) -> Optional[str]:
+    """Upload image bytes to Supabase Storage and return the public URL."""
+    try:
+        ext = Path(filename).suffix.lower()
+        if not ext:
+            ext = ".png"
+        
+        fname = f"{uuid.uuid4().hex}{ext}"
+        path = f"public/{fname}"
+        
+        await asyncio.to_thread(
+            lambda: supabase.storage.from_("ai-images").upload(
+                path, image_bytes, {"content-type": mimetypes.guess_type(filename)[0] or "image/png"}
+            )
+        )
+        url = f"{SUPABASE_URL}/storage/v1/object/public/ai-images/{path}"
+        return url
+    except Exception as e:
+        logger.error(f"Failed to upload image to storage: {e}")
+        return None
 
+
+def get_image_metadata_from_bytes(image_bytes: bytes, filename: str) -> Dict[str, Any]:
+    """Extract image dimensions and format using Pillow if available."""
+    metadata = {
+        "filename": filename,
+        "size": len(image_bytes),
+        "size_formatted": format_file_size(len(image_bytes)),
+        "category": "image"
+    }
+    
+    try:
+        from PIL import Image
+        with Image.open(BytesIO(image_bytes)) as img:
+            metadata["width"] = img.width
+            metadata["height"] = img.height
+            metadata["format"] = img.format
+            metadata["mode"] = img.mode
+    except ImportError:
+        logger.debug("Pillow not installed, skipping advanced image metadata extraction")
+    except Exception as e:
+        logger.warning(f"Failed to extract image metadata: {e}")
+        
+    return metadata
+
+
+async def handle_image_analysis(
+    image_bytes: bytes, 
+    stream: bool, 
+    filename: str = "image.png", 
+    user_prompt: str = ""
+):
+    # 1. Upload to storage for persistence
+    image_url = await upload_image_bytes_to_storage(image_bytes, filename)
+    
+    # 2. Extract metadata
+    metadata = get_image_metadata_from_bytes(image_bytes, filename)
+    
+    # Fallback to Base64 if upload failed (needed for the prompt anyway)
+    b64 = base64.b64encode(image_bytes).decode()
+    
     payload = {
         "model": "gpt-4o-mini",
         "messages": [{
             "role": "user",
             "content": [
-                {"type": "text", "text": user_prompt or "Analyze this image in detail."},
+                {"type": "text", "text": user_prompt or "Analyze this image in detail. Describe the contents, style, and any notable features."},
                 {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}
             ]
         }]
@@ -2102,7 +2160,22 @@ async def handle_image_analysis(image_bytes: bytes, stream: bool, user_prompt: s
         async def gen():
             task = asyncio.current_task()
             try:
-                yield sse({"type": "text", "text": result})
+                # Send image data event first
+                yield sse({
+                    "type": "image_data",
+                    "url": image_url,
+                    "metadata": metadata,
+                    "data_uri": f"data:image/png;base64,{b64}" if not image_url else None
+                })
+                
+                # Stream text analysis
+                for token in result: # result is full text here, simulating stream for consistency if we wanted, but OpenAI returned full text
+                     # Actually the request above was blocking. To stream properly we'd need to use stream=True in payload.
+                     # For simplicity and consistency with 'ask/universal', let's yield the full text as tokens or one chunk.
+                     pass
+                
+                # Yielding full text as one chunk for now to match existing logic flow of blocking call
+                yield sse({"type": "token", "text": result})
                 yield sse({"type": "done"})
             except Exception as e:
                 logger.error(f"Image analysis stream error: {e}")
@@ -2110,7 +2183,11 @@ async def handle_image_analysis(image_bytes: bytes, stream: bool, user_prompt: s
 
         return StreamingResponse(gen(), media_type="text/event-stream")
 
-    return {"analysis": result}
+    return {
+        "analysis": result, 
+        "image_url": image_url, 
+        "metadata": metadata
+    }
 
 
 async def get_history(conv_id: str, limit: int = 10):
@@ -2491,6 +2568,7 @@ async def ask_universal(req: Request, res: Response):
 async def analyze_file(
     req: Request,
     file: UploadFile = File(...),
+    prompt: Optional[str] = Form(None), # Added prompt parameter
     stream: bool = True
 ):
     """
@@ -2498,7 +2576,7 @@ async def analyze_file(
     - All code files (.py, .js, .ts, .java, .cpp, .go, .rs, etc.)
     - Archives (.zip, .tar, .gz, etc.) - extracts and analyzes contents
     - Documents (.pdf, .txt, .md, .csv, etc.)
-    - Images (visual analysis)
+    - Images (visual analysis + metadata + upload)
     - Large files (up to 50MB single, 100MB archives)
     """
     user = await get_user(req, Response())
@@ -2526,7 +2604,7 @@ async def analyze_file(
     
     # Handle images separately
     if content_type.startswith("image/") or category == FileCategory.IMAGE:
-        return await handle_image_analysis(content, stream)
+        return await handle_image_analysis(content, stream, filename, prompt or "")
 
     # Extract content from file
     result = await extract_file_content(content, filename)
@@ -2546,6 +2624,7 @@ async def analyze_file(
     return await handle_text_analysis(
         result.content,
         stream,
+        user_prompt=prompt or "",
         file_metadata=result.metadata
     )
 
