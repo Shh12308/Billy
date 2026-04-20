@@ -2230,11 +2230,12 @@ async def handle_code_assistant(prompt: str, user: Dict[str, Any], conv_id: str,
         return StreamingResponse(gen(), media_type="text/event-stream")
 
     async with httpx.AsyncClient(timeout=60) as client:
-        r = await client.post(
-            f"https://api-inference.huggingface.co/models/{HF_MODEL}/v1/chat/completions",
-            headers=get_hf_headers(),
-            json={"model": HF_MODEL, "messages": messages, "max_tokens": 4096}
-        )
+        # NEW (CORRECT)
+r = await client.post(
+    "https://api-inference.huggingface.co/v1/chat/completions",
+    headers=get_hf_headers(),
+    json={"model": HF_MODEL, "messages": messages, "max_tokens": 4096}
+)
         r.raise_for_status()
         reply = r.json()["choices"][0]["message"]["content"]
         
@@ -2482,11 +2483,12 @@ async def ask_universal(req: Request, res: Response):
         full_history = [{"role": "system", "content": base_system}] + history
         
         async with httpx.AsyncClient() as client:
-            r = await client.post(
-                f"https://api-inference.huggingface.co/models/{HF_MODEL}/v1/chat/completions",
-                headers=get_hf_headers(),
-                json={"model": HF_MODEL, "messages": full_history, "max_tokens": 4096}
-            )
+            # NEW (CORRECT)
+r = await client.post(
+    "https://api-inference.huggingface.co/v1/chat/completions",
+    headers=get_hf_headers(),
+    json={"model": HF_MODEL, "messages": messages, "max_tokens": 4096}
+)
             r.raise_for_status()
             reply = r.json()["choices"][0]["message"]["content"]
             
@@ -2647,11 +2649,12 @@ Be organized and clear in your analysis."""
         return StreamingResponse(gen(), media_type="text/event-stream")
 
     async with httpx.AsyncClient() as client:
-        r = await client.post(
-            f"https://api-inference.huggingface.co/models/{HF_MODEL}/v1/chat/completions",
-            headers=get_hf_headers(),
-            json={"model": HF_MODEL, "messages": messages}
-        )
+        # NEW (CORRECT)
+r = await client.post(
+    "https://api-inference.huggingface.co/v1/chat/completions",
+    headers=get_hf_headers(),
+    json={"model": HF_MODEL, "messages": messages, "max_tokens": 4096}
+)
         r.raise_for_status()
 
     return {
@@ -2802,11 +2805,12 @@ Format complex equations clearly using LaTeX-style notation where appropriate.""
         return StreamingResponse(gen(), media_type="text/event-stream")
 
     async with httpx.AsyncClient(timeout=60) as client:
-        r = await client.post(
-            f"https://api-inference.huggingface.co/models/{HF_MODEL}/v1/chat/completions",
-            headers=get_hf_headers(),
-            json={"model": HF_MODEL, "messages": messages, "max_tokens": 4096}
-        )
+        # NEW (CORRECT)
+r = await client.post(
+    "https://api-inference.huggingface.co/v1/chat/completions",
+    headers=get_hf_headers(),
+    json={"model": HF_MODEL, "messages": messages, "max_tokens": 4096}
+)
         r.raise_for_status()
         reply = r.json()["choices"][0]["message"]["content"]
 
@@ -2869,11 +2873,12 @@ Be thorough but concise."""
         return StreamingResponse(gen(), media_type="text/event-stream")
 
     async with httpx.AsyncClient(timeout=60) as client:
-        r = await client.post(
-            f"https://api-inference.huggingface.co/models/{HF_MODEL}/v1/chat/completions",
-            headers=get_hf_headers(),
-            json={"model": HF_MODEL, "messages": messages, "max_tokens": 8192}
-        )
+        # NEW (CORRECT)
+r = await client.post(
+    "https://api-inference.huggingface.co/v1/chat/completions",
+    headers=get_hf_headers(),
+    json={"model": HF_MODEL, "messages": messages, "max_tokens": 4096}
+)
         r.raise_for_status()
         reply = r.json()["choices"][0]["message"]["content"]
 
@@ -2936,11 +2941,12 @@ Adapt your style to the specific creative request."""
         return StreamingResponse(gen(), media_type="text/event-stream")
 
     async with httpx.AsyncClient(timeout=60) as client:
-        r = await client.post(
-            f"https://api-inference.huggingface.co/models/{HF_MODEL}/v1/chat/completions",
-            headers=get_hf_headers(),
-            json={"model": HF_MODEL, "messages": messages, "max_tokens": 4096}
-        )
+     # NEW (CORRECT)
+r = await client.post(
+    "https://api-inference.huggingface.co/v1/chat/completions",
+    headers=get_hf_headers(),
+    json={"model": HF_MODEL, "messages": messages, "max_tokens": 4096}
+)
         r.raise_for_status()
         reply = r.json()["choices"][0]["message"]["content"]
 
@@ -3003,11 +3009,12 @@ Always indicate the source and target languages."""
         return StreamingResponse(gen(), media_type="text/event-stream")
 
     async with httpx.AsyncClient(timeout=60) as client:
-        r = await client.post(
-            f"https://api-inference.huggingface.co/models/{HF_MODEL}/v1/chat/completions",
-            headers=get_hf_headers(),
-            json={"model": HF_MODEL, "messages": messages, "max_tokens": 4096}
-        )
+        # NEW (CORRECT)
+r = await client.post(
+    "https://api-inference.huggingface.co/v1/chat/completions",
+    headers=get_hf_headers(),
+    json={"model": HF_MODEL, "messages": messages, "max_tokens": 4096}
+)
         r.raise_for_status()
         reply = r.json()["choices"][0]["message"]["content"]
 
@@ -3070,11 +3077,12 @@ Tailor the summary length to the complexity of the content."""
         return StreamingResponse(gen(), media_type="text/event-stream")
 
     async with httpx.AsyncClient(timeout=60) as client:
-        r = await client.post(
-            f"https://api-inference.huggingface.co/models/{HF_MODEL}/v1/chat/completions",
-            headers=get_hf_headers(),
-            json={"model": HF_MODEL, "messages": messages, "max_tokens": 4096}
-        )
+        # NEW (CORRECT)
+r = await client.post(
+    "https://api-inference.huggingface.co/v1/chat/completions",
+    headers=get_hf_headers(),
+    json={"model": HF_MODEL, "messages": messages, "max_tokens": 4096}
+)
         r.raise_for_status()
         reply = r.json()["choices"][0]["message"]["content"]
 
