@@ -2066,10 +2066,10 @@ Preserve important technical details.{file_context}"""
 
         return StreamingResponse(gen(), media_type="text/event-stream")
 
-    # --- CORRECTED NON-STREAMING BLOCK ---
+    # --- CORRECTED NON-STREAMING BLOCK (Pay attention to indentation) ---
     async with httpx.AsyncClient() as client:
         r = await client.post(
-            "https://api-inference.huggingface.co/v1/chat/completions", # CORRECT URL
+            "https://api-inference.huggingface.co/v1/chat/completions",
             headers=get_hf_headers(),
             json={
                 "model": HF_MODEL,
@@ -2080,7 +2080,6 @@ Preserve important technical details.{file_context}"""
         r.raise_for_status()
 
     return {"analysis": r.json()["choices"][0]["message"]["content"]}
-
 
 async def handle_image_analysis(image_bytes: bytes, stream: bool, user_prompt: str = ""):
     b64 = base64.b64encode(image_bytes).decode()
