@@ -40,13 +40,7 @@ logger = logging.getLogger("HeloXAi")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")  # CRITICAL: Used for backend Admin access
-
-# UPDATED: Using Hugging Face Inference API (Free Tier)
-HF_API_KEY = os.getenv("HF_API_KEY").strip() if os.getenv("HF_API_KEY") else None
-# Model Selection: Qwen 2.5 Coder is an excellent open-source code model
-HF_MODEL = "Qwen/CodeQwen2.5-7B-Instruct" 
-
-# Kept for Vision, Images, and TTS (OpenAI has the best integration for these)
+GROQ_API_KEY = os.getenv("GROQ_API_KEY").strip() if os.getenv("GROQ_API_KEY") else None
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
 LOGO_URL = os.getenv("LOGO_URL", "https://heloxai.xyz/logo.png")
@@ -70,7 +64,7 @@ if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
 app = FastAPI(
     title="HeloxAi API",
     description="Advanced AI Assistant Backend",
-    version="2.0.4"
+    version="2.0.1"
 )
 
 # CORS
@@ -1512,7 +1506,7 @@ class AdvancedIntentDetector:
             IntentCategory.CODE_DEBUG: """
 
 You are also an expert debugger. When analyzing code issues:
-1. Identify root cause of bug/error
+1. Identify the root cause of the bug/error
 2. Explain WHY it's happening (not just what)
 3. Provide the exact fix with clear code blocks
 4. Suggest how to prevent similar issues
@@ -1875,7 +1869,7 @@ async def get_user(
     return user_obj
 
 async def update_user_memory(user_id: str, new_memory: str):
-    """Update user's long-term memory in the database."""
+    """Update the user's long-term memory in the database."""
     try:
         await _execute_supabase_with_retry(
             supabase.table("users").update({"memory": new_memory}).eq("id", user_id),
@@ -1888,8 +1882,8 @@ async def update_user_memory(user_id: str, new_memory: str):
         logger.error(f"Failed to update user memory: {e}")
 
 
-def get_hf_headers():
-    return {"Authorization": f"Bearer {HF_API_KEY}"}
+def get_groq_headers():
+    return {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
 
 
 def get_openai_headers():
@@ -1900,7 +1894,7 @@ def get_openai_headers():
 # VIDEO WATERMARK SYSTEM
 # =========================
 async def fetch_logo_image() -> Optional[bytes]:
-    """Fetch logo.png from configured URL"""
+    """Fetch the logo.png from the configured URL"""
     try:
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.get(LOGO_URL)
@@ -2054,8 +2048,7 @@ Preserve important technical details.{file_context}"""
         async def gen():
             task = asyncio.current_task()
             try:
-                # Using HF for analysis
-                async for token in stream_hf_chat(messages, model=HF_MODEL):
+                async for token in stream_groq_chat(messages):
                     if task.cancelled():
                         break
                     yield sse({"type": "token", "text": token})
@@ -2066,20 +2059,19 @@ Preserve important technical details.{file_context}"""
 
         return StreamingResponse(gen(), media_type="text/event-stream")
 
-    # --- CORRECTED NON-STREAMING BLOCK (Pay attention to indentation) ---
     async with httpx.AsyncClient() as client:
         r = await client.post(
-            "https://api-inference.huggingface.co/v1/chat/completions",
-            headers=get_hf_headers(),
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers=get_groq_headers(),
             json={
-                "model": HF_MODEL,
-                "messages": messages,
-                "max_tokens": 4096
+                "model": "llama-3.3-70b-versatile",
+                "messages": messages
             }
         )
         r.raise_for_status()
 
     return {"analysis": r.json()["choices"][0]["message"]["content"]}
+
 
 async def handle_image_analysis(image_bytes: bytes, stream: bool, user_prompt: str = ""):
     b64 = base64.b64encode(image_bytes).decode()
@@ -2133,23 +2125,19 @@ async def get_history(conv_id: str, limit: int = 10):
     return [{"role": m["role"], "content": m["content"]} for m in (res.data or [])]
 
 
-async def stream_hf_chat(messages: list, model: str = HF_MODEL, max_tokens: int = 4096):
-    """Stream chat completion using Hugging Face Inference API"""
+async def stream_groq_chat(messages: list, model: str = "llama-3.3-70b-versatile", max_tokens: int = 1024):
     try:
-        # CORRECT URL: Removed model name from path, it goes in the JSON body
-        url = "https://api-inference.huggingface.co/v1/chat/completions"
-        
         async with httpx.AsyncClient(timeout=None) as client:
             async with client.stream(
                 "POST",
-                url,
-                headers=get_hf_headers(),
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers=get_groq_headers(),
                 json={"model": model, "messages": messages, "stream": True, "max_tokens": max_tokens}
             ) as resp:
                 
                 if resp.status_code != 200:
                     error_text = await resp.aread()
-                    logger.error(f"HF API Error {resp.status_code}: {error_text}")
+                    logger.error(f"Groq API Error {resp.status_code}: {error_text}")
                     raise Exception(f"AI Service Error ({resp.status_code})")
 
                 async for line in resp.aiter_lines():
@@ -2165,11 +2153,12 @@ async def stream_hf_chat(messages: list, model: str = HF_MODEL, max_tokens: int 
                         except:
                             pass
     except httpx.ConnectError:
-        logger.error("Failed to connect to Hugging Face API.")
+        logger.error("Failed to connect to Groq API.")
         raise Exception("Connection to AI service failed.")
     except Exception as e:
         logger.error(f"Stream generation error: {e}")
         raise e
+
 
 async def handle_code_assistant(prompt: str, user: Dict[str, Any], conv_id: str, stream: bool):
     system_prompt = get_detector().get_code_system_prompt(prompt)
@@ -2193,14 +2182,15 @@ async def handle_code_assistant(prompt: str, user: Dict[str, Any], conv_id: str,
             active_streams[user["id"]] = task
             try:
                 full_text = ""
-                # Use Hugging Face for code tasks. Qwen2.5 is excellent at code.
-                async for token in stream_hf_chat(messages, model=HF_MODEL):
+                async for token in stream_groq_chat(messages):
                     if task.cancelled():
                         break
                     full_text += token
                     yield sse({"type": "token", "text": token})
 
                 # MEMORY UPDATE LOGIC: Update user memory with a summary of the interaction
+                # For a production app, you might want to extract specific facts rather than appending full text.
+                # Here we append a truncated summary to ensure the "memory" feature works.
                 if user_memory:
                     new_memory = user_memory + "\n" + full_text[-500:]
                 else:
@@ -2228,27 +2218,22 @@ async def handle_code_assistant(prompt: str, user: Dict[str, Any], conv_id: str,
 
         return StreamingResponse(gen(), media_type="text/event-stream")
 
-    else:
-        async with httpx.AsyncClient(timeout=60) as client:
-            r = await client.post(
-                "https://api-inference.huggingface.co/v1/chat/completions",
-                headers=get_hf_headers(),
-                json={
-                    "model": HF_MODEL,
-                    "messages": messages,
-                    "max_tokens": 4096
-                }
-            )
-            r.raise_for_status()
-            reply = r.json()["choices"][0]["message"]["content"]
-                
-            # Sync memory update for non-streaming
-            new_memory = (user_memory + "\n" + reply[-500:]) if user_memory else reply[-1000:]
-            asyncio.create_task(update_user_memory(user["id"], new_memory))
+    async with httpx.AsyncClient(timeout=60) as client:
+        r = await client.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers=get_groq_headers(),
+            json={"model": "llama-3.3-70b-versatile", "messages": messages, "max_tokens": 2048}
+        )
+        r.raise_for_status()
+        reply = r.json()["choices"][0]["message"]["content"]
+        
+        # Sync memory update for non-streaming
+        new_memory = (user_memory + "\n" + reply[-500:]) if user_memory else reply[-1000:]
+        asyncio.create_task(update_user_memory(user["id"], new_memory))
 
-        if conv_id:
-            await save_message(user["id"], conv_id, "assistant", reply)
-        return {"reply": reply}
+    if conv_id:
+        await save_message(user["id"], conv_id, "assistant", reply)
+    return {"reply": reply}
 
 
 # LAZY LOADING FOR VISION
@@ -2283,8 +2268,7 @@ async def root():
     return {
         "status": "running",
         "service": "HeloxAi Backend",
-        "version": "2.0.4",
-        "llm_provider": "Hugging Face (Free Inference)",
+        "version": "2.0.1",
         "features": {
             "intent_detection": "advanced",
             "user_recognition": "production-grade",
@@ -2447,8 +2431,7 @@ async def ask_universal(req: Request, res: Response):
                 full_history = [{"role": "system", "content": base_system}] + history
                 
                 full_text = ""
-                # Use HF for general purpose
-                async for token in stream_hf_chat(full_history, model=HF_MODEL):
+                async for token in stream_groq_chat(full_history):
                     if task.cancelled():
                         break
                     full_text += token
@@ -2487,9 +2470,9 @@ async def ask_universal(req: Request, res: Response):
         
         async with httpx.AsyncClient() as client:
             r = await client.post(
-                "https://api-inference.huggingface.co/v1/chat/completions",
-                headers=get_hf_headers(),
-                json={"model": HF_MODEL, "messages": full_history, "max_tokens": 4096}
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers=get_groq_headers(),
+                json={"model": "llama-3.3-70b-versatile", "messages": full_history, "max_tokens": 1024}
             )
             r.raise_for_status()
             reply = r.json()["choices"][0]["message"]["content"]
@@ -2614,7 +2597,7 @@ You are analyzing an archive file (ZIP, TAR, etc.). The archive contents have be
 
 Your task:
 1. Provide an overview of what this archive contains
-2. Identify the main purpose/type of project or files
+2. Identify the main purpose/type of the project or files
 3. If it's a code project, describe the structure, technologies used, and main functionality
 4. Highlight any important files or configurations
 5. Note any potential issues, missing files, or areas of concern
@@ -2639,7 +2622,7 @@ Be organized and clear in your analysis."""
                     "files": result.files
                 })
                 
-                async for token in stream_hf_chat(messages, model=HF_MODEL):
+                async for token in stream_groq_chat(messages):
                     if task.cancelled():
                         break
                     yield sse({"type": "token", "text": token})
@@ -2650,20 +2633,19 @@ Be organized and clear in your analysis."""
 
         return StreamingResponse(gen(), media_type="text/event-stream")
 
-    else:
-        async with httpx.AsyncClient() as client:
-            r = await client.post(
-                "https://api-inference.huggingface.co/v1/chat/completions",
-                headers=get_hf_headers(),
-                json={"model": HF_MODEL, "messages": messages, "max_tokens": 4096}
-            )
-            r.raise_for_status()
+    async with httpx.AsyncClient() as client:
+        r = await client.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers=get_groq_headers(),
+            json={"model": "llama-3.3-70b-versatile", "messages": messages}
+        )
+        r.raise_for_status()
 
-        return {
-            "analysis": r.json()["choices"][0]["message"]["content"],
-            "metadata": result.metadata,
-            "files": result.files
-        }
+    return {
+        "analysis": r.json()["choices"][0]["message"]["content"],
+        "metadata": result.metadata,
+        "files": result.files
+    }
 
 
 @app.get("/file-types")
@@ -2780,7 +2762,7 @@ Format complex equations clearly using LaTeX-style notation where appropriate.""
             active_streams[user["id"]] = task
             try:
                 full_text = ""
-                async for token in stream_hf_chat(messages, model=HF_MODEL):
+                async for token in stream_groq_chat(messages):
                     if task.cancelled():
                         break
                     full_text += token
@@ -2806,22 +2788,21 @@ Format complex equations clearly using LaTeX-style notation where appropriate.""
 
         return StreamingResponse(gen(), media_type="text/event-stream")
 
-    else:
-        async with httpx.AsyncClient(timeout=60) as client:
-            r = await client.post(
-                "https://api-inference.huggingface.co/v1/chat/completions",
-                headers=get_hf_headers(),
-                json={"model": HF_MODEL, "messages": messages, "max_tokens": 4096}
-            )
-            r.raise_for_status()
-            reply = r.json()["choices"][0]["message"]["content"]
+    async with httpx.AsyncClient(timeout=60) as client:
+        r = await client.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers=get_groq_headers(),
+            json={"model": "llama-3.3-70b-versatile", "messages": messages, "max_tokens": 2048}
+        )
+        r.raise_for_status()
+        reply = r.json()["choices"][0]["message"]["content"]
 
-        # MEMORY UPDATE
-        new_memory = (user_memory + "\n" + reply[-500:]) if user_memory else reply[-1000:]
-        asyncio.create_task(update_user_memory(user["id"], new_memory))
+    # MEMORY UPDATE
+    new_memory = (user_memory + "\n" + reply[-500:]) if user_memory else reply[-1000:]
+    asyncio.create_task(update_user_memory(user["id"], new_memory))
 
-        await save_message(user["id"], conv_id, "assistant", reply)
-        return {"reply": reply}
+    await save_message(user["id"], conv_id, "assistant", reply)
+    return {"reply": reply}
 
 
 async def handle_research_request(prompt: str, user: Dict[str, Any], conv_id: str, stream: bool):
@@ -2848,7 +2829,7 @@ Be thorough but concise."""
             active_streams[user["id"]] = task
             try:
                 full_text = ""
-                async for token in stream_hf_chat(messages, model=HF_MODEL, max_tokens=8192):
+                async for token in stream_groq_chat(messages, max_tokens=2048):
                     if task.cancelled():
                         break
                     full_text += token
@@ -2874,22 +2855,21 @@ Be thorough but concise."""
 
         return StreamingResponse(gen(), media_type="text/event-stream")
 
-    else:
-        async with httpx.AsyncClient(timeout=60) as client:
-            r = await client.post(
-                "https://api-inference.huggingface.co/v1/chat/completions",
-                headers=get_hf_headers(),
-                json={"model": HF_MODEL, "messages": messages, "max_tokens": 4096}
-            )
-            r.raise_for_status()
-            reply = r.json()["choices"][0]["message"]["content"]
+    async with httpx.AsyncClient(timeout=60) as client:
+        r = await client.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers=get_groq_headers(),
+            json={"model": "llama-3.3-70b-versatile", "messages": messages, "max_tokens": 2048}
+        )
+        r.raise_for_status()
+        reply = r.json()["choices"][0]["message"]["content"]
 
-        # MEMORY UPDATE
-        new_memory = (user_memory + "\n" + reply[-500:]) if user_memory else reply[-1000:]
-        asyncio.create_task(update_user_memory(user["id"], new_memory))
+    # MEMORY UPDATE
+    new_memory = (user_memory + "\n" + reply[-500:]) if user_memory else reply[-1000:]
+    asyncio.create_task(update_user_memory(user["id"], new_memory))
 
-        await save_message(user["id"], conv_id, "assistant", reply)
-        return {"reply": reply}
+    await save_message(user["id"], conv_id, "assistant", reply)
+    return {"reply": reply}
 
 
 async def handle_creative_request(prompt: str, user: Dict[str, Any], conv_id: str, stream: bool):
@@ -2916,7 +2896,7 @@ Adapt your style to the specific creative request."""
             active_streams[user["id"]] = task
             try:
                 full_text = ""
-                async for token in stream_hf_chat(messages, model=HF_MODEL):
+                async for token in stream_groq_chat(messages, max_tokens=2048):
                     if task.cancelled():
                         break
                     full_text += token
@@ -2942,29 +2922,28 @@ Adapt your style to the specific creative request."""
 
         return StreamingResponse(gen(), media_type="text/event-stream")
 
-    else:
-        async with httpx.AsyncClient(timeout=60) as client:
-            r = await client.post(
-                "https://api-inference.huggingface.co/v1/chat/completions",
-                headers=get_hf_headers(),
-                json={"model": HF_MODEL, "messages": messages, "max_tokens": 4096}
-            )
-            r.raise_for_status()
-            reply = r.json()["choices"][0]["message"]["content"]
+    async with httpx.AsyncClient(timeout=60) as client:
+        r = await client.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers=get_groq_headers(),
+            json={"model": "llama-3.3-70b-versatile", "messages": messages, "max_tokens": 2048}
+        )
+        r.raise_for_status()
+        reply = r.json()["choices"][0]["message"]["content"]
 
-        # MEMORY UPDATE
-        new_memory = (user_memory + "\n" + reply[-500:]) if user_memory else reply[-1000:]
-        asyncio.create_task(update_user_memory(user["id"], new_memory))
+    # MEMORY UPDATE
+    new_memory = (user_memory + "\n" + reply[-500:]) if user_memory else reply[-1000:]
+    asyncio.create_task(update_user_memory(user["id"], new_memory))
 
-        await save_message(user["id"], conv_id, "assistant", reply)
-        return {"reply": reply}
+    await save_message(user["id"], conv_id, "assistant", reply)
+    return {"reply": reply}
 
 
 async def handle_translation_request(prompt: str, user: Dict[str, Any], conv_id: str, stream: bool):
     system_prompt = get_system_prompt(prompt) + """
 
 You are also a professional translator. When translating:
-1. Preserve meaning and tone of original
+1. Preserve the meaning and tone of the original
 2. Use natural, idiomatic language in the target
 3. Handle cultural nuances appropriately
 4. Maintain formatting where possible
@@ -2984,7 +2963,7 @@ Always indicate the source and target languages."""
             active_streams[user["id"]] = task
             try:
                 full_text = ""
-                async for token in stream_hf_chat(messages, model=HF_MODEL):
+                async for token in stream_groq_chat(messages):
                     if task.cancelled():
                         break
                     full_text += token
@@ -3010,22 +2989,21 @@ Always indicate the source and target languages."""
 
         return StreamingResponse(gen(), media_type="text/event-stream")
 
-    else:
-        async with httpx.AsyncClient(timeout=60) as client:
-            r = await client.post(
-                "https://api-inference.huggingface.co/v1/chat/completions",
-                headers=get_hf_headers(),
-                json={"model": HF_MODEL, "messages": messages, "max_tokens": 4096}
-            )
-            r.raise_for_status()
-            reply = r.json()["choices"][0]["message"]["content"]
+    async with httpx.AsyncClient(timeout=60) as client:
+        r = await client.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers=get_groq_headers(),
+            json={"model": "llama-3.3-70b-versatile", "messages": messages, "max_tokens": 2048}
+        )
+        r.raise_for_status()
+        reply = r.json()["choices"][0]["message"]["content"]
 
-        # MEMORY UPDATE
-        new_memory = (user_memory + "\n" + reply[-500:]) if user_memory else reply[-1000:]
-        asyncio.create_task(update_user_memory(user["id"], new_memory))
+    # MEMORY UPDATE
+    new_memory = (user_memory + "\n" + reply[-500:]) if user_memory else reply[-1000:]
+    asyncio.create_task(update_user_memory(user["id"], new_memory))
 
-        await save_message(user["id"], conv_id, "assistant", reply)
-        return {"reply": reply}
+    await save_message(user["id"], conv_id, "assistant", reply)
+    return {"reply": reply}
 
 
 async def handle_summary_request(prompt: str, user: Dict[str, Any], conv_id: str, stream: bool):
@@ -3052,7 +3030,7 @@ Tailor the summary length to the complexity of the content."""
             active_streams[user["id"]] = task
             try:
                 full_text = ""
-                async for token in stream_hf_chat(messages, model=HF_MODEL):
+                async for token in stream_groq_chat(messages):
                     if task.cancelled():
                         break
                     full_text += token
@@ -3078,22 +3056,21 @@ Tailor the summary length to the complexity of the content."""
 
         return StreamingResponse(gen(), media_type="text/event-stream")
 
-    else:
-        async with httpx.AsyncClient(timeout=60) as client:
-            r = await client.post(
-                "https://api-inference.huggingface.co/v1/chat/completions",
-                headers=get_hf_headers(),
-                json={"model": HF_MODEL, "messages": messages, "max_tokens": 4096}
-            )
-            r.raise_for_status()
-            reply = r.json()["choices"][0]["message"]["content"]
+    async with httpx.AsyncClient(timeout=60) as client:
+        r = await client.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers=get_groq_headers(),
+            json={"model": "llama-3.3-70b-versatile", "messages": messages, "max_tokens": 2048}
+        )
+        r.raise_for_status()
+        reply = r.json()["choices"][0]["message"]["content"]
 
-        # MEMORY UPDATE
-        new_memory = (user_memory + "\n" + reply[-500:]) if user_memory else reply[-1000:]
-        asyncio.create_task(update_user_memory(user["id"], new_memory))
+    # MEMORY UPDATE
+    new_memory = (user_memory + "\n" + reply[-500:]) if user_memory else reply[-1000:]
+    asyncio.create_task(update_user_memory(user["id"], new_memory))
 
-        await save_message(user["id"], conv_id, "assistant", reply)
-        return {"reply": reply}
+    await save_message(user["id"], conv_id, "assistant", reply)
+    return {"reply": reply}
 
 
 # =========================
@@ -3181,8 +3158,7 @@ async def regenerate(req: Request, res: Response):
             full_history = [{"role": "system", "content": base_system}] + history
             
             full_text = ""
-            # Using HF for regeneration
-            async for token in stream_hf_chat(full_history, model=HF_MODEL):
+            async for token in stream_groq_chat(full_history):
                 if task and task.cancelled():
                     break
                 full_text += token
@@ -3364,10 +3340,11 @@ async def speech_to_text(file: UploadFile = File(...)):
 # =========================
 # MEDIA GENERATION HANDLERS
 # =========================
-async def handle_image_generation(prompt: str, user: Dict[str, Any], conv_id: str, stream: bool, style: str = None, size: str = "1024x1024", num_images: int =1):
-    MAX_PROMPT_LEN = 4000 
+async def handle_image_generation(prompt: str, user: Dict[str, Any], conv_id: str, stream: bool, style: str = None, size: str = "1024x1024", num_images: int = 1):
+    MAX_PROMPT_LEN = 4000  # DALL-E 3 limit is approx 4000 chars
     if not OPENAI_API_KEY:
         msg = "No API Key"
+        
         async def err_gen():
             yield sse({"type": "error", "message": msg})
         if stream: return StreamingResponse(err_gen(), media_type="text/event-stream")
@@ -3376,9 +3353,11 @@ async def handle_image_generation(prompt: str, user: Dict[str, Any], conv_id: st
     if not prompt or not prompt.strip(): 
         raise HTTPException(400, "Prompt is required")
     
+    # Truncate prompt if too long
     if len(prompt) > MAX_PROMPT_LEN: 
         prompt = prompt[:MAX_PROMPT_LEN]
     
+    # DALL-E 3 only supports n=1
     num_images = 1
     
     STYLES = {
@@ -3401,34 +3380,35 @@ async def handle_image_generation(prompt: str, user: Dict[str, Any], conv_id: st
             )
             r.raise_for_status()
             data = r.json()
-            
     except httpx.HTTPStatusError as e:
-        user_facing_msg = "Image generation failed. Please try a different prompt."
-        try:
-            error_json = e.response.json()
-            if "error" in error_json and "message" in error_json["error"]:
-                user_facing_msg = error_json["error"]["message"]
-            else:
-                user_facing_msg = e.response.text
-        except Exception:
-            user_facing_msg = f"Service error ({e.response.status_code})."
-            
-        logger.error(f"Image gen HTTP error {e.response.status_code}: {user_facing_msg}")
+        # Capture error message in local variable to avoid scope issues in generator
+        error_detail = e.response.text
+        logger.error(f"Image gen HTTP error {e.response.status_code}: {error_detail}")
         
+        # User-friendly message for 400 errors (likely content policy or prompt issues)
+        if e.response.status_code == 400:
+            msg = "Image generation failed: Invalid prompt or content policy violation."
+        else:
+            msg = f"Service error ({e.response.status_code}). Please try again."
+            
         async def err_gen():
-            yield sse({"type": "error", "message": user_facing_msg})
+            yield sse({"type": "error", "message": msg})
         
         if stream: return StreamingResponse(err_gen(), media_type="text/event-stream")
-        return {"error": user_facing_msg}
+        return {"error": msg}
         
     except Exception as e:
+        # Capture generic exception
         error_msg = str(e)
         logger.error(f"Image gen unexpected error: {error_msg}")
+        
         async def err_gen():
             yield sse({"type": "error", "message": "An unexpected error occurred."})
+        
         if stream: return StreamingResponse(err_gen(), media_type="text/event-stream")
         return {"error": error_msg}
     
+    # Process successful response
     images = []
     try:
         for item in data.get("data", []):
@@ -3441,6 +3421,7 @@ async def handle_image_generation(prompt: str, user: Dict[str, Any], conv_id: st
                 try:
                     fname = f"{uuid.uuid4().hex}.png"
                     path = f"public/{fname}"
+                    # Upload to Supabase Storage
                     await asyncio.to_thread(
                         lambda: supabase.storage.from_("ai-images").upload(path, img_bytes, {"content-type": "image/png"})
                     )
@@ -3448,6 +3429,7 @@ async def handle_image_generation(prompt: str, user: Dict[str, Any], conv_id: st
                     images.append({"url": url})
                 except Exception as upload_err:
                     logger.error(f"Failed to upload image to storage: {upload_err}")
+                    # Fallback to base64 if storage fails
                     images.append({"url": f"data:image/png;base64,{b64}"})
     except Exception as e:
         logger.error(f"Failed to parse image response: {e}")
@@ -3457,10 +3439,12 @@ async def handle_image_generation(prompt: str, user: Dict[str, Any], conv_id: st
         if stream: return StreamingResponse(err_gen(), media_type="text/event-stream")
         return {"error": msg}
     
+    # Stream results
     if stream:
         async def event_gen():
             yield sse({"type": "images", "images": images})
             yield sse({"type": "done"})
+        
         return StreamingResponse(event_gen(), media_type="text/event-stream")
     
     return {"images": images}
@@ -3471,13 +3455,20 @@ async def handle_video_generation(prompt: str, user: Dict[str, Any], conv_id: st
     Routes to Luma for Realistic, Pika for Anime/Cartoon.
     """
     
+    # 1. Detect Style
+    # Simple keyword check or use your existing intent detector
+    # (Assuming you might update IntentDetector to detect 'anime' vs 'realistic')
     prompt_lower = prompt.lower()
     is_anime = any(k in prompt_lower for k in ['anime', 'manga', 'cartoon', '2d animation', 'studio ghibli'])
     
+    # 2. Select Model based on intent
     if is_anime:
+        # Use Pika for Anime/Cartoon styles
         MODEL_VERSION = "pika-labs/pika-1.0" 
+        # Pika inputs often differ slightly, check docs, but usually support 'prompt'
         model_name = "Pika"
     else:
+        # Use Luma Dream Machine for Realistic/Cinematic/General
         MODEL_VERSION = "luma-dream-machine"
         model_name = "Luma"
 
@@ -3488,17 +3479,24 @@ async def handle_video_generation(prompt: str, user: Dict[str, Any], conv_id: st
             yield sse({"type": "status", "message": f"Initializing {model_name} AI..."})
             
             async with httpx.AsyncClient(timeout=300) as client:
+                # NOTE: Inputs differ slightly between models. 
+                # Luma usually takes: prompt, loop, aspect_ratio.
+                # Pika takes: prompt, frame_rate, motion_bucket_id.
+                
                 input_payload = {"prompt": prompt}
                 
                 if model_name == "Luma":
                     input_payload["loop"] = False
+                    # Luma supports specific aspect ratios like "16:9", "9:16"
                     if "vertical" in prompt_lower or "portrait" in prompt_lower or "phone" in prompt_lower:
                         input_payload["aspect_ratio"] = "9:16"
                     else:
                         input_payload["aspect_ratio"] = "16:9"
                 
                 elif model_name == "Pika":
+                    # Pika specific settings
                     input_payload["frame_rate"] = 24
+                    # Higher motion_bucket_id = more movement (0-255)
                     input_payload["motion_bucket_id"] = 150 
                 
                 r = await client.post(
@@ -3519,7 +3517,7 @@ async def handle_video_generation(prompt: str, user: Dict[str, Any], conv_id: st
                 yield sse({"type": "status", "message": f"Generating video ({model_name})..."})
                 
                 poll_count = 0
-                while poll_count < 180: 
+                while poll_count < 180: # Luma can take longer, 6 mins max
                     r = await client.get(f"https://api.replicate.com/v1/predictions/{prediction_id}", headers=headers)
                     r.raise_for_status()
                     data = r.json()
@@ -3527,11 +3525,13 @@ async def handle_video_generation(prompt: str, user: Dict[str, Any], conv_id: st
                     if data["status"] == "succeeded":
                         raw_video_url = data["output"]
                         
+                        # Handle list outputs (some models return a list)
                         if isinstance(raw_video_url, list):
                             raw_video_url = raw_video_url[0]
                             
                         yield sse({"type": "status", "message": "Applying watermark..."})
                         
+                        # Only watermark if user is not premium (optional logic)
                         watermarked_url = await add_watermark_to_video(raw_video_url)
                         
                         yield sse({"type": "video", "url": watermarked_url})
@@ -3544,7 +3544,7 @@ async def handle_video_generation(prompt: str, user: Dict[str, Any], conv_id: st
                         yield sse({"type": "error", "message": f"Video generation failed: {error_detail}"})
                         return
                     
-                    poll_count +=1
+                    poll_count += 1
                     await asyncio.sleep(2)
                 
                 yield sse({"type": "error", "message": "Video generation timed out."})
@@ -3564,7 +3564,7 @@ async def handle_video_generation(prompt: str, user: Dict[str, Any], conv_id: st
 @app.get("/setup/sessions-table")
 async def setup_sessions_table():
     """
-    SQL to create user_sessions table.
+    SQL to create the user_sessions table.
     Run this in your Supabase SQL editor.
     """
     sql = """
@@ -3590,6 +3590,11 @@ async def setup_sessions_table():
     -- Enable RLS
     ALTER TABLE user_sessions ENABLE ROW LEVEL SECURITY;
 
+    -- IMPORTANT: Since we are using Service Key for backend logic, we must allow the service role (or anon if we switch back) to manage these.
+    -- However, standard RLS policies for 'users' table usually block anon inserts.
+    -- Since we are using a custom backend with SERVICE KEY, we can technically bypass RLS,
+    -- but having the policies ensures safety if keys leak.
+    
     -- Policy: Service Role (or backend) can do anything
     CREATE POLICY "Service full access" ON user_sessions
         USING (true) WITH CHECK (true);
