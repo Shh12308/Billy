@@ -2228,15 +2228,18 @@ async def handle_code_assistant(prompt: str, user: Dict[str, Any], conv_id: str,
 
         return StreamingResponse(gen(), media_type="text/event-stream")
 
-    async with httpx.AsyncClient(timeout=60) as client:
-        # NEW (CORRECT)
-         r = await client.post(
-             "https://api-inference.huggingface.co/v1/chat/completions",
-             headers=get_hf_headers(),
-             json={"model": HF_MODEL, "messages": messages, "max_tokens": 4096}
-         )
-        r.raise_for_status()
-        reply = r.json()["choices"][0]["message"]["content"]
+async with httpx.AsyncClient(timeout=60) as client:
+    r = await client.post(
+        "https://api-inference.huggingface.co/v1/chat/completions",
+        headers=get_hf_headers(),
+        json={
+            "model": HF_MODEL,
+            "messages": messages,
+            "max_tokens": 4096
+        }
+    )
+    r.raise_for_status()
+    reply = r.json()["choices"][0]["message"]["content"]
         
         # Sync memory update for non-streaming
         new_memory = (user_memory + "\n" + reply[-500:]) if user_memory else reply[-1000:]
