@@ -2113,16 +2113,64 @@ async def handle_image_analysis(image_bytes: bytes, stream: bool, user_prompt: s
     return {"analysis": result}
 
 
-async def get_history(conv_id: str, limit: int = 10):
+# =========================
+# TOKEN ESTIMATION HELPER
+# =========================
+def estimate_tokens(text: str) -> int:
+    """
+    Roughly estimate token count. 
+    Groq/OpenAI LLMs generally average 4 chars per token for English/code.
+    """
+    return len(text) // 4
+
+# =========================
+# UPDATED HISTORY FETCHER
+# =========================
+async def get_history(conv_id: str, limit: int = 50):
+    """
+    Fetch history and trim it to fit within Groq's Rate Limits.
+    
+    Default limit increased to 50 to allow the algorithm to find
+    enough recent context that fits within the token budget.
+    """
+    # 1. Fetch last 50 messages (More than usual so we can pick the best ones)
     res = await _execute_supabase_with_retry(
         supabase.table("messages")
         .select("role, content")
         .eq("conversation_id", conv_id)
-        .order("created_at", desc=False)
+        .order("created_at", desc=False) # Oldest first
         .limit(limit),
         description="Get History"
     )
-    return [{"role": m["role"], "content": m["content"]} for m in (res.data or [])]
+    
+    raw_messages = res.data or []
+    
+    # 2. We want to keep the MOST RECENT messages (sliding window).
+    # Iterate backwards (newest to oldest) counting tokens.
+    # Budget: ~8000 tokens for history to allow room for System Prompt + Response + User Input.
+    # Groq Free Tier is 12,000 TPM. We stay well under.
+    
+    MAX_HISTORY_TOKENS = 8000
+    current_tokens = 0
+    final_messages = []
+    
+    for msg in reversed(raw_messages):
+        content = msg.get("content", "")
+        tokens = estimate_tokens(content)
+        
+        if current_tokens + tokens > MAX_HISTORY_TOKENS:
+            # Stop adding messages if we hit the limit
+            break
+            
+        final_messages.append(msg)
+        current_tokens += tokens
+    
+    # 3. Reverse back to chronological order (Oldest -> Newest)
+    final_messages.reverse()
+    
+    logger.info(f"[History] Fetched {len(raw_messages)} msgs, used {len(final_messages)} msgs (~{current_tokens} tokens)")
+    
+    return [{"role": m["role"], "content": m["content"]} for m in final_messages]
 
 
 async def stream_groq_chat(messages: list, model: str = "llama-3.3-70b-versatile", max_tokens: int = 1024):
