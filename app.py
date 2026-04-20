@@ -64,7 +64,7 @@ if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
 app = FastAPI(
     title="HeloxAi API",
     description="Advanced AI Assistant Backend",
-    version="2.0.2" # Bumped version for model update
+    version="2.0.1"
 )
 
 # CORS
@@ -2125,27 +2125,19 @@ async def get_history(conv_id: str, limit: int = 10):
     return [{"role": m["role"], "content": m["content"]} for m in (res.data or [])]
 
 
-async def stream_groq_chat(messages: list, model: str = "llama-3.3-70b-versatile", max_tokens: int = 1024, url: str = None, headers: dict = None):
-    """
-    Unified streaming chat function.
-    Defaults to Groq, but supports custom URL/Headers (e.g., for OpenAI).
-    """
-    # Determine target URL and Headers
-    target_url = url or "https://api.groq.com/openai/v1/chat/completions"
-    target_headers = headers or get_groq_headers()
-    
+async def stream_groq_chat(messages: list, model: str = "llama-3.3-70b-versatile", max_tokens: int = 1024):
     try:
         async with httpx.AsyncClient(timeout=None) as client:
             async with client.stream(
                 "POST",
-                target_url,
-                headers=target_headers,
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers=get_groq_headers(),
                 json={"model": model, "messages": messages, "stream": True, "max_tokens": max_tokens}
             ) as resp:
                 
                 if resp.status_code != 200:
                     error_text = await resp.aread()
-                    logger.error(f"LLM API Error {resp.status_code}: {error_text}")
+                    logger.error(f"Groq API Error {resp.status_code}: {error_text}")
                     raise Exception(f"AI Service Error ({resp.status_code})")
 
                 async for line in resp.aiter_lines():
@@ -2161,7 +2153,7 @@ async def stream_groq_chat(messages: list, model: str = "llama-3.3-70b-versatile
                         except:
                             pass
     except httpx.ConnectError:
-        logger.error(f"Failed to connect to LLM API at {target_url}.")
+        logger.error("Failed to connect to Groq API.")
         raise Exception("Connection to AI service failed.")
     except Exception as e:
         logger.error(f"Stream generation error: {e}")
@@ -2169,14 +2161,6 @@ async def stream_groq_chat(messages: list, model: str = "llama-3.3-70b-versatile
 
 
 async def handle_code_assistant(prompt: str, user: Dict[str, Any], conv_id: str, stream: bool):
-    """
-    Updated to use gpt-5.3-codex via OpenAI API.
-    """
-    # Configure for the specific Code Model
-    CODE_MODEL = "gpt-5.3-codex"
-    CODE_API_URL = "https://api.openai.com/v1/chat/completions"
-    CODE_HEADERS = get_openai_headers()
-    
     system_prompt = get_detector().get_code_system_prompt(prompt)
     
     user_memory = user.get("memory", "")
@@ -2189,7 +2173,6 @@ async def handle_code_assistant(prompt: str, user: Dict[str, Any], conv_id: str,
     intent_result = detect_intent(prompt)
     logger.info(
         f"[CODE] sub_intent={intent_result.intent.value if intent_result else 'none'} "
-        f"model={CODE_MODEL} "
         f"confidence={(intent_result.confidence if intent_result else 0):.2%}"
     )
 
@@ -2199,14 +2182,15 @@ async def handle_code_assistant(prompt: str, user: Dict[str, Any], conv_id: str,
             active_streams[user["id"]] = task
             try:
                 full_text = ""
-                # Stream using the specific OpenAI configuration
-                async for token in stream_groq_chat(messages, model=CODE_MODEL, max_tokens=2048, url=CODE_API_URL, headers=CODE_HEADERS):
+                async for token in stream_groq_chat(messages):
                     if task.cancelled():
                         break
                     full_text += token
                     yield sse({"type": "token", "text": token})
 
                 # MEMORY UPDATE LOGIC: Update user memory with a summary of the interaction
+                # For a production app, you might want to extract specific facts rather than appending full text.
+                # Here we append a truncated summary to ensure the "memory" feature works.
                 if user_memory:
                     new_memory = user_memory + "\n" + full_text[-500:]
                 else:
@@ -2234,12 +2218,11 @@ async def handle_code_assistant(prompt: str, user: Dict[str, Any], conv_id: str,
 
         return StreamingResponse(gen(), media_type="text/event-stream")
 
-    # Non-streaming path for Code Assistant
     async with httpx.AsyncClient(timeout=60) as client:
         r = await client.post(
-            CODE_API_URL,
-            headers=CODE_HEADERS,
-            json={"model": CODE_MODEL, "messages": messages, "max_tokens": 2048}
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers=get_groq_headers(),
+            json={"model": "llama-3.3-70b-versatile", "messages": messages, "max_tokens": 2048}
         )
         r.raise_for_status()
         reply = r.json()["choices"][0]["message"]["content"]
@@ -2285,14 +2268,13 @@ async def root():
     return {
         "status": "running",
         "service": "HeloxAi Backend",
-        "version": "2.0.2",
+        "version": "2.0.1",
         "features": {
             "intent_detection": "advanced",
             "user_recognition": "production-grade",
             "file_handling": "comprehensive",
             "session_management": "persistent",
-            "memory": "fixed",
-            "code_model": "gpt-5.3-codex"
+            "memory": "fixed"
         }
     }
 
@@ -3474,14 +3456,19 @@ async def handle_video_generation(prompt: str, user: Dict[str, Any], conv_id: st
     """
     
     # 1. Detect Style
+    # Simple keyword check or use your existing intent detector
+    # (Assuming you might update IntentDetector to detect 'anime' vs 'realistic')
     prompt_lower = prompt.lower()
     is_anime = any(k in prompt_lower for k in ['anime', 'manga', 'cartoon', '2d animation', 'studio ghibli'])
     
     # 2. Select Model based on intent
     if is_anime:
+        # Use Pika for Anime/Cartoon styles
         MODEL_VERSION = "pika-labs/pika-1.0" 
+        # Pika inputs often differ slightly, check docs, but usually support 'prompt'
         model_name = "Pika"
     else:
+        # Use Luma Dream Machine for Realistic/Cinematic/General
         MODEL_VERSION = "luma-dream-machine"
         model_name = "Luma"
 
@@ -3492,17 +3479,24 @@ async def handle_video_generation(prompt: str, user: Dict[str, Any], conv_id: st
             yield sse({"type": "status", "message": f"Initializing {model_name} AI..."})
             
             async with httpx.AsyncClient(timeout=300) as client:
+                # NOTE: Inputs differ slightly between models. 
+                # Luma usually takes: prompt, loop, aspect_ratio.
+                # Pika takes: prompt, frame_rate, motion_bucket_id.
+                
                 input_payload = {"prompt": prompt}
                 
                 if model_name == "Luma":
                     input_payload["loop"] = False
+                    # Luma supports specific aspect ratios like "16:9", "9:16"
                     if "vertical" in prompt_lower or "portrait" in prompt_lower or "phone" in prompt_lower:
                         input_payload["aspect_ratio"] = "9:16"
                     else:
                         input_payload["aspect_ratio"] = "16:9"
                 
                 elif model_name == "Pika":
+                    # Pika specific settings
                     input_payload["frame_rate"] = 24
+                    # Higher motion_bucket_id = more movement (0-255)
                     input_payload["motion_bucket_id"] = 150 
                 
                 r = await client.post(
@@ -3523,7 +3517,7 @@ async def handle_video_generation(prompt: str, user: Dict[str, Any], conv_id: st
                 yield sse({"type": "status", "message": f"Generating video ({model_name})..."})
                 
                 poll_count = 0
-                while poll_count < 180:
+                while poll_count < 180: # Luma can take longer, 6 mins max
                     r = await client.get(f"https://api.replicate.com/v1/predictions/{prediction_id}", headers=headers)
                     r.raise_for_status()
                     data = r.json()
@@ -3531,11 +3525,13 @@ async def handle_video_generation(prompt: str, user: Dict[str, Any], conv_id: st
                     if data["status"] == "succeeded":
                         raw_video_url = data["output"]
                         
+                        # Handle list outputs (some models return a list)
                         if isinstance(raw_video_url, list):
                             raw_video_url = raw_video_url[0]
                             
                         yield sse({"type": "status", "message": "Applying watermark..."})
                         
+                        # Only watermark if user is not premium (optional logic)
                         watermarked_url = await add_watermark_to_video(raw_video_url)
                         
                         yield sse({"type": "video", "url": watermarked_url})
