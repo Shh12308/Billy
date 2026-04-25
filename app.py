@@ -65,7 +65,7 @@ if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
 app = FastAPI(
     title="HeloxAi API",
     description="Advanced AI Assistant Backend",
-    version="2.1.0" # Bumped version
+    version="2.2.0" # Bumped version for Intelligent Memory
 )
 
 # CORS
@@ -1882,18 +1882,64 @@ async def get_user(
     
     return user_obj
 
-async def update_user_memory(user_id: str, new_memory: str):
-    """Update the user's long-term memory in the database."""
+async def update_user_memory(user_id: str, old_memory: str, user_prompt: str, assistant_response: str):
+    """
+    Uses an LLM to intelligently update the user's long-term memory.
+    It merges old facts with new information from the conversation to handle context switches.
+    """
+    # System prompt for the internal Memory Agent
+    memory_agent_prompt = """You are a memory management AI. Update the user's long-term memory based on the latest interaction.
+
+Rules:
+1. Retain permanent user facts (Name, Job, Preferences).
+2. Update the current context/topic (e.g., "User is discussing HTML").
+3. Be concise (max 250 words).
+4. Discard conversational filler like "The user said..." or "I responded...".
+5. Maintain continuity. If the topic shifts, acknowledge both old and new contexts briefly.
+6. Return ONLY the new memory string."""
+
+    user_message = f"""Current Memory:
+{old_memory if old_memory else "[Empty]"}
+
+Latest Interaction:
+User: {user_prompt}
+Assistant: {assistant_response}
+
+Updated Memory:"""
+
+    messages = [
+        {"role": "system", "content": memory_agent_prompt},
+        {"role": "user", "content": user_message}
+    ]
+
     try:
+        # Use a fast call to Groq for memory consolidation
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            r = await client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers=get_groq_headers(),
+                json={
+                    "model": "llama-3.3-70b-versatile",
+                    "messages": messages,
+                    "max_tokens": 300, # Keep memory short
+                    "temperature": 0.1 # Low temperature for factual extraction
+                }
+            )
+            r.raise_for_status()
+            new_memory_content = r.json()["choices"][0]["message"]["content"].strip()
+
+        # Update Database
         await _execute_supabase_with_retry(
-            supabase.table("users").update({"memory": new_memory}).eq("id", user_id),
-            description="Update User Memory"
+            supabase.table("users").update({"memory": new_memory_content}).eq("id", user_id),
+            description="Update User Memory (Intelligent)"
         )
-        # Update cache
+        
+        # Update Cache
         if user_id in _session_cache:
-            _session_cache[user_id]["memory"] = new_memory
+            _session_cache[user_id]["memory"] = new_memory_content
+
     except Exception as e:
-        logger.error(f"Failed to update user memory: {e}")
+        logger.error(f"Memory consolidation failed for {user_id[:8]}: {e}")
 
 
 def get_groq_headers():
@@ -2287,19 +2333,8 @@ async def handle_code_assistant(prompt: str, user: Dict[str, Any], conv_id: str,
                     full_text += token
                     yield sse({"type": "token", "text": token})
 
-                # MEMORY UPDATE LOGIC: Update user memory with a summary of the interaction
-                # For a production app, you might want to extract specific facts rather than appending full text.
-                # Here we append a truncated summary to ensure the "memory" feature works.
-                if user_memory:
-                    new_memory = user_memory + "\n" + full_text[-500:]
-                else:
-                    new_memory = full_text[-1000:] # Keep last 1000 chars as memory
-                
-                if len(new_memory) > 5000: # Limit memory size
-                    new_memory = new_memory[-5000:]
-                
-                # Update asynchronously, don't block response
-                asyncio.create_task(update_user_memory(user["id"], new_memory))
+                # INTELLIGENT MEMORY UPDATE
+                asyncio.create_task(update_user_memory(user["id"], user_memory, prompt, full_text))
 
                 if conv_id:
                     try:
@@ -2326,9 +2361,8 @@ async def handle_code_assistant(prompt: str, user: Dict[str, Any], conv_id: str,
         r.raise_for_status()
         reply = r.json()["choices"][0]["message"]["content"]
         
-        # Sync memory update for non-streaming
-        new_memory = (user_memory + "\n" + reply[-500:]) if user_memory else reply[-1000:]
-        asyncio.create_task(update_user_memory(user["id"], new_memory))
+        # INTELLIGENT MEMORY UPDATE
+        asyncio.create_task(update_user_memory(user["id"], user_memory, prompt, reply))
 
     if conv_id:
         await save_message(user["id"], conv_id, "assistant", reply)
@@ -2367,13 +2401,13 @@ async def root():
     return {
         "status": "running",
         "service": "HeloxAi Backend",
-        "version": "2.1.0",
+        "version": "2.2.0",
         "features": {
             "intent_detection": "advanced",
             "user_recognition": "production-grade",
             "file_handling": "comprehensive",
             "session_management": "persistent",
-            "memory": "unified_sync"
+            "memory": "intelligent_llm_consolidation"
         }
     }
 
@@ -2547,12 +2581,8 @@ async def ask_universal(req: Request, res: Response):
                     full_text += token
                     yield sse({"type": "token", "text": token})
 
-                # MEMORY UPDATE LOGIC FOR GENERAL CHAT
-                new_memory = (user_memory + "\n" + full_text[-500:]) if user_memory else full_text[-1000:]
-                if len(new_memory) > 5000:
-                    new_memory = new_memory[-5000:]
-                
-                asyncio.create_task(update_user_memory(user["id"], new_memory))
+                # INTELLIGENT MEMORY UPDATE
+                asyncio.create_task(update_user_memory(user["id"], user_memory, prompt, full_text))
 
                 try:
                     await save_message(user["id"], conv_id, "assistant", full_text)
@@ -2587,8 +2617,8 @@ async def ask_universal(req: Request, res: Response):
             r.raise_for_status()
             reply = r.json()["choices"][0]["message"]["content"]
             
-            new_memory = (user_memory + "\n" + reply[-500:]) if user_memory else reply[-1000:]
-            asyncio.create_task(update_user_memory(user["id"], new_memory))
+            # INTELLIGENT MEMORY UPDATE
+            asyncio.create_task(update_user_memory(user["id"], user_memory, prompt, reply))
             
             await save_message(user["id"], conv_id, "assistant", reply)
             return {"reply": reply}
@@ -2878,9 +2908,8 @@ Format complex equations clearly using LaTeX-style notation where appropriate.""
                     full_text += token
                     yield sse({"type": "token", "text": token})
                 
-                # MEMORY UPDATE
-                new_memory = (user_memory + "\n" + full_text[-500:]) if user_memory else full_text[-1000:]
-                asyncio.create_task(update_user_memory(user["id"], new_memory))
+                # INTELLIGENT MEMORY UPDATE
+                asyncio.create_task(update_user_memory(user["id"], user_memory, prompt, full_text))
 
                 try:
                     await save_message(user["id"], conv_id, "assistant", full_text)
@@ -2907,9 +2936,8 @@ Format complex equations clearly using LaTeX-style notation where appropriate.""
         r.raise_for_status()
         reply = r.json()["choices"][0]["message"]["content"]
 
-    # MEMORY UPDATE
-    new_memory = (user_memory + "\n" + reply[-500:]) if user_memory else reply[-1000:]
-    asyncio.create_task(update_user_memory(user["id"], new_memory))
+    # INTELLIGENT MEMORY UPDATE
+    asyncio.create_task(update_user_memory(user["id"], user_memory, prompt, reply))
 
     await save_message(user["id"], conv_id, "assistant", reply)
     return {"reply": reply}
@@ -2957,9 +2985,8 @@ Be thorough but concise."""
                     full_text += token
                     yield sse({"type": "token", "text": token})
                 
-                # MEMORY UPDATE
-                new_memory = (user_memory + "\n" + full_text[-500:]) if user_memory else full_text[-1000:]
-                asyncio.create_task(update_user_memory(user["id"], new_memory))
+                # INTELLIGENT MEMORY UPDATE
+                asyncio.create_task(update_user_memory(user["id"], user_memory, prompt, full_text))
 
                 try:
                     await save_message(user["id"], conv_id, "assistant", full_text)
@@ -2988,9 +3015,8 @@ Be thorough but concise."""
         r.raise_for_status()
         reply = r.json()["choices"][0]["message"]["content"]
 
-    # MEMORY UPDATE
-    new_memory = (user_memory + "\n" + reply[-500:]) if user_memory else reply[-1000:]
-    asyncio.create_task(update_user_memory(user["id"], new_memory))
+    # INTELLIGENT MEMORY UPDATE
+    asyncio.create_task(update_user_memory(user["id"], user_memory, prompt, reply))
 
     await save_message(user["id"], conv_id, "assistant", reply)
     return {"reply": reply}
@@ -3026,9 +3052,8 @@ Adapt your style to the specific creative request."""
                     full_text += token
                     yield sse({"type": "token", "text": token})
                 
-                # MEMORY UPDATE
-                new_memory = (user_memory + "\n" + full_text[-500:]) if user_memory else full_text[-1000:]
-                asyncio.create_task(update_user_memory(user["id"], new_memory))
+                # INTELLIGENT MEMORY UPDATE
+                asyncio.create_task(update_user_memory(user["id"], user_memory, prompt, full_text))
 
                 try:
                     await save_message(user["id"], conv_id, "assistant", full_text)
@@ -3055,9 +3080,8 @@ Adapt your style to the specific creative request."""
         r.raise_for_status()
         reply = r.json()["choices"][0]["message"]["content"]
 
-    # MEMORY UPDATE
-    new_memory = (user_memory + "\n" + reply[-500:]) if user_memory else reply[-1000:]
-    asyncio.create_task(update_user_memory(user["id"], new_memory))
+    # INTELLIGENT MEMORY UPDATE
+    asyncio.create_task(update_user_memory(user["id"], user_memory, prompt, reply))
 
     await save_message(user["id"], conv_id, "assistant", reply)
     return {"reply": reply}
@@ -3093,9 +3117,8 @@ Always indicate the source and target languages."""
                     full_text += token
                     yield sse({"type": "token", "text": token})
                 
-                # MEMORY UPDATE
-                new_memory = (user_memory + "\n" + full_text[-500:]) if user_memory else full_text[-1000:]
-                asyncio.create_task(update_user_memory(user["id"], new_memory))
+                # INTELLIGENT MEMORY UPDATE
+                asyncio.create_task(update_user_memory(user["id"], user_memory, prompt, full_text))
 
                 try:
                     await save_message(user["id"], conv_id, "assistant", full_text)
@@ -3122,9 +3145,8 @@ Always indicate the source and target languages."""
         r.raise_for_status()
         reply = r.json()["choices"][0]["message"]["content"]
 
-    # MEMORY UPDATE
-    new_memory = (user_memory + "\n" + reply[-500:]) if user_memory else reply[-1000:]
-    asyncio.create_task(update_user_memory(user["id"], new_memory))
+    # INTELLIGENT MEMORY UPDATE
+    asyncio.create_task(update_user_memory(user["id"], user_memory, prompt, reply))
 
     await save_message(user["id"], conv_id, "assistant", reply)
     return {"reply": reply}
@@ -3160,9 +3182,8 @@ Tailor the summary length to the complexity of the content."""
                     full_text += token
                     yield sse({"type": "token", "text": token})
                 
-                # MEMORY UPDATE
-                new_memory = (user_memory + "\n" + full_text[-500:]) if user_memory else full_text[-1000:]
-                asyncio.create_task(update_user_memory(user["id"], new_memory))
+                # INTELLIGENT MEMORY UPDATE
+                asyncio.create_task(update_user_memory(user["id"], user_memory, prompt, full_text))
 
                 try:
                     await save_message(user["id"], conv_id, "assistant", full_text)
@@ -3189,9 +3210,8 @@ Tailor the summary length to the complexity of the content."""
         r.raise_for_status()
         reply = r.json()["choices"][0]["message"]["content"]
 
-    # MEMORY UPDATE
-    new_memory = (user_memory + "\n" + reply[-500:]) if user_memory else reply[-1000:]
-    asyncio.create_task(update_user_memory(user["id"], new_memory))
+    # INTELLIGENT MEMORY UPDATE
+    asyncio.create_task(update_user_memory(user["id"], user_memory, prompt, reply))
 
     await save_message(user["id"], conv_id, "assistant", reply)
     return {"reply": reply}
@@ -3288,9 +3308,8 @@ async def regenerate(req: Request, res: Response):
                 full_text += token
                 yield sse({"type": "token", "text": token})
 
-            # MEMORY UPDATE
-            new_memory = (user_memory + "\n" + full_text[-500:]) if user_memory else full_text[-1000:]
-            asyncio.create_task(update_user_memory(user["id"], new_memory))
+            # INTELLIGENT MEMORY UPDATE
+            asyncio.create_task(update_user_memory(user["id"], user_memory, last_prompt, full_text))
 
             try:
                 await save_message(user_id, conv_id, "assistant", full_text)
