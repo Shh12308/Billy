@@ -10,6 +10,7 @@ import zipfile
 import tempfile
 import mimetypes
 import shutil
+from fastapi import UploadFile, File, Form 
 import cv2  
 import numpy as np
 from io import BytesIO
@@ -2773,24 +2774,20 @@ async def handle_visual_analysis(visual_items: list, stream: bool, user_prompt: 
 @app.post("/analysis")
 async def analyze_files(
     req: Request,
-    # CHANGED: Parameter name is now 'file' to match standard HTML <input name="file">
-    # But the type is List[UploadFile], so it accepts multiple files under that name.
-    file: List[UploadFile] = File(...), 
+    file: List[UploadFile] = File(...),
+    prompt: str = Form(""),  # NEW: Accept a text prompt (e.g., "How much money is in this picture?")
     stream: bool = True
 ):
     """
     Enhanced file analysis endpoint supporting:
     - Up to 5 images at once.
     - 1 video (max 1 minute duration).
-    - Existing text/code/archive analysis (if non-visual files are uploaded).
+    - User text prompt to guide the analysis (e.g., "Summarize this code", "What is in this picture?").
     """
     user = await get_user(req, Response())
     
-    # Map the incoming 'file' list to the internal variable 'files' for clarity
-    files = file
-    
     # 1. Validate File Count
-    if len(files) > 5:
+    if len(file) > 5:
         raise HTTPException(400, "Maximum of 5 files allowed at a time.")
 
     visual_items = []  # Stores base64 images/video frames
@@ -2799,7 +2796,7 @@ async def analyze_files(
 
     video_count = 0
 
-    for uploaded_file in files:
+    for uploaded_file in file:
         content = await uploaded_file.read()
         filename = uploaded_file.filename or "unknown"
         content_type = uploaded_file.content_type or ""
@@ -2854,22 +2851,31 @@ async def analyze_files(
     
     # Priority: Visual Analysis (Images/Video)
     if visual_items:
-        logger.info(f"[ANALYSIS] Processing {len(visual_items)} visual items (images/frames).")
-        return await handle_visual_analysis(visual_items, stream, user_prompt="Analyze the provided images or video frames.")
+        logger.info(f"[ANALYSIS] Processing {len(visual_items)} visual items. User prompt: '{prompt[:50]}...'")
+        # Pass the user's prompt to the visual analysis function
+        return await handle_visual_analysis(visual_items, stream, user_prompt=prompt)
 
     # Fallback: Text Analysis (Code, Docs, Archives)
     if text_items:
         combined_text = "\n\n".join(text_items)
-        prompt_context = f"Analyze the following {len(text_items)} file(s)." if len(text_items) > 1 else "Analyze the following file."
+        
+        # If the user provided a prompt, prepend it to the text context
+        if prompt:
+            instruction = f"USER INSTRUCTION: {prompt}\n\n"
+            combined_text = instruction + combined_text
+        else:
+            instruction = f"Analyze the following {len(text_items)} file(s)." if len(text_items) > 1 else "Analyze the following file."
+            combined_text = instruction + combined_text
         
         return await handle_text_analysis(
             combined_text,
             stream,
-            file_metadata={"note": prompt_context, "files": metadata_list}
+            file_metadata={"note": instruction, "files": metadata_list},
+            user_prompt=prompt # Pass prompt for context/metadata handling
         )
 
     raise HTTPException(400, "No valid files provided for analysis.")
-
+    
 async def handle_archive_analysis(
     result: FileExtractionResult,
     stream: bool
