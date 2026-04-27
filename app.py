@@ -2773,7 +2773,9 @@ async def handle_visual_analysis(visual_items: list, stream: bool, user_prompt: 
 @app.post("/analysis")
 async def analyze_files(
     req: Request,
-    files: List[UploadFile] = File(...), # CHANGED: Accept list of files
+    # CHANGED: Parameter name is now 'file' to match standard HTML <input name="file">
+    # But the type is List[UploadFile], so it accepts multiple files under that name.
+    file: List[UploadFile] = File(...), 
     stream: bool = True
 ):
     """
@@ -2783,6 +2785,9 @@ async def analyze_files(
     - Existing text/code/archive analysis (if non-visual files are uploaded).
     """
     user = await get_user(req, Response())
+    
+    # Map the incoming 'file' list to the internal variable 'files' for clarity
+    files = file
     
     # 1. Validate File Count
     if len(files) > 5:
@@ -2794,10 +2799,10 @@ async def analyze_files(
 
     video_count = 0
 
-    for file in files:
-        content = await file.read()
-        filename = file.filename or "unknown"
-        content_type = file.content_type or ""
+    for uploaded_file in files:
+        content = await uploaded_file.read()
+        filename = uploaded_file.filename or "unknown"
+        content_type = uploaded_file.content_type or ""
         file_size = len(content)
         
         logger.info(f"[FILE] Upload: {filename} ({format_file_size(file_size)}, type={content_type})")
@@ -2838,15 +2843,10 @@ async def analyze_files(
             max_allowed = MAX_ZIP_SIZE if category == FileCategory.ARCHIVE else MAX_FILE_SIZE
             
             if file_size > max_allowed:
-                # If mixed upload, we warn but try to process smaller files, 
-                # but strictly here we might just raise error or log warning.
-                # Keeping strict for simplicity.
                 raise HTTPException(400, f"File {filename} too large.")
 
             result = await extract_file_content(content, filename)
             
-            # If it's an archive with many files, this gets too big for a mixed prompt. 
-            # We summarize or truncate.
             text_items.append(f"--- FILE: {filename} ---\n{result.content}")
             metadata_list.append(result.metadata)
 
@@ -2860,7 +2860,6 @@ async def analyze_files(
     # Fallback: Text Analysis (Code, Docs, Archives)
     if text_items:
         combined_text = "\n\n".join(text_items)
-        # If there are multiple files, we update the prompt to tell the AI
         prompt_context = f"Analyze the following {len(text_items)} file(s)." if len(text_items) > 1 else "Analyze the following file."
         
         return await handle_text_analysis(
