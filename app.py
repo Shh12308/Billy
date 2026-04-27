@@ -10,6 +10,8 @@ import zipfile
 import tempfile
 import mimetypes
 import shutil
+import cv2  
+import numpy as np
 from io import BytesIO
 from enum import Enum
 from dataclasses import dataclass
@@ -2002,6 +2004,84 @@ async def fetch_logo_image() -> Optional[bytes]:
         logger.error(f"Logo fetch error: {e}")
     return None
 
+    # =========================
+# VIDEO PROCESSING HELPERS
+# =========================
+
+def get_video_duration(video_bytes: bytes) -> float:
+    """
+    Returns the duration of the video in seconds using OpenCV.
+    Writes bytes to a temp file for reliable reading.
+    """
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_file:
+        tmp_file.write(video_bytes)
+        tmp_file_path = tmp_file.name
+    
+    try:
+        cap = cv2.VideoCapture(tmp_file_path)
+        if not cap.isOpened():
+            raise ValueError("Could not open video file")
+        
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        
+        cap.release()
+        
+        if fps == 0:
+            return 0.0 # Prevent division by zero
+            
+        duration = frame_count / fps
+        return duration
+    finally:
+        # Clean up temp file
+        if os.path.exists(tmp_file_path):
+            os.remove(tmp_file_path)
+
+def extract_video_frames(video_bytes: bytes, max_frames: int = 4) -> list:
+    """
+    Extracts base64 encoded frames from video bytes.
+    Returns a list of base64 strings (jpeg format).
+    """
+    frames_b64 = []
+    
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_file:
+        tmp_file.write(video_bytes)
+        tmp_file_path = tmp_file.name
+    
+    try:
+        cap = cv2.VideoCapture(tmp_file_path)
+        if not cap.isOpened():
+            return []
+            
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        if total_frames == 0:
+            return []
+
+        # Calculate indices to sample (evenly distributed)
+        # e.g., if max_frames=4, get frames at 0%, 25%, 50%, 75%
+        indices = [int(i * total_frames / max_frames) for i in range(max_frames)]
+        
+        for frame_idx in indices:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+            ret, frame = cap.read()
+            if ret:
+                # Convert BGR (OpenCV default) to RGB
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                
+                # Encode to JPEG bytes
+                _, buffer = cv2.imencode('.jpg', frame_rgb)
+                frame_b64 = base64.b64encode(buffer).decode('utf-8')
+                frames_b64.append(frame_b64)
+                
+        cap.release()
+        return frames_b64
+    except Exception as e:
+        logger.error(f"Error extracting video frames: {e}")
+        return []
+    finally:
+        if os.path.exists(tmp_file_path):
+            os.remove(tmp_file_path)
+
 
 async def add_watermark_to_video(video_url: str) -> str:
     """Add transparent watermark to video"""
@@ -2625,70 +2705,171 @@ async def ask_universal(req: Request, res: Response):
 
 
 # =========================
-# ENHANCED FILE ANALYSIS ENDPOINT
+# UPDATED VISUAL ANALYSIS HANDLER
+# =========================
+
+async def handle_visual_analysis(visual_items: list, stream: bool, user_prompt: str = ""):
+    """
+    Analyzes a list of visual items (images or video frames).
+    visual_items: list of dicts {'type': 'image'|'video', 'b64': 'base64string'}
+    """
+    
+    # Construct the content block for OpenAI Vision API
+    content_block = [
+        {"type": "text", "text": user_prompt or "Analyze these images or video frames thoroughly. Describe what you see, identify key elements, text, or actions."}
+    ]
+    
+    for item in visual_items:
+        if item['type'] == 'video':
+            content_block.append({
+                "type": "text", 
+                "text": f"\n[Video Frame {item['frame_index'] + 1} from uploaded video]:"
+            })
+        content_block.append({
+            "type": "image_url",
+            "image_url": {
+                "url": f"data:image/jpeg;base64,{item['b64']}",
+                "detail": "auto"  # Standard detail level
+            }
+        })
+
+    payload = {
+        "model": "gpt-4o-mini",  # Or "gpt-4o" if available/preferred
+        "messages": [{
+            "role": "user",
+            "content": content_block
+        }]
+    }
+
+    # Increased timeout for video/multiple image processing
+    async with httpx.AsyncClient(timeout=90.0) as client: 
+        r = await client.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers=get_openai_headers(),
+            json=payload
+        )
+        r.raise_for_status()
+
+    result = r.json()["choices"][0]["message"]["content"]
+
+    if stream:
+        async def gen():
+            task = asyncio.current_task()
+            try:
+                yield sse({"type": "text", "text": result})
+                yield sse({"type": "done"})
+            except Exception as e:
+                logger.error(f"Visual analysis stream error: {e}")
+                yield sse({"type": "error", "message": "Analysis failed."})
+
+        return StreamingResponse(gen(), media_type="text/event-stream")
+
+    return {"analysis": result}
+
+
+# =========================
+# UPDATED ANALYSIS ENDPOINT
 # =========================
 @app.post("/analysis")
-async def analyze_file(
+async def analyze_files(
     req: Request,
-    file: UploadFile = File(...),
+    files: List[UploadFile] = File(...), # CHANGED: Accept list of files
     stream: bool = True
 ):
     """
     Enhanced file analysis endpoint supporting:
-    - All code files (.py, .js, .ts, .java, .cpp, .go, .rs, etc.)
-    - Archives (.zip, .tar, .gz, etc.) - extracts and analyzes contents
-    - Documents (.pdf, .txt, .md, .csv, etc.)
-    - Images (visual analysis)
-    - Large files (up to 50MB single, 100MB archives)
+    - Up to 5 images at once.
+    - 1 video (max 1 minute duration).
+    - Existing text/code/archive analysis (if non-visual files are uploaded).
     """
     user = await get_user(req, Response())
     
-    # Read file content
-    content = await file.read()
-    filename = file.filename or "unknown"
-    content_type = file.content_type or ""
-    file_size = len(content)
+    # 1. Validate File Count
+    if len(files) > 5:
+        raise HTTPException(400, "Maximum of 5 files allowed at a time.")
+
+    visual_items = []  # Stores base64 images/video frames
+    text_items = []    # Stores extracted text from non-visual files
+    metadata_list = [] # Stores metadata for non-visual files
+
+    video_count = 0
+
+    for file in files:
+        content = await file.read()
+        filename = file.filename or "unknown"
+        content_type = file.content_type or ""
+        file_size = len(content)
+        
+        logger.info(f"[FILE] Upload: {filename} ({format_file_size(file_size)}, type={content_type})")
+
+        if not content:
+            continue # Skip empty files
+
+        # --- VIDEO HANDLING ---
+        if content_type.startswith("video/") or filename.lower().endswith(('.mp4', '.mov', '.webm', '.avi')):
+            video_count += 1
+            if video_count > 1:
+                raise HTTPException(400, "Only 1 video can be analyzed at a time.")
+            
+            # Check duration
+            try:
+                duration = get_video_duration(content)
+                if duration > 60:
+                    raise HTTPException(400, f"Video is too long ({duration:.1f}s). Maximum allowed is 60 seconds.")
+                logger.info(f"[VIDEO] Duration accepted: {duration:.1f}s")
+            except Exception as e:
+                logger.error(f"Video processing error: {e}")
+                raise HTTPException(400, "Could not process video file. Ensure it is a valid format.")
+
+            # Extract frames
+            frames = extract_video_frames(content)
+            for i, frame_b64 in enumerate(frames):
+                visual_items.append({'type': 'video', 'b64': frame_b64, 'frame_index': i})
+
+        # --- IMAGE HANDLING ---
+        elif content_type.startswith("image/") or get_file_category(filename) == FileCategory.IMAGE:
+            b64 = base64.b64encode(content).decode()
+            visual_items.append({'type': 'image', 'b64': b64})
+
+        # --- TEXT/ARCHIVE/CODE HANDLING ---
+        else:
+            # Re-use existing extraction logic
+            category = get_file_category(filename)
+            max_allowed = MAX_ZIP_SIZE if category == FileCategory.ARCHIVE else MAX_FILE_SIZE
+            
+            if file_size > max_allowed:
+                # If mixed upload, we warn but try to process smaller files, 
+                # but strictly here we might just raise error or log warning.
+                # Keeping strict for simplicity.
+                raise HTTPException(400, f"File {filename} too large.")
+
+            result = await extract_file_content(content, filename)
+            
+            # If it's an archive with many files, this gets too big for a mixed prompt. 
+            # We summarize or truncate.
+            text_items.append(f"--- FILE: {filename} ---\n{result.content}")
+            metadata_list.append(result.metadata)
+
+    # 2. Route to appropriate handler
     
-    logger.info(f"[FILE] Upload: {filename} ({format_file_size(file_size)}, type={content_type})")
-    
-    if not content:
-        raise HTTPException(400, "Empty file")
-    
-    # Check file size limits
-    category = get_file_category(filename)
-    max_allowed = MAX_ZIP_SIZE if category == FileCategory.ARCHIVE else MAX_FILE_SIZE
-    
-    if file_size > max_allowed:
-        raise HTTPException(
-            400, 
-            f"File too large ({format_file_size(file_size)}). Maximum: {format_file_size(max_allowed)}"
+    # Priority: Visual Analysis (Images/Video)
+    if visual_items:
+        logger.info(f"[ANALYSIS] Processing {len(visual_items)} visual items (images/frames).")
+        return await handle_visual_analysis(visual_items, stream, user_prompt="Analyze the provided images or video frames.")
+
+    # Fallback: Text Analysis (Code, Docs, Archives)
+    if text_items:
+        combined_text = "\n\n".join(text_items)
+        # If there are multiple files, we update the prompt to tell the AI
+        prompt_context = f"Analyze the following {len(text_items)} file(s)." if len(text_items) > 1 else "Analyze the following file."
+        
+        return await handle_text_analysis(
+            combined_text,
+            stream,
+            file_metadata={"note": prompt_context, "files": metadata_list}
         )
-    
-    # Handle images separately
-    if content_type.startswith("image/") or category == FileCategory.IMAGE:
-        return await handle_image_analysis(content, stream)
 
-    # Extract content from file
-    result = await extract_file_content(content, filename)
-    
-    logger.info(
-        f"[FILE] Extracted: {filename} -> "
-        f"category={result.metadata.get('category')}, "
-        f"truncated={result.truncated}, "
-        f"content_len={len(result.content)}"
-    )
-    
-    # Handle archives with multiple files
-    if category == FileCategory.ARCHIVE and result.files:
-        return await handle_archive_analysis(result, stream)
-    
-    # Handle single file analysis
-    return await handle_text_analysis(
-        result.content,
-        stream,
-        file_metadata=result.metadata
-    )
-
+    raise HTTPException(400, "No valid files provided for analysis.")
 
 async def handle_archive_analysis(
     result: FileExtractionResult,
@@ -3451,12 +3632,12 @@ async def text_to_speech(req: Request):
 async def get_voices():
     return {
         "voices": [
-            {"id": "alloy", "name": "Alloy"},
+            {"id": "alloy", "name": "Tom"},
             {"id": "echo", "name": "Echo"},
-            {"id": "fable", "name": "Fable"},
+            {"id": "fable", "name": "Fizzy"},
             {"id": "onyx", "name": "Onyx"},
-            {"id": "nova", "name": "Nova"},
-            {"id": "shimmer", "name": "Shimmer"}
+            {"id": "nova", "name": "Noval"},
+            {"id": "shimmer", "name": "Shimmers"}
         ]
     }
 
