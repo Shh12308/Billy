@@ -2334,7 +2334,7 @@ async def get_history(conv_id: str, limit: int = 50):
     # Budget: ~8000 tokens for history to allow room for System Prompt + Response + User Input.
     # Groq Free Tier is 12,000 TPM. We stay well under.
     
-    MAX_HISTORY_TOKENS = 8000
+    MAX_HISTORY_TOKENS = 16000
     current_tokens = 0
     final_messages = []
     
@@ -2357,7 +2357,7 @@ async def get_history(conv_id: str, limit: int = 50):
     return [{"role": m["role"], "content": m["content"]} for m in final_messages]
 
 
-async def stream_groq_chat(messages: list, model: str = "llama-3.3-70b-versatile", max_tokens: int = 1024):
+async def stream_groq_chat(messages: list, model: str = "llama-3.3-70b-versatile", max_tokens: int = 8192):
     try:
         async with httpx.AsyncClient(timeout=None) as client:
             async with client.stream(
@@ -2443,7 +2443,7 @@ async def handle_code_assistant(prompt: str, user: Dict[str, Any], conv_id: str,
         r = await client.post(
             "https://api.groq.com/openai/v1/chat/completions",
             headers=get_groq_headers(),
-            json={"model": "llama-3.3-70b-versatile", "messages": messages, "max_tokens": 2048}
+            json={"model": "llama-3.3-70b-versatile", "messages": messages, "max_tokens": 8192}
         )
         r.raise_for_status()
         reply = r.json()["choices"][0]["message"]["content"]
