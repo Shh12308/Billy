@@ -2329,7 +2329,7 @@ async def get_history(conv_id: str, limit: int = 50):
     
     raw_messages = res.data or []
     
-    MAX_HISTORY_TOKENS = 6000
+    MAX_HISTORY_TOKENS = 4000
     current_tokens = 0
     final_messages = []
     
