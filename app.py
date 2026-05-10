@@ -2334,7 +2334,7 @@ async def get_history(conv_id: str, limit: int = 50):
     # Budget: ~8000 tokens for history to allow room for System Prompt + Response + User Input.
     # Groq Free Tier is 12,000 TPM. We stay well under.
     
-    MAX_HISTORY_TOKENS = 10000
+    MAX_HISTORY_TOKENS = 8000
     current_tokens = 0
     final_messages = []
     
