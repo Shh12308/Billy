@@ -1894,7 +1894,7 @@ async def get_user(
 async def update_user_memory(user_id: str, old_memory: str, user_prompt: str, assistant_response: str):
     """
     Uses an LLM to intelligently update the user's long-term memory.
-    It merges old facts with new information from the conversation to handle context switches.
+    Includes retry logic for Rate Limits (429).
     """
     # System prompt for the internal Memory Agent
     memory_agent_prompt = """You are a memory management AI. Update the user's long-term memory based on the latest interaction.
@@ -1921,35 +1921,67 @@ Updated Memory:"""
         {"role": "user", "content": user_message}
     ]
 
-    try:
-        # Use a fast call to Groq for memory consolidation
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            r = await client.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers=get_groq_headers(),
-                json={
-                    "model": "llama-3.3-70b-versatile",
-                    "messages": messages,
-                    "max_tokens": 300, # Keep memory short
-                    "temperature": 0.1 # Low temperature for factual extraction
-                }
-            )
-            r.raise_for_status()
-            new_memory_content = r.json()["choices"][0]["message"]["content"].strip()
+    # Retry logic for Rate Limiting (429)
+    max_retries = 3
+    base_delay = 5 # seconds
 
-        # Update Database
-        await _execute_supabase_with_retry(
-            supabase.table("users").update({"memory": new_memory_content}).eq("id", user_id),
-            description="Update User Memory (Intelligent)"
-        )
+    for attempt in range(max_retries):
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                r = await client.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers=get_groq_headers(),
+                    json={
+                        "model": "llama-3.3-70b-versatile",
+                        "messages": messages,
+                        "max_tokens": 300, # Keep memory short
+                        "temperature": 0.1 # Low temperature for factual extraction
+                    }
+                )
+                
+                # If we get here, it wasn't a connection error or 429 (raise_for_status handles 4xx/5xx)
+                r.raise_for_status()
+                
+                new_memory_content = r.json()["choices"][0]["message"]["content"].strip()
+
+                # Update Database
+                await _execute_supabase_with_retry(
+                    supabase.table("users").update({"memory": new_memory_content}).eq("id", user_id),
+                    description="Update User Memory (Intelligent)"
+                )
+                
+                # Update Cache
+                if user_id in _session_cache:
+                    _session_cache[user_id]["memory"] = new_memory_content
+                
+                # Success! Break out of retry loop
+                logger.info(f"Memory successfully updated for user {user_id[:8]}...")
+                return
+
+        except httpx.HTTPStatusError as e:
+            status_code = e.response.status_code
+            
+            if status_code == 429:
+                # We hit the rate limit. Wait and retry.
+                wait_time = base_delay * (attempt + 1) # 5s, 10s, 15s
+                logger.warning(
+                    f"Memory update hit rate limit (429) for {user_id[:8]}. "
+                    f"Attempt {attempt + 1}/{max_retries}. Retrying in {wait_time}s..."
+                )
+                await asyncio.sleep(wait_time)
+                continue # Try again
+            else:
+                # Some other HTTP error (500, 401, etc.) -> Give up immediately
+                logger.error(f"Memory update HTTP error {status_code}: {e.response.text}")
+                return 
         
-        # Update Cache
-        if user_id in _session_cache:
-            _session_cache[user_id]["memory"] = new_memory_content
+        except Exception as e:
+            # Network error or timeout -> Give up immediately (don't retry to avoid hanging)
+            logger.error(f"Memory update failed unexpectedly for {user_id[:8]}: {e}")
+            return
 
-    except Exception as e:
-        logger.error(f"Memory consolidation failed for {user_id[:8]}: {e}")
-
+    # If we exit the loop, all retries failed
+    logger.error(f"Failed to update memory for {user_id[:8]} after {max_retries} retries due to rate limiting.")
 
 def get_groq_headers():
     return {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
