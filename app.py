@@ -2352,7 +2352,7 @@ async def get_history(conv_id: str, limit: int = 50):
     return [{"role": m["role"], "content": m["content"]} for m in final_messages]
 
 
-async def stream_groq_chat(messages: list, model: str = "llama-3.3-70b-versatile", max_tokens: int = 8192):
+async def stream_groq_chat(messages: list, model: str = "llama-3.3-70b-versatile", max_tokens: int = 8000):
     try:
         async with httpx.AsyncClient(timeout=None) as client:
             async with client.stream(
