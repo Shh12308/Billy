@@ -68,7 +68,7 @@ if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
 app = FastAPI(
     title="HeloxAi API",
     description="Advanced AI Assistant Backend",
-    version="2.2.0" # Bumped version for Intelligent Memory
+    version="2.3.0" # Bumped version for Global Chat Management
 )
 
 # CORS
@@ -2352,7 +2352,7 @@ async def get_history(conv_id: str, limit: int = 50):
     return [{"role": m["role"], "content": m["content"]} for m in final_messages]
 
 
-async def stream_groq_chat(messages: list, model: str = "llama-3.3-70b-versatile", max_tokens: int = 8000):
+async def stream_groq_chat(messages: list, model: str = "llama-3.3-70b-versatile", max_tokens: int = 8192):
     try:
         async with httpx.AsyncClient(timeout=None) as client:
             async with client.stream(
@@ -2438,7 +2438,7 @@ async def handle_code_assistant(prompt: str, user: Dict[str, Any], conv_id: str,
         r = await client.post(
             "https://api.groq.com/openai/v1/chat/completions",
             headers=get_groq_headers(),
-            json={"model": "llama-3.3-70b-versatile", "messages": messages, "max_tokens": 8192}
+            json={"model": "llama-3.3-70b-versatile", "messages": messages, "max_tokens": 8000}
         )
         r.raise_for_status()
         reply = r.json()["choices"][0]["message"]["content"]
@@ -2483,13 +2483,14 @@ async def root():
     return {
         "status": "running",
         "service": "HeloxAi Backend",
-        "version": "2.2.0",
+        "version": "2.3.0",
         "features": {
             "intent_detection": "advanced",
             "user_recognition": "production-grade",
             "file_handling": "comprehensive",
             "session_management": "persistent",
-            "memory": "intelligent_llm_consolidation"
+            "memory": "intelligent_llm_consolidation",
+            "chat_management": "global_sorted"
         }
     }
 
@@ -2524,20 +2525,9 @@ async def ask_universal(req: Request, res: Response):
             logger.info(f"File upload: {file.filename} ({format_file_size(len(content))})")
 
             if file.content_type and file.content_type.startswith("image/"):
-                # SYNC CHANGE: Image analysis result is NOT just returned. 
-                # It is captured to be saved to history for the "sync" effect.
-                analysis_text = ""
-                # We stream the result to user, but also capture it for memory
-                # NOTE: handle_image_analysis currently returns a generator or dict. 
-                # We need to refactor slightly to capture text if we want to save it to DB immediately.
-                # For now, to maintain API structure, we return the analysis stream, 
-                # but in a full app, we would save the result to a 'system' message in history.
                 return await handle_image_analysis(content, stream=True)
 
             result = await extract_file_content(content, file.filename)
-            # SYNC CHANGE: Save the analysis to history so AI knows it later
-            # We can't do this easily without a user_id and conv_id first.
-            # So we return the analysis. The User's NEXT prompt will be context aware if they provide the conv_id.
             return await handle_text_analysis(
                 result.content,
                 stream=True,
@@ -2559,17 +2549,19 @@ async def ask_universal(req: Request, res: Response):
     
     if conv_id:
         check = await _execute_supabase_with_retry(
-            supabase.table("conversations").select("id").eq("id", conv_id).limit(1),
+            supabase.table("conversations").select("id").eq("id", conv_id).eq("user_id", user["id"]).limit(1),
             description="Check Conversation Existence"
         )
         if check.data:
             conversation_exists = True
         else:
             logger.warning(f"Conversation {conv_id} not found in DB. Creating new conversation.")
-            conv_id = str(uuid.uuid4())
+            conv_id = None
 
     if not conv_id:
         conv_id = str(uuid.uuid4())
+
+    now_iso = datetime.now(timezone.utc).isoformat()
 
     if not conversation_exists:
         await _execute_supabase_with_retry(
@@ -2577,9 +2569,19 @@ async def ask_universal(req: Request, res: Response):
                 "id": conv_id, 
                 "user_id": user["id"],
                 "title": prompt[:30] if prompt else "New Chat", 
-                "created_at": datetime.now(timezone.utc).isoformat()
+                "created_at": now_iso,
+                "updated_at": now_iso
             }),
             description="Create Conversation"
+        )
+    else:
+        # UPDATE: Bump the timestamp so this chat bubbles to top
+        await _execute_supabase_with_retry(
+            supabase.table("conversations").update({
+                "updated_at": now_iso,
+                "title": prompt[:30] if len(prompt) < 30 else prompt[:30] + "..."
+            }).eq("id", conv_id),
+            description="Update Conversation Timestamp"
         )
 
     try:
@@ -2776,14 +2778,14 @@ async def handle_visual_analysis(visual_items: list, stream: bool, user_prompt: 
 async def analyze_files(
     req: Request,
     file: List[UploadFile] = File(...),
-    prompt: str = Form(""),  # NEW: Accept a text prompt (e.g., "How much money is in this picture?")
+    prompt: str = Form(""),
     stream: bool = True
 ):
     """
     Enhanced file analysis endpoint supporting:
     - Up to 5 images at once.
     - 1 video (max 1 minute duration).
-    - User text prompt to guide the analysis (e.g., "Summarize this code", "What is in this picture?").
+    - User text prompt to guide the analysis.
     """
     user = await get_user(req, Response())
     
@@ -2806,7 +2808,7 @@ async def analyze_files(
         logger.info(f"[FILE] Upload: {filename} ({format_file_size(file_size)}, type={content_type})")
 
         if not content:
-            continue # Skip empty files
+            continue 
 
         # --- VIDEO HANDLING ---
         if content_type.startswith("video/") or filename.lower().endswith(('.mp4', '.mov', '.webm', '.avi')):
@@ -2814,7 +2816,6 @@ async def analyze_files(
             if video_count > 1:
                 raise HTTPException(400, "Only 1 video can be analyzed at a time.")
             
-            # Check duration
             try:
                 duration = get_video_duration(content)
                 if duration > 60:
@@ -2824,7 +2825,6 @@ async def analyze_files(
                 logger.error(f"Video processing error: {e}")
                 raise HTTPException(400, "Could not process video file. Ensure it is a valid format.")
 
-            # Extract frames
             frames = extract_video_frames(content)
             for i, frame_b64 in enumerate(frames):
                 visual_items.append({'type': 'video', 'b64': frame_b64, 'frame_index': i})
@@ -2836,7 +2836,6 @@ async def analyze_files(
 
         # --- TEXT/ARCHIVE/CODE HANDLING ---
         else:
-            # Re-use existing extraction logic
             category = get_file_category(filename)
             max_allowed = MAX_ZIP_SIZE if category == FileCategory.ARCHIVE else MAX_FILE_SIZE
             
@@ -2850,17 +2849,13 @@ async def analyze_files(
 
     # 2. Route to appropriate handler
     
-    # Priority: Visual Analysis (Images/Video)
     if visual_items:
         logger.info(f"[ANALYSIS] Processing {len(visual_items)} visual items. User prompt: '{prompt[:50]}...'")
-        # Pass the user's prompt to the visual analysis function
         return await handle_visual_analysis(visual_items, stream, user_prompt=prompt)
 
-    # Fallback: Text Analysis (Code, Docs, Archives)
     if text_items:
         combined_text = "\n\n".join(text_items)
         
-        # If the user provided a prompt, prepend it to the text context
         if prompt:
             instruction = f"USER INSTRUCTION: {prompt}\n\n"
             combined_text = instruction + combined_text
@@ -2872,7 +2867,7 @@ async def analyze_files(
             combined_text,
             stream,
             file_metadata={"note": instruction, "files": metadata_list},
-            user_prompt=prompt # Pass prompt for context/metadata handling
+            user_prompt=prompt
         )
 
     raise HTTPException(400, "No valid files provided for analysis.")
@@ -2883,7 +2878,6 @@ async def handle_archive_analysis(
 ):
     """Special handling for archive files with multiple extracted files"""
     
-    # Build a comprehensive analysis prompt
     files_summary = []
     code_files = []
     text_files = []
@@ -3062,363 +3056,50 @@ async def logout(req: Request, res: Response):
 
 
 # =========================
-# SPECIALIZED HANDLERS
-# =========================
-async def handle_math_request(prompt: str, user: Dict[str, Any], conv_id: str, stream: bool):
-    system_prompt = get_system_prompt(prompt) + """
-
-You are also a mathematical expert. When solving math problems:
-1. Show your work step-by-step
-2. Explain each step clearly
-3. Use proper mathematical notation
-4. Verify your answer
-5. If it's a proof, be rigorous
-
-Format complex equations clearly using LaTeX-style notation where appropriate."""
-
-    user_memory = user.get("memory", "")
-    if user_memory:
-        system_prompt += f"\n\nUser Context: {user_memory}"
-
-    history = await get_history(conv_id) if conv_id else []
-    messages = [{"role": "system", "content": system_prompt}] + history
-
-    if stream:
-        async def gen():
-            task = asyncio.current_task()
-            active_streams[user["id"]] = task
-            try:
-                full_text = ""
-                async for token in stream_groq_chat(messages):
-                    if task.cancelled():
-                        break
-                    full_text += token
-                    yield sse({"type": "token", "text": token})
-                
-                # INTELLIGENT MEMORY UPDATE
-                asyncio.create_task(update_user_memory(user["id"], user_memory, prompt, full_text))
-
-                try:
-                    await save_message(user["id"], conv_id, "assistant", full_text)
-                except Exception as e:
-                    logger.error(f"Failed to save assistant message: {e}")
-
-                yield sse({"type": "done"})
-            
-            except Exception as e:
-                logger.error(f"Math Stream Error: {e}")
-                yield sse({"type": "error", "message": "An error occurred."})
-            
-            finally:
-                active_streams.pop(user["id"], None)
-
-        return StreamingResponse(gen(), media_type="text/event-stream")
-
-    async with httpx.AsyncClient(timeout=60) as client:
-        r = await client.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers=get_groq_headers(),
-            json={"model": "llama-3.3-70b-versatile", "messages": messages, "max_tokens": 2048}
-        )
-        r.raise_for_status()
-        reply = r.json()["choices"][0]["message"]["content"]
-
-    # INTELLIGENT MEMORY UPDATE
-    asyncio.create_task(update_user_memory(user["id"], user_memory, prompt, reply))
-
-    await save_message(user["id"], conv_id, "assistant", reply)
-    return {"reply": reply}
-
-
-async def handle_research_request(prompt: str, user: Dict[str, Any], conv_id: str, stream: bool):
-    # SYNC CHANGE: Perform live web search
-    search_results = await perform_web_search(prompt)
-    
-    system_prompt = get_system_prompt(prompt) + """
-
-You are also a research assistant. When helping with research:
-1. Use the provided search results to inform your answer.
-2. Provide well-structured, factual information
-3. Cite sources when possible (even if general)
-4. Present multiple perspectives on controversial topics
-5. Identify gaps in current knowledge
-6. Suggest further areas of investigation
-Be thorough but concise."""
-
-    user_memory = user.get("memory", "")
-    if user_memory:
-        system_prompt += f"\n\nUser Context: {user_memory}"
-    
-    # Inject search results into the user message for the LLM context
-    # We do this by treating search results as a system instruction or context
-    user_content_with_search = f"Search Results:\n{search_results}\n\nUser Question: {prompt}"
-
-    history = await get_history(conv_id) if conv_id else []
-    messages = [{"role": "system", "content": system_prompt}] + history
-
-    if stream:
-        async def gen():
-            task = asyncio.current_task()
-            active_streams[user["id"]] = task
-            try:
-                full_text = ""
-                # We pass the search results as the effective user prompt content here
-                # but formatted so the LLM knows it's context + query
-                temp_messages = messages + [{"role": "user", "content": user_content_with_search}]
-                
-                async for token in stream_groq_chat(temp_messages, max_tokens=2048):
-                    if task.cancelled():
-                        break
-                    full_text += token
-                    yield sse({"type": "token", "text": token})
-                
-                # INTELLIGENT MEMORY UPDATE
-                asyncio.create_task(update_user_memory(user["id"], user_memory, prompt, full_text))
-
-                try:
-                    await save_message(user["id"], conv_id, "assistant", full_text)
-                except Exception as e:
-                    logger.error(f"Failed to save assistant message: {e}")
-
-                yield sse({"type": "done"})
-            
-            except Exception as e:
-                logger.error(f"Research Stream Error: {e}")
-                yield sse({"type": "error", "message": "An error occurred."})
-            
-            finally:
-                active_streams.pop(user["id"], None)
-
-        return StreamingResponse(gen(), media_type="text/event-stream")
-
-    async with httpx.AsyncClient(timeout=60) as client:
-        # Non-streaming research
-        temp_messages = messages + [{"role": "user", "content": user_content_with_search}]
-        r = await client.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers=get_groq_headers(),
-            json={"model": "llama-3.3-70b-versatile", "messages": temp_messages, "max_tokens": 2048}
-        )
-        r.raise_for_status()
-        reply = r.json()["choices"][0]["message"]["content"]
-
-    # INTELLIGENT MEMORY UPDATE
-    asyncio.create_task(update_user_memory(user["id"], user_memory, prompt, reply))
-
-    await save_message(user["id"], conv_id, "assistant", reply)
-    return {"reply": reply}
-
-
-async def handle_creative_request(prompt: str, user: Dict[str, Any], conv_id: str, stream: bool):
-    system_prompt = get_system_prompt(prompt) + """
-
-You are also a creative writing expert. When writing creative content:
-1. Use vivid, engaging language
-2. Create compelling characters and narratives
-3. Pay attention to rhythm and flow
-4. Match the requested style or genre
-5. Be original and imaginative
-Adapt your style to the specific creative request."""
-
-    user_memory = user.get("memory", "")
-    if user_memory:
-        system_prompt += f"\n\nUser Context: {user_memory}"
-
-    history = await get_history(conv_id) if conv_id else []
-    messages = [{"role": "system", "content": system_prompt}] + history
-
-    if stream:
-        async def gen():
-            task = asyncio.current_task()
-            active_streams[user["id"]] = task
-            try:
-                full_text = ""
-                async for token in stream_groq_chat(messages, max_tokens=2048):
-                    if task.cancelled():
-                        break
-                    full_text += token
-                    yield sse({"type": "token", "text": token})
-                
-                # INTELLIGENT MEMORY UPDATE
-                asyncio.create_task(update_user_memory(user["id"], user_memory, prompt, full_text))
-
-                try:
-                    await save_message(user["id"], conv_id, "assistant", full_text)
-                except Exception as e:
-                    logger.error(f"Failed to save assistant message: {e}")
-
-                yield sse({"type": "done"})
-            
-            except Exception as e:
-                logger.error(f"Creative Stream Error: {e}")
-                yield sse({"type": "error", "message": "An error occurred."})
-            
-            finally:
-                active_streams.pop(user["id"], None)
-
-        return StreamingResponse(gen(), media_type="text/event-stream")
-
-    async with httpx.AsyncClient(timeout=60) as client:
-        r = await client.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers=get_groq_headers(),
-            json={"model": "llama-3.3-70b-versatile", "messages": messages, "max_tokens": 2048}
-        )
-        r.raise_for_status()
-        reply = r.json()["choices"][0]["message"]["content"]
-
-    # INTELLIGENT MEMORY UPDATE
-    asyncio.create_task(update_user_memory(user["id"], user_memory, prompt, reply))
-
-    await save_message(user["id"], conv_id, "assistant", reply)
-    return {"reply": reply}
-
-
-async def handle_translation_request(prompt: str, user: Dict[str, Any], conv_id: str, stream: bool):
-    system_prompt = get_system_prompt(prompt) + """
-
-You are also a professional translator. When translating:
-1. Preserve the meaning and tone of the original
-2. Use natural, idiomatic language in the target
-3. Handle cultural nuances appropriately
-4. Maintain formatting where possible
-5. If unsure about context, provide alternatives
-Always indicate the source and target languages."""
-
-    user_memory = user.get("memory", "")
-    if user_memory:
-        system_prompt += f"\n\nUser Context: {user_memory}"
-
-    history = await get_history(conv_id) if conv_id else []
-    messages = [{"role": "system", "content": system_prompt}] + history
-
-    if stream:
-        async def gen():
-            task = asyncio.current_task()
-            active_streams[user["id"]] = task
-            try:
-                full_text = ""
-                async for token in stream_groq_chat(messages):
-                    if task.cancelled():
-                        break
-                    full_text += token
-                    yield sse({"type": "token", "text": token})
-                
-                # INTELLIGENT MEMORY UPDATE
-                asyncio.create_task(update_user_memory(user["id"], user_memory, prompt, full_text))
-
-                try:
-                    await save_message(user["id"], conv_id, "assistant", full_text)
-                except Exception as e:
-                    logger.error(f"Failed to save assistant message: {e}")
-
-                yield sse({"type": "done"})
-            
-            except Exception as e:
-                logger.error(f"Translation Stream Error: {e}")
-                yield sse({"type": "error", "message": "An error occurred."})
-            
-            finally:
-                active_streams.pop(user["id"], None)
-
-        return StreamingResponse(gen(), media_type="text/event-stream")
-
-    async with httpx.AsyncClient(timeout=60) as client:
-        r = await client.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers=get_groq_headers(),
-            json={"model": "llama-3.3-70b-versatile", "messages": messages, "max_tokens": 2048}
-        )
-        r.raise_for_status()
-        reply = r.json()["choices"][0]["message"]["content"]
-
-    # INTELLIGENT MEMORY UPDATE
-    asyncio.create_task(update_user_memory(user["id"], user_memory, prompt, reply))
-
-    await save_message(user["id"], conv_id, "assistant", reply)
-    return {"reply": reply}
-
-
-async def handle_summary_request(prompt: str, user: Dict[str, Any], conv_id: str, stream: bool):
-    system_prompt = get_system_prompt(prompt) + """
-
-You are also a summarization expert. When summarizing:
-1. Extract the most important points
-2. Maintain accuracy - don't add information
-3. Be concise but complete
-4. Use bullet points for clarity when appropriate
-5. Start with a brief overview, then key points
-Tailor the summary length to the complexity of the content."""
-
-    user_memory = user.get("memory", "")
-    if user_memory:
-        system_prompt += f"\n\nUser Context: {user_memory}"
-
-    history = await get_history(conv_id) if conv_id else []
-    messages = [{"role": "system", "content": system_prompt}] + history
-
-    if stream:
-        async def gen():
-            task = asyncio.current_task()
-            active_streams[user["id"]] = task
-            try:
-                full_text = ""
-                async for token in stream_groq_chat(messages):
-                    if task.cancelled():
-                        break
-                    full_text += token
-                    yield sse({"type": "token", "text": token})
-                
-                # INTELLIGENT MEMORY UPDATE
-                asyncio.create_task(update_user_memory(user["id"], user_memory, prompt, full_text))
-
-                try:
-                    await save_message(user["id"], conv_id, "assistant", full_text)
-                except Exception as e:
-                    logger.error(f"Failed to save assistant message: {e}")
-
-                yield sse({"type": "done"})
-            
-            except Exception as e:
-                logger.error(f"Summary Stream Error: {e}")
-                yield sse({"type": "error", "message": "An error occurred."})
-            
-            finally:
-                active_streams.pop(user["id"], None)
-
-        return StreamingResponse(gen(), media_type="text/event-stream")
-
-    async with httpx.AsyncClient(timeout=60) as client:
-        r = await client.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers=get_groq_headers(),
-            json={"model": "llama-3.3-70b-versatile", "messages": messages, "max_tokens": 2048}
-        )
-        r.raise_for_status()
-        reply = r.json()["choices"][0]["message"]["content"]
-
-    # INTELLIGENT MEMORY UPDATE
-    asyncio.create_task(update_user_memory(user["id"], user_memory, prompt, reply))
-
-    await save_message(user["id"], conv_id, "assistant", reply)
-    return {"reply": reply}
-
-
-# =========================
-# CHAT MANAGEMENT ENDPOINTS
+# CHAT MANAGEMENT ENDPOINTS (UPDATED FOR GLOBAL CHAT)
 # =========================
 @app.post("/newchat")
 async def new_chat(req: Request, res: Response):
     user = await get_user(req, res)
     cid = str(uuid.uuid4())
+    now_iso = datetime.now(timezone.utc).isoformat()
+    
     await _execute_supabase_with_retry(
         supabase.table("conversations").insert({
-            "id": cid, "user_id": user["id"],
-            "title": "New Chat", "created_at": datetime.now(timezone.utc).isoformat()
+            "id": cid, 
+            "user_id": user["id"],
+            "title": "New Chat", 
+            "created_at": now_iso,
+            "updated_at": now_iso
         }),
         description="New Chat"
     )
     return {"conversation_id": cid}
+
+@app.get("/chat/{conversation_id}/messages")
+async def get_chat_messages(conversation_id: str, req: Request, res: Response):
+    """Fetches full history for a specific chat."""
+    user = await get_user(req, res)
+    
+    # Verify the conversation belongs to the user
+    conv_check = await _execute_supabase_with_retry(
+        supabase.table("conversations").select("id").eq("id", conversation_id).eq("user_id", user["id"]).limit(1),
+        description="Verify Chat Ownership"
+    )
+    
+    if not conv_check.data:
+        raise HTTPException(403, "Access denied to this conversation")
+
+    # Fetch messages
+    msgs = await _execute_supabase_with_retry(
+        supabase.table("messages")
+        .select("role, content, created_at")
+        .eq("conversation_id", conversation_id)
+        .order("created_at", desc=False),
+        description="Get Chat History"
+    )
+    
+    return {"messages": msgs.data or []}
 
 
 @app.post("/stop")
@@ -3517,6 +3198,7 @@ async def regenerate(req: Request, res: Response):
 
 @app.get("/chats")
 async def list_chats(req: Request, res: Response):
+    """Returns a list of all conversations for the logged-in user, ordered by most recently active."""
     user = await get_user(req, res)
     
     result = await _execute_supabase_with_retry(
@@ -3786,19 +3468,14 @@ async def handle_video_generation(prompt: str, user: Dict[str, Any], conv_id: st
     """
     
     # 1. Detect Style
-    # Simple keyword check or use your existing intent detector
-    # (Assuming you might update IntentDetector to detect 'anime' vs 'realistic')
     prompt_lower = prompt.lower()
     is_anime = any(k in prompt_lower for k in ['anime', 'manga', 'cartoon', '2d animation', 'studio ghibli'])
     
     # 2. Select Model based on intent
     if is_anime:
-        # Use Pika for Anime/Cartoon styles
         MODEL_VERSION = "pika-labs/pika-1.0" 
-        # Pika inputs often differ slightly, check docs, but usually support 'prompt'
         model_name = "Pika"
     else:
-        # Use Luma Dream Machine for Realistic/Cinematic/General
         MODEL_VERSION = "luma-dream-machine"
         model_name = "Luma"
 
@@ -3809,24 +3486,17 @@ async def handle_video_generation(prompt: str, user: Dict[str, Any], conv_id: st
             yield sse({"type": "status", "message": f"Initializing {model_name} AI..."})
             
             async with httpx.AsyncClient(timeout=300) as client:
-                # NOTE: Inputs differ slightly between models. 
-                # Luma usually takes: prompt, loop, aspect_ratio.
-                # Pika takes: prompt, frame_rate, motion_bucket_id.
-                
                 input_payload = {"prompt": prompt}
                 
                 if model_name == "Luma":
                     input_payload["loop"] = False
-                    # Luma supports specific aspect ratios like "16:9", "9:16"
                     if "vertical" in prompt_lower or "portrait" in prompt_lower or "phone" in prompt_lower:
                         input_payload["aspect_ratio"] = "9:16"
                     else:
                         input_payload["aspect_ratio"] = "16:9"
                 
                 elif model_name == "Pika":
-                    # Pika specific settings
                     input_payload["frame_rate"] = 24
-                    # Higher motion_bucket_id = more movement (0-255)
                     input_payload["motion_bucket_id"] = 150 
                 
                 r = await client.post(
@@ -3847,7 +3517,7 @@ async def handle_video_generation(prompt: str, user: Dict[str, Any], conv_id: st
                 yield sse({"type": "status", "message": f"Generating video ({model_name})..."})
                 
                 poll_count = 0
-                while poll_count < 180: # Luma can take longer, 6 mins max
+                while poll_count < 180: 
                     r = await client.get(f"https://api.replicate.com/v1/predictions/{prediction_id}", headers=headers)
                     r.raise_for_status()
                     data = r.json()
@@ -3855,13 +3525,11 @@ async def handle_video_generation(prompt: str, user: Dict[str, Any], conv_id: st
                     if data["status"] == "succeeded":
                         raw_video_url = data["output"]
                         
-                        # Handle list outputs (some models return a list)
                         if isinstance(raw_video_url, list):
                             raw_video_url = raw_video_url[0]
                             
                         yield sse({"type": "status", "message": "Applying watermark..."})
                         
-                        # Only watermark if user is not premium (optional logic)
                         watermarked_url = await add_watermark_to_video(raw_video_url)
                         
                         yield sse({"type": "video", "url": watermarked_url})
@@ -3920,21 +3588,12 @@ async def setup_sessions_table():
     -- Enable RLS
     ALTER TABLE user_sessions ENABLE ROW LEVEL SECURITY;
 
-    -- IMPORTANT: Since we are using Service Key for backend logic, we must allow the service role (or anon if we switch back) to manage these.
-    -- However, standard RLS policies for 'users' table usually block anon inserts.
-    -- Since we are using a custom backend with SERVICE KEY, we can technically bypass RLS,
-    -- but having the policies ensures safety if keys leak.
-    
     -- Policy: Service Role (or backend) can do anything
     CREATE POLICY "Service full access" ON user_sessions
         USING (true) WITH CHECK (true);
 
-    -- Clean up expired sessions automatically (run as scheduled job)
-    -- CREATE OR REPLACE FUNCTION clean_expired_sessions()
-    -- RETURNS void AS $$     -- BEGIN
-    --     UPDATE user_sessions SET is_valid = FALSE WHERE expires_at < NOW() AND is_valid = TRUE;
-    -- END;
-    -- $$ LANGUAGE plpgsql;
+    -- Create or update conversations table to support updated_at sorting
+    ALTER TABLE conversations ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
     """
     return {"sql": sql, "note": "Run this SQL in your Supabase SQL editor"}
 
