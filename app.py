@@ -2531,7 +2531,6 @@ async def root():
 async def ask_universal(req: Request, res: Response):
     content_type = req.headers.get("content-type", "")
     
-    # Get remember preference from request
     remember = True
     if "application/json" in content_type:
         try:
@@ -2554,7 +2553,7 @@ async def ask_universal(req: Request, res: Response):
             file: UploadFile = form["file"]
             content = await file.read()
 
-            logger.info(f"File upload: {file.filename} ({format_file_size(len(content))})")
+            logger.info(f"File upload: {file.filename}")
 
             if file.content_type and file.content_type.startswith("image/"):
                 return await handle_image_analysis(content, stream=True)
@@ -2577,17 +2576,23 @@ async def ask_universal(req: Request, res: Response):
 
     user = await get_user(req, res, remember=remember)
 
+    # =========================
+    # CONVERSATION HANDLING
+    # =========================
     conversation_exists = False
     
     if conv_id:
         check = await _execute_supabase_with_retry(
-            supabase.table("conversations").select("id").eq("id", conv_id).eq("user_id", user["id"]).limit(1),
-            description="Check Conversation Existence"
+            supabase.table("conversations")
+            .select("id")
+            .eq("id", conv_id)
+            .eq("user_id", user["id"])
+            .limit(1)
         )
         if check.data:
             conversation_exists = True
         else:
-            logger.warning(f"Conversation {conv_id} not found in DB. Creating new conversation.")
+            logger.warning(f"Conversation {conv_id} not found. Creating new.")
             conv_id = None
 
     if not conv_id:
@@ -2598,210 +2603,128 @@ async def ask_universal(req: Request, res: Response):
     if not conversation_exists:
         await _execute_supabase_with_retry(
             supabase.table("conversations").insert({
-                "id": conv_id, 
+                "id": conv_id,
                 "user_id": user["id"],
-                "title": prompt[:30] if prompt else "New Chat", 
+                "title": prompt[:30],
                 "created_at": now_iso,
                 "updated_at": now_iso
-            }),
-            description="Create Conversation"
+            })
         )
     else:
-        # UPDATE: Bump the timestamp so this chat bubbles to top
         await _execute_supabase_with_retry(
             supabase.table("conversations").update({
-                "updated_at": now_iso,
-                "title": prompt[:30] if len(prompt) < 30 else prompt[:30] + "..."
-            }).eq("id", conv_id),
-            description="Update Conversation Timestamp"
+                "updated_at": now_iso
+            }).eq("id", conv_id)
         )
 
-    try:
-        await save_message(user["id"], conv_id, "user", prompt)
-    except Exception as e:
-        logger.error(f"Failed to save user message: {e}")
+    await save_message(user["id"], conv_id, "user", prompt)
 
-    intent_result = detect_intent(prompt)
-    action_type = get_action_type(prompt)
-    required_tools = get_required_tools(prompt)
+    # =========================
+    # RETRY HELPERS
+    # =========================
+    async def stream_groq_chat_with_retry(messages):
+        for attempt in range(3):
+            try:
+                async for token in stream_groq_chat(messages):
+                    yield token
+                return
+            except Exception as e:
+                if "429" in str(e) or "rate limit" in str(e).lower():
+                    wait = 2 ** attempt
+                    logger.warning(f"429 streaming. Retry in {wait}s")
+                    await asyncio.sleep(wait)
+                else:
+                    raise
+        raise Exception("Streaming failed after retries")
 
-    if intent_result:
-        logger.info(
-            f"[INTENT] action={action_type} "
-            f"intent={intent_result.intent.value} "
-            f"confidence={intent_result.confidence:.2%} "
-            f"sub_intents={[i.value for i in intent_result.sub_intents]} "
-            f"tools={required_tools}"
-        )
-    else:
-        logger.info(f"[INTENT] action=general (no specific intent)")
+    async def groq_request_with_retry(client, payload):
+        for attempt in range(3):
+            try:
+                r = await client.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers=get_groq_headers(),
+                    json=payload
+                )
+                r.raise_for_status()
+                return r
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 429:
+                    wait = 2 ** attempt
+                    logger.warning(f"429 non-stream. Retry in {wait}s")
+                    await asyncio.sleep(wait)
+                else:
+                    raise
+        raise Exception("Request failed after retries")
 
-    handler_map = {
-        "image": handle_image_generation,
-        "video": handle_video_generation,
-        "code": handle_code_assistant,
-        "document": handle_text_analysis,
-        "data": handle_text_analysis,
-        "web": handle_code_assistant,
-        "api": handle_code_assistant,
-        "database": handle_code_assistant,
-    }
+    # =========================
+    # BUILD PROMPT
+    # =========================
+    history = await get_history(conv_id)
 
-    handler = handler_map.get(action_type)
+    # 🔥 HARD LIMIT (prevents 8k+ tokens)
+    MAX_MESSAGES = 10
+    history = history[-MAX_MESSAGES:]
 
-    if handler:
-        if action_type in ("document", "data"):
-            return await handler(prompt, stream, user_prompt=prompt)
-        else:
-            return await handler(prompt, user, conv_id, stream)
+    base_system = get_system_prompt(prompt)
+    user_memory = user.get("memory", "")
+    if user_memory:
+        base_system += f"\n\nUser Context: {user_memory}"
 
-    if action_type == "math":
-        return await handle_math_request(prompt, user, conv_id, stream)
+    full_history = [{"role": "system", "content": base_system}] + history
 
-    if action_type == "research":
-        return await handle_research_request(prompt, user, conv_id, stream)
-
-    if action_type == "creative":
-        return await handle_creative_request(prompt, user, conv_id, stream)
-
-    if action_type == "translation":
-        return await handle_translation_request(prompt, user, conv_id, stream)
-
-    if action_type == "summary":
-        return await handle_summary_request(prompt, user, conv_id, stream)
-
-    # DEFAULT CHAT
+    # =========================
+    # STREAM MODE
+    # =========================
     if stream:
         async def event_gen():
             task = asyncio.current_task()
             active_streams[user["id"]] = task
 
             try:
-                try:
-                    history = await get_history(conv_id)
-                except Exception as e:
-                    logger.error(f"History fetch failed: {e}")
-                    history = [] 
-                
-                base_system = get_system_prompt(prompt)
-                user_memory = user.get("memory", "")
-                if user_memory:
-                    base_system += f"\n\nUser Context: {user_memory}"
-                
-                full_history = [{"role": "system", "content": base_system}] + history
-                
                 full_text = ""
-                async for token in stream_groq_chat(full_history):
+
+                async for token in stream_groq_chat_with_retry(full_history):
                     if task.cancelled():
                         break
                     full_text += token
                     yield sse({"type": "token", "text": token})
 
-                # INTELLIGENT MEMORY UPDATE
-                asyncio.create_task(update_user_memory(user["id"], user_memory, prompt, full_text))
+                asyncio.create_task(
+                    update_user_memory(user["id"], user_memory, prompt, full_text)
+                )
 
-                try:
-                    await save_message(user["id"], conv_id, "assistant", full_text)
-                except Exception as e:
-                    logger.error(f"Failed to save assistant message: {e}")
-                
+                await save_message(user["id"], conv_id, "assistant", full_text)
+
                 yield sse({"type": "done"})
-            
+
             except Exception as e:
-                logger.error(f"Universal Stream Error: {e}")
-                yield sse({"type": "error", "message": "An error occurred processing your request."})
-            
+                logger.error(f"Stream error: {e}")
+                yield sse({"type": "error", "message": "Processing failed"})
             finally:
                 active_streams.pop(user["id"], None)
 
         return StreamingResponse(event_gen(), media_type="text/event-stream")
+
+    # =========================
+    # NON-STREAM MODE
+    # =========================
     else:
-        history = await get_history(conv_id)
-        base_system = get_system_prompt(prompt)
-        user_memory = user.get("memory", "")
-        if user_memory:
-            base_system += f"\n\nUser Context: {user_memory}"
-            
-        full_history = [{"role": "system", "content": base_system}] + history
-        
         async with httpx.AsyncClient() as client:
-            r = await client.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers=get_groq_headers(),
-                json={"model": "llama-3.3-70b-versatile", "messages": full_history, "max_tokens": 1024}
-            )
-            r.raise_for_status()
-            reply = r.json()["choices"][0]["message"]["content"]
-            
-            # INTELLIGENT MEMORY UPDATE
-            asyncio.create_task(update_user_memory(user["id"], user_memory, prompt, reply))
-            
-            await save_message(user["id"], conv_id, "assistant", reply)
-            return {"reply": reply}
-
-
-# =========================
-# UPDATED VISUAL ANALYSIS HANDLER
-# =========================
-
-async def handle_visual_analysis(visual_items: list, stream: bool, user_prompt: str = ""):
-    """
-    Analyzes a list of visual items (images or video frames).
-    visual_items: list of dicts {'type': 'image'|'video', 'b64': 'base64string'}
-    """
-    
-    # Construct the content block for OpenAI Vision API
-    content_block = [
-        {"type": "text", "text": user_prompt or "Analyze these images or video frames thoroughly. Describe what you see, identify key elements, text, or actions."}
-    ]
-    
-    for item in visual_items:
-        if item['type'] == 'video':
-            content_block.append({
-                "type": "text", 
-                "text": f"\n[Video Frame {item['frame_index'] + 1} from uploaded video]:"
+            r = await groq_request_with_retry(client, {
+                "model": "llama-3.3-70b-versatile",
+                "messages": full_history,
+                "max_tokens": 1024
             })
-        content_block.append({
-            "type": "image_url",
-            "image_url": {
-                "url": f"data:image/jpeg;base64,{item['b64']}",
-                "detail": "auto"  # Standard detail level
-            }
-        })
 
-    payload = {
-        "model": "gpt-4o-mini",  # Or "gpt-4o" if available/preferred
-        "messages": [{
-            "role": "user",
-            "content": content_block
-        }]
-    }
+        reply = r.json()["choices"][0]["message"]["content"]
 
-    # Increased timeout for video/multiple image processing
-    async with httpx.AsyncClient(timeout=90.0) as client: 
-        r = await client.post(
-            "https://api.openai.com/v1/chat/completions",
-            headers=get_openai_headers(),
-            json=payload
+        asyncio.create_task(
+            update_user_memory(user["id"], user_memory, prompt, reply)
         )
-        r.raise_for_status()
 
-    result = r.json()["choices"][0]["message"]["content"]
+        await save_message(user["id"], conv_id, "assistant", reply)
 
-    if stream:
-        async def gen():
-            task = asyncio.current_task()
-            try:
-                yield sse({"type": "text", "text": result})
-                yield sse({"type": "done"})
-            except Exception as e:
-                logger.error(f"Visual analysis stream error: {e}")
-                yield sse({"type": "error", "message": "Analysis failed."})
-
-        return StreamingResponse(gen(), media_type="text/event-stream")
-
-    return {"analysis": result}
-
+        return {"reply": reply}
 
 # =========================
 # UPDATED ANALYSIS ENDPOINT
