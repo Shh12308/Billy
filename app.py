@@ -68,7 +68,7 @@ if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
 app = FastAPI(
     title="HeloxAi API",
     description="Advanced AI Assistant Backend",
-    version="2.3.0" # Bumped version for Global Chat Management
+    version="2.3.1" # Bumped version for Auth Fixes
 )
 
 # CORS
@@ -194,7 +194,6 @@ CONFIG_EXTENSIONS = {
     '.prettierrc', '.gitignore', '.dockerignore', '.npmrc',
 }
 
-
 def get_file_category(filename: str) -> FileCategory:
     """Determine file category from extension"""
     if not filename:
@@ -220,7 +219,6 @@ def get_file_category(filename: str) -> FileCategory:
         return FileCategory.CONFIG
     else:
         return FileCategory.UNKNOWN
-
 
 def get_file_language(filename: str) -> Optional[str]:
     """Get programming language from file extension for syntax highlighting"""
@@ -259,7 +257,6 @@ def get_file_language(filename: str) -> Optional[str]:
     ext = Path(filename).suffix.lower()
     return ext_lang_map.get(ext)
 
-
 def is_binary_file(filename: str, content: bytes = None) -> bool:
     """Check if file is binary based on extension or content"""
     ext = Path(filename).suffix.lower()
@@ -289,7 +286,6 @@ def is_binary_file(filename: str, content: bytes = None) -> bool:
     
     return False
 
-
 def format_file_size(size_bytes: int) -> str:
     """Format file size in human-readable format"""
     for unit in ['B', 'KB', 'MB', 'GB']:
@@ -297,7 +293,6 @@ def format_file_size(size_bytes: int) -> str:
             return f"{size_bytes:.1f} {unit}"
         size_bytes /= 1024.0
     return f"{size_bytes:.1f} TB"
-
 
 # =========================
 # ADVANCED FILE EXTRACTOR
@@ -325,7 +320,6 @@ class FileExtractionResult:
             "truncated": self.truncated,
             "original_size": self.original_size
         }
-
 
 async def extract_file_content(
     content: bytes,
@@ -419,7 +413,6 @@ async def extract_file_content(
             original_size=original_size
         )
 
-
 def extract_text_with_fallback(content: bytes, max_length: int) -> Tuple[str, bool]:
     """Extract text with multiple encoding fallbacks"""
     encodings = ['utf-8', 'utf-8-sig', 'latin-1', 'cp1252', 'iso-8859-1', 'ascii']
@@ -440,7 +433,6 @@ def extract_text_with_fallback(content: bytes, max_length: int) -> Tuple[str, bo
     if truncated:
         text = text[:max_length] + "\n\n[... Content truncated ...]"
     return text, truncated
-
 
 async def extract_pdf_content(
     content: bytes,
@@ -479,7 +471,6 @@ async def extract_pdf_content(
             original_size=len(content)
         )
 
-
 async def extract_archive_content(
     content: bytes,
     filename: str,
@@ -505,7 +496,6 @@ async def extract_archive_content(
             metadata=metadata,
             original_size=len(content)
         )
-
 
 async def extract_zip_content(
     content: bytes,
@@ -679,7 +669,6 @@ async def extract_zip_content(
             original_size=len(content)
         )
 
-
 async def extract_tar_content(
     content: bytes,
     filename: str,
@@ -775,7 +764,6 @@ async def extract_tar_content(
             original_size=len(content)
         )
 
-
 # =========================
 # PRODUCTION-GRADE AUTH SYSTEM
 # =========================
@@ -789,43 +777,45 @@ SESSION_EXPIRY_COOKIE = "HeloxAi_Expiry"
 # Cookie settings - production grade
 def get_cookie_settings(remember: bool = True) -> Dict:
     """Get cookie settings based on remember preference"""
-    if remember:
-        return {
-            "max_age": SESSION_DURATION,
-            "httponly": True,
-            "secure": True,
-            "samesite": "none",
-            "path": "/"
-        }
-    else:
-        return {
-            "max_age": 24 * 60 * 60,  # Session only (24 hours)
-            "httponly": True,
-            "secure": True,
-            "samesite": "none",
-            "path": "/"
-        }
-
+    base = {
+        "max_age": SESSION_DURATION if remember else 24 * 60 * 60,
+        "httponly": True,
+        "secure": True,
+        "samesite": "none",
+        "path": "/"
+    }
+    # If backend and frontend share a root domain (e.g. heloxai.xyz),
+    # setting Domain=.heloxai.xyz lets the browser send cookies to
+    # both heloxai.xyz AND api.heloxai.xyz.
+    cookie_domain = os.getenv("COOKIE_DOMAIN")
+    if cookie_domain:
+        base["domain"] = cookie_domain
+    return base
 
 def generate_device_fingerprint(request: Request) -> str:
     """Generate a stable device fingerprint from request headers"""
+    # Prefer the real IP forwarded by the proxy
+    real_ip = (
+        request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+        or request.headers.get("x-real-ip", "")
+        or (request.client.host if request.client else "")
+    )
+
     fp_components = [
         request.headers.get("user-agent", ""),
         request.headers.get("accept-language", ""),
         request.headers.get("accept-encoding", ""),
-        request.headers.get("sec-ch-ua-platform", ""),  # New API for platform
-        request.headers.get("sec-ch-ua-mobile", ""),    # Mobile detection
-        request.client.host if request.client else "",
+        request.headers.get("sec-ch-ua-platform", ""),
+        request.headers.get("sec-ch-ua-mobile", ""),
+        real_ip,
     ]
     fp_string = "|".join(fp_components)
     return hashlib.sha256(fp_string.encode()).hexdigest()[:32]
-
 
 def generate_session_token() -> str:
     """Generate a secure session token"""
     import secrets
     return secrets.token_urlsafe(64)
-
 
 def set_session_cookies(
     response: Response,
@@ -847,21 +837,25 @@ def set_session_cookies(
     response.set_cookie(key=SESSION_TOKEN_COOKIE, value=session_token, **settings)
     response.set_cookie(key=SESSION_EXPIRY_COOKIE, value=str(expiry), **settings)
 
-
 def clear_session_cookies(response: Response):
     """Clear all session cookies on logout"""
     cookies_to_clear = [
         PRIMARY_COOKIE, FINGERPRINT_COOKIE, BACKUP_COOKIE,
         DEVICE_COOKIE, SESSION_TOKEN_COOKIE, SESSION_EXPIRY_COOKIE
     ]
+    
+    cookie_domain = os.getenv("COOKIE_DOMAIN")
+    
     for cookie_name in cookies_to_clear:
-        response.delete_cookie(
-            key=cookie_name,
-            path="/",
-            secure=True,
-            samesite="none"
-        )
-
+        delete_kwargs = {
+            "key": cookie_name,
+            "path": "/",
+            "secure": True,
+            "samesite": "none"
+        }
+        if cookie_domain:
+            delete_kwargs["domain"] = cookie_domain
+        response.delete_cookie(**delete_kwargs)
 
 def is_session_expired(expiry_str: str) -> bool:
     """Check if session has expired"""
@@ -871,7 +865,6 @@ def is_session_expired(expiry_str: str) -> bool:
     except (ValueError, TypeError):
         return True
 
-
 def should_refresh_session(expiry_str: str) -> bool:
     """Check if session should be refreshed"""
     try:
@@ -880,7 +873,6 @@ def should_refresh_session(expiry_str: str) -> bool:
         return remaining < REFRESH_THRESHOLD
     except (ValueError, TypeError):
         return True
-
 
 async def validate_session_token(user_id: str, token: str) -> bool:
     """Validate session token against stored value"""
@@ -914,7 +906,6 @@ async def validate_session_token(user_id: str, token: str) -> bool:
     except Exception as e:
         logger.error(f"Session validation error: {e}")
         return False
-
 
 async def create_user_session(
     user_id: str,
@@ -956,7 +947,6 @@ async def create_user_session(
         # Return a fallback token (less secure but doesn't break flow)
         return token
 
-
 async def cleanup_session_cache():
     """Periodically clean up expired session cache entries"""
     global _session_cache_last_cleanup
@@ -980,7 +970,6 @@ async def cleanup_session_cache():
     
     for key in expired_keys:
         del _session_cache[key]
-
 
 # =========================
 # BASE SYSTEM PROMPT - SYNCED AWARENESS
@@ -1057,7 +1046,6 @@ CREATOR_QUESTION_PATTERNS = [
 # Pre-compile creator patterns for performance
 COMPILED_CREATOR_PATTERNS = [re.compile(p, re.IGNORECASE) for p in CREATOR_QUESTION_PATTERNS]
 
-
 def is_creator_question(text: str) -> bool:
     """Check if user is asking about who created/made the AI"""
     for pattern in COMPILED_CREATOR_PATTERNS:
@@ -1065,13 +1053,11 @@ def is_creator_question(text: str) -> bool:
             return True
     return False
 
-
 def get_system_prompt(user_prompt: str) -> str:
     """Return base prompt normally, creator response ONLY if asked"""
     if is_creator_question(user_prompt):
         return BASE_SYSTEM_PROMPT + "\n\n" + CREATOR_RESPONSE_INSTRUCTION
     return BASE_SYSTEM_PROMPT
-
 
 # =========================
 # ADVANCED INTENT DETECTION
@@ -1097,7 +1083,6 @@ class IntentCategory(Enum):
     RESEARCH = "research"
     CONVERSATION = "conversation"
 
-
 @dataclass
 class IntentResult:
     intent: IntentCategory
@@ -1114,7 +1099,6 @@ class IntentResult:
             "keywords_matched": self.keywords_matched,
             "patterns_matched": self.patterns_matched
         }
-
 
 class AdvancedIntentDetector:
     def __init__(self):
@@ -1588,10 +1572,8 @@ Provide complete, ready-to-execute SQL/ORM code.""",
 
         return base + sub_prompts.get(intent.intent, "\n\nYou are also a helpful coding assistant.")
 
-
 # Singleton instance
 _detector = None
-
 
 def get_detector() -> AdvancedIntentDetector:
     global _detector
@@ -1599,29 +1581,23 @@ def get_detector() -> AdvancedIntentDetector:
         _detector = AdvancedIntentDetector()
     return _detector
 
-
 # =========================
 # BACKWARD COMPATIBLE FUNCTIONS
 # =========================
 def is_image_request(prompt: str) -> bool:
     return get_detector().get_action_type(prompt) == "image"
 
-
 def is_video_request(prompt: str) -> bool:
     return get_detector().get_action_type(prompt) == "video"
-
 
 def is_code_request(prompt: str) -> bool:
     return get_detector().get_action_type(prompt) == "code"
 
-
 def is_document_request(prompt: str) -> bool:
     return get_detector().get_action_type(prompt) == "document"
 
-
 def is_data_request(prompt: str) -> bool:
     return get_detector().get_action_type(prompt) == "data"
-
 
 # =========================
 # NEW ADVANCED FUNCTIONS
@@ -1629,29 +1605,23 @@ def is_data_request(prompt: str) -> bool:
 def detect_intent(prompt: str) -> Optional[IntentResult]:
     return get_detector().get_primary_intent(prompt)
 
-
 def get_action_type(prompt: str) -> str:
     return get_detector().get_action_type(prompt)
 
-
 def get_required_tools(prompt: str) -> List[str]:
     return get_detector().get_required_tools(prompt)
-
 
 def is_debug_request(prompt: str) -> bool:
     intent = detect_intent(prompt)
     return intent and intent.intent == IntentCategory.CODE_DEBUG
 
-
 def is_review_request(prompt: str) -> bool:
     intent = detect_intent(prompt)
     return intent and intent.intent == IntentCategory.CODE_REVIEW
 
-
 def get_intent_confidence(prompt: str) -> float:
     intent = detect_intent(prompt)
     return intent.confidence if intent else 0.0
-
 
 # =========================
 # MODELS
@@ -1662,15 +1632,12 @@ class ChatRequest(BaseModel):
     stream: bool = True
     remember: bool = True  # New: persist session
 
-
 class RegenerateRequest(BaseModel):
     conversation_id: str
-
 
 class TTSRequest(BaseModel):
     text: str
     voice: str = "alloy"
-
 
 class IntentInfo(BaseModel):
     intent: str
@@ -1679,20 +1646,17 @@ class IntentInfo(BaseModel):
     action_type: str
     tools: List[str]
 
-
 class FileAnalysisResponse(BaseModel):
     content: str
     metadata: Dict[str, Any]
     files: List[Dict[str, Any]] = []
     truncated: bool = False
 
-
 # =========================
 # HELPERS
 # =========================
 def sse(data: dict) -> str:
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
-
 
 async def _execute_supabase_with_retry(query_builder, description="Supabase Operation"):
     max_retries = 3
@@ -1716,7 +1680,6 @@ async def _execute_supabase_with_retry(query_builder, description="Supabase Oper
     if last_exception:
         raise last_exception
 
-
 async def get_user(
     request: Request,
     response: Response,
@@ -1729,6 +1692,7 @@ async def get_user(
     - Device fingerprinting
     - Session refresh logic
     - Automatic session creation
+    - Cookie-free fingerprint recovery
     """
     await cleanup_session_cache()
     
@@ -1811,6 +1775,23 @@ async def get_user(
                 logger.info(f"User recovered via stored fingerprint: {user_id[:8]}...")
         except Exception as e:
             logger.error(f"Stored fingerprint lookup failed: {e}")
+
+    # ── NEW: Priority 5 — Recover user by CURRENT fingerprint (no cookie needed) ──
+    if not user_id and current_fingerprint:
+        try:
+            fp_resp = await _execute_supabase_with_retry(
+                supabase.table("users")
+                .select("id")
+                .eq("fingerprint", current_fingerprint)
+                .order("created_at", desc=False)   # get the ORIGINAL user, not a dupe
+                .limit(1),
+                description="User Lookup by Current Fingerprint (cookie-free)"
+            )
+            if fp_resp.data:
+                user_id = fp_resp.data[0]["id"]
+                logger.info(f"User recovered via current fingerprint (no cookie): {user_id[:8]}...")
+        except Exception as e:
+            logger.error(f"Current fingerprint lookup failed: {e}")
 
     # Load user data if we found an ID
     if user_id:
@@ -1986,10 +1967,8 @@ Updated Memory:"""
 def get_groq_headers():
     return {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
 
-
 def get_openai_headers():
     return {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
-
 
 # =========================
 # WEB SEARCH INTEGRATION (TAVILY)
@@ -2121,7 +2100,6 @@ def extract_video_frames(video_bytes: bytes, max_frames: int = 4) -> list:
         if os.path.exists(tmp_file_path):
             os.remove(tmp_file_path)
 
-
 async def add_watermark_to_video(video_url: str) -> str:
     """Add transparent watermark to video"""
     try:
@@ -2204,7 +2182,6 @@ async def add_watermark_to_video(video_url: str) -> str:
         logger.error(f"Watermark error: {e}")
         return video_url
 
-
 # =========================
 # CORE LOGIC
 # =========================
@@ -2220,7 +2197,6 @@ async def save_message(user_id: str, conv_id: str, role: str, content: str):
         supabase.table("messages").insert(data),
         description="Save Message"
     )
-
 
 async def handle_text_analysis(
     text: str,
@@ -2288,7 +2264,6 @@ Preserve important technical details.{file_context}"""
 
     return {"analysis": r.json()["choices"][0]["message"]["content"]}
 
-
 async def handle_image_analysis(image_bytes: bytes, stream: bool, user_prompt: str = ""):
     b64 = base64.b64encode(image_bytes).decode()
 
@@ -2327,7 +2302,6 @@ async def handle_image_analysis(image_bytes: bytes, stream: bool, user_prompt: s
         return StreamingResponse(gen(), media_type="text/event-stream")
 
     return {"analysis": result}
-
 
 # =========================
 # TOKEN ESTIMATION HELPER
@@ -2383,7 +2357,6 @@ async def get_history(conv_id: str, limit: int = 50):
     
     return [{"role": m["role"], "content": m["content"]} for m in final_messages]
 
-
 async def stream_groq_chat(messages: list, model: str = "llama-3.3-70b-versatile", max_tokens: int = 8192):
     try:
         async with httpx.AsyncClient(timeout=None) as client:
@@ -2417,7 +2390,6 @@ async def stream_groq_chat(messages: list, model: str = "llama-3.3-70b-versatile
     except Exception as e:
         logger.error(f"Stream generation error: {e}")
         raise e
-
 
 async def handle_code_assistant(prompt: str, user: Dict[str, Any], conv_id: str, stream: bool):
     system_prompt = get_detector().get_code_system_prompt(prompt)
@@ -2482,10 +2454,8 @@ async def handle_code_assistant(prompt: str, user: Dict[str, Any], conv_id: str,
         await save_message(user["id"], conv_id, "assistant", reply)
     return {"reply": reply}
 
-
 # LAZY LOADING FOR VISION
 vision_model = None
-
 
 def get_vision_model():
     global vision_model
@@ -2497,7 +2467,6 @@ def get_vision_model():
         if torch.cuda.is_available():
             vision_model.to("cuda")
     return vision_model
-
 
 # =========================
 # ENDPOINTS
@@ -2515,7 +2484,7 @@ async def root():
     return {
         "status": "running",
         "service": "HeloxAi Backend",
-        "version": "2.3.0",
+        "version": "2.3.1",
         "features": {
             "intent_detection": "advanced",
             "user_recognition": "production-grade",
@@ -2525,7 +2494,6 @@ async def root():
             "chat_management": "global_sorted"
         }
     }
-
 
 @app.post("/ask/universal")
 async def ask_universal(req: Request, res: Response):
@@ -3002,7 +2970,6 @@ Be organized and clear in your analysis."""
         "files": result.files
     }
 
-
 @app.get("/file-types")
 async def get_supported_file_types():
     """Return list of supported file types"""
@@ -3023,7 +2990,6 @@ async def get_supported_file_types():
         }
     }
 
-
 # =========================
 # SESSION MANAGEMENT ENDPOINTS
 # =========================
@@ -3037,7 +3003,6 @@ async def validate_session(req: Request, res: Response):
         "fingerprint": user.get("fingerprint", "")[:8] + "...",
         "is_authenticated": bool(user.get("email") and not user["email"].startswith("anon+"))
     }
-
 
 @app.post("/session/refresh")
 async def refresh_session(req: Request, res: Response):
@@ -3061,7 +3026,6 @@ async def refresh_session(req: Request, res: Response):
         "user_id": user["id"],
         "expires_in": SESSION_DURATION if remember else 24 * 60 * 60
     }
-
 
 @app.post("/session/logout")
 async def logout(req: Request, res: Response):
@@ -3087,7 +3051,6 @@ async def logout(req: Request, res: Response):
     clear_session_cookies(res)
     
     return {"status": "logged_out"}
-
 
 # =========================
 # CHAT MANAGEMENT ENDPOINTS (UPDATED FOR GLOBAL CHAT)
@@ -3135,7 +3098,6 @@ async def get_chat_messages(conversation_id: str, req: Request, res: Response):
     
     return {"messages": msgs.data or []}
 
-
 @app.post("/stop")
 async def stop_generation(req: Request, res: Response):
     user = await get_user(req, res)
@@ -3147,7 +3109,6 @@ async def stop_generation(req: Request, res: Response):
         active_streams.pop(user_id, None)
         return {"status": "stopped"}
     return {"status": "no_active_stream"}
-
 
 @app.post("/regenerate")
 async def regenerate(req: Request, res: Response):
@@ -3229,7 +3190,6 @@ async def regenerate(req: Request, res: Response):
 
     return StreamingResponse(event_gen(), media_type="text/event-stream")
 
-
 @app.get("/chats")
 async def list_chats(req: Request, res: Response):
     """Returns a list of all conversations for the logged-in user, ordered by most recently active."""
@@ -3244,7 +3204,6 @@ async def list_chats(req: Request, res: Response):
     )
     return {"chats": result.data or []}
 
-
 # =========================
 # USER IDENTITY ENDPOINT
 # =========================
@@ -3258,7 +3217,6 @@ async def get_user_info(req: Request, res: Response):
         "session_valid": user.get("session_valid", False),
         "is_authenticated": bool(user.get("email") and not user["email"].startswith("anon+"))
     }
-
 
 @app.post("/user/merge")
 async def merge_user(req: Request, res: Response):
@@ -3295,7 +3253,6 @@ async def merge_user(req: Request, res: Response):
         logger.error(f"User merge failed: {e}")
         raise HTTPException(500, "Failed to merge user data")
 
-
 # =========================
 # INTENT ANALYSIS ENDPOINT
 # =========================
@@ -3317,7 +3274,6 @@ async def analyze_intent_endpoint(req: Request):
         "required_tools": required_tools,
         "confidence": intent_result.confidence if intent_result else 0.0
     }
-
 
 # =========================
 # MEDIA ENDPOINTS
@@ -3363,7 +3319,6 @@ async def get_voices():
         ]
     }
 
-
 @app.post("/stt")
 async def speech_to_text(file: UploadFile = File(...)):
     if not OPENAI_API_KEY:
@@ -3381,7 +3336,6 @@ async def speech_to_text(file: UploadFile = File(...)):
         )
         r.raise_for_status()
         return r.json()
-
 
 # =========================
 # MEDIA GENERATION HANDLERS
@@ -3527,7 +3481,7 @@ async def handle_video_generation(prompt: str, user: Dict[str, Any], conv_id: st
                     if "vertical" in prompt_lower or "portrait" in prompt_lower or "phone" in prompt_lower:
                         input_payload["aspect_ratio"] = "9:16"
                     else:
-                        input_payload["aspect_ratio"] = "16:9"
+                                                input_payload["aspect_ratio"] = "16:9"
                 
                 elif model_name == "Pika":
                     input_payload["frame_rate"] = 24
