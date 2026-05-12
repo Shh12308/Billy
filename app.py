@@ -989,7 +989,7 @@ BASE_SYSTEM_PROMPT = """You are HeloxAi, a powerful, multi-modal AI assistant. Y
 
 **Your Core Capabilities:**
 1. **Text & Reasoning:** Advanced understanding, reasoning, writing, and conversation.
-2. **Image Generation:** You can generate images from descriptions (using DALL-E 2).
+2. **Image Generation:** You can generate images from descriptions (using GPT Image 2).
 3. **Video Generation:** You can create short video clips from text prompts (using Luma Dream Machine or Pika).
 4. **Audio:** You support Text-to-Speech (TTS) and Speech-to-Text (STT).
 5. **Code Expert:** You can write, debug, and analyze code in any programming language.
@@ -3308,7 +3308,7 @@ async def speech_to_text(file: UploadFile = File(...)):
 # MEDIA GENERATION HANDLERS
 # =========================
 async def handle_image_generation(prompt: str, user: Dict[str, Any], conv_id: str, stream: bool, style: str = None, size: str = "1024x1024", num_images: int = 1):
-    MAX_PROMPT_LEN = 1000  # DALL-E 2 limit is 1000 chars
+    MAX_PROMPT_LEN = 1000  # GPT Image 2 (DALL-E 2) limit is 1000 chars
     if not OPENAI_API_KEY:
         msg = "No API Key"
         
@@ -3324,7 +3324,7 @@ async def handle_image_generation(prompt: str, user: Dict[str, Any], conv_id: st
     if len(prompt) > MAX_PROMPT_LEN: 
         prompt = prompt[:MAX_PROMPT_LEN]
     
-    # DALL-E 2 supports up to n=10, requesting 1 for speed/cost consistency
+    # GPT Image 2 supports up to n=10, requesting 1 for speed/cost consistency
     num_images = 1
     
     STYLES = {
@@ -3426,132 +3426,4 @@ async def handle_video_generation(prompt: str, user: Dict[str, Any], conv_id: st
     prompt_lower = prompt.lower()
     is_anime = any(k in prompt_lower for k in ['anime', 'manga', 'cartoon', '2d animation', 'studio ghibli'])
     
-    # 2. Select Model based on intent
-    if is_anime:
-        MODEL_VERSION = "pika-labs/pika-1.0" 
-        model_name = "Pika"
-    else:
-        MODEL_VERSION = "luma-dream-machine"
-        model_name = "Luma"
-
-    headers = {"Authorization": f"Token {REPLICATE_API_TOKEN}", "Content-Type": "application/json"}
-    
-    async def gen():
-        try:
-            yield sse({"type": "status", "message": f"Initializing {model_name} AI..."})
-            
-            async with httpx.AsyncClient(timeout=300) as client:
-                input_payload = {"prompt": prompt}
-                
-                if model_name == "Luma":
-                    input_payload["loop"] = False
-                    if "vertical" in prompt_lower or "portrait" in prompt_lower or "phone" in prompt_lower:
-                        input_payload["aspect_ratio"] = "9:16"
-                    else:
-                        input_payload["aspect_ratio"] = "16:9"
-                
-                elif model_name == "Pika":
-                    input_payload["frame_rate"] = 24
-                    input_payload["motion_bucket_id"] = 150 
-                
-                r = await client.post(
-                    "https://api.replicate.com/v1/predictions", 
-                    headers=headers, 
-                    json={"version": MODEL_VERSION, "input": input_payload}
-                )
-                
-                if r.status_code == 402:
-                     logger.error(f"Video gen billing error (402): Insufficient credits.")
-                     yield sse({"type": "error", "message": "Video generation requires paid credits on Replicate."})
-                     return
-
-                r.raise_for_status()
-                prediction = r.json()
-                prediction_id = prediction["id"]
-                
-                yield sse({"type": "status", "message": f"Generating video ({model_name})..."})
-                
-                poll_count = 0
-                while poll_count < 180: 
-                    r = await client.get(f"https://api.replicate.com/v1/predictions/{prediction_id}", headers=headers)
-                    r.raise_for_status()
-                    data = r.json()
-                    
-                    if data["status"] == "succeeded":
-                        raw_video_url = data["output"]
-                        
-                        if isinstance(raw_video_url, list):
-                            raw_video_url = raw_video_url[0]
-                            
-                        yield sse({"type": "status", "message": "Applying watermark..."})
-                        
-                        watermarked_url = await add_watermark_to_video(raw_video_url)
-                        
-                        yield sse({"type": "video", "url": watermarked_url})
-                        yield sse({"type": "done"})
-                        return
-                    
-                    elif data["status"] == "failed":
-                        error_detail = data.get('error', 'Unknown error')
-                        logger.error(f"{model_name} prediction failed: {error_detail}")
-                        yield sse({"type": "error", "message": f"Video generation failed: {error_detail}"})
-                        return
-                    
-                    poll_count += 1
-                    await asyncio.sleep(2)
-                
-                yield sse({"type": "error", "message": "Video generation timed out."})
-                
-        except httpx.HTTPStatusError as e:
-            logger.error(f"Video gen HTTP error: {e.response.status_code} - {e.response.text}")
-            yield sse({"type": "error", "message": f"Service error: {e.response.status_code}"})
-        except Exception as e:
-            logger.error(f"Video gen unexpected error: {e}", exc_info=True)
-            yield sse({"type": "error", "message": str(e)})
-    
-    return StreamingResponse(gen(), media_type="text/event-stream")
-    
-# =========================
-# DATABASE MIGRATION HELPER
-# =========================
-@app.get("/setup/sessions-table")
-async def setup_sessions_table():
-    """
-    SQL to create the user_sessions table.
-    Run this in your Supabase SQL editor.
-    """
-    sql = """
-    -- Create user_sessions table for production-grade session management
-    CREATE TABLE IF NOT EXISTS user_sessions (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        token TEXT NOT NULL,
-        fingerprint TEXT,
-        user_agent TEXT,
-        ip_address TEXT,
-        expires_at TIMESTAMPTZ NOT NULL,
-        is_valid BOOLEAN DEFAULT TRUE,
-        created_at TIMESTAMPTZ DEFAULT NOW(),
-        updated_at TIMESTAMPTZ DEFAULT NOW()
-    );
-
-    -- Index for fast token lookups
-    CREATE INDEX IF NOT EXISTS idx_user_sessions_token ON user_sessions(user_id, token);
-    CREATE INDEX IF NOT EXISTS idx_user_sessions_valid ON user_sessions(user_id, is_valid) WHERE is_valid = TRUE;
-    CREATE INDEX IF NOT EXISTS idx_user_sessions_expiry ON user_sessions(expires_at);
-
-    -- Enable RLS
-    ALTER TABLE user_sessions ENABLE ROW LEVEL SECURITY;
-
-    -- Policy: Service Role (or backend) can do anything
-    CREATE POLICY "Service full access" ON user_sessions
-        USING (true) WITH CHECK (true);
-
-    -- Create or update conversations table to support updated_at sorting
-    ALTER TABLE conversations ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
-    """
-    return {"sql": sql, "note": "Run this SQL in your Supabase SQL editor"}
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8080)
+    # 2. Select Model
