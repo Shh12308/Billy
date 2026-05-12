@@ -989,7 +989,7 @@ BASE_SYSTEM_PROMPT = """You are HeloxAi, a powerful, multi-modal AI assistant. Y
 
 **Your Core Capabilities:**
 1. **Text & Reasoning:** Advanced understanding, reasoning, writing, and conversation.
-2. **Image Generation:** You can generate images from descriptions (using DALL-E 3).
+2. **Image Generation:** You can generate images from descriptions (using DALL-E 2).
 3. **Video Generation:** You can create short video clips from text prompts (using Luma Dream Machine or Pika).
 4. **Audio:** You support Text-to-Speech (TTS) and Speech-to-Text (STT).
 5. **Code Expert:** You can write, debug, and analyze code in any programming language.
@@ -3308,7 +3308,7 @@ async def speech_to_text(file: UploadFile = File(...)):
 # MEDIA GENERATION HANDLERS
 # =========================
 async def handle_image_generation(prompt: str, user: Dict[str, Any], conv_id: str, stream: bool, style: str = None, size: str = "1024x1024", num_images: int = 1):
-    MAX_PROMPT_LEN = 4000  # DALL-E 3 limit is approx 4000 chars
+    MAX_PROMPT_LEN = 1000  # DALL-E 2 limit is 1000 chars
     if not OPENAI_API_KEY:
         msg = "No API Key"
         
@@ -3324,7 +3324,7 @@ async def handle_image_generation(prompt: str, user: Dict[str, Any], conv_id: st
     if len(prompt) > MAX_PROMPT_LEN: 
         prompt = prompt[:MAX_PROMPT_LEN]
     
-    # DALL-E 3 only supports n=1
+    # DALL-E 2 supports up to n=10, requesting 1 for speed/cost consistency
     num_images = 1
     
     STYLES = {
@@ -3343,7 +3343,7 @@ async def handle_image_generation(prompt: str, user: Dict[str, Any], conv_id: st
             r = await client.post(
                 "https://api.openai.com/v1/images/generations", 
                 headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}, 
-                json={"model": "dall-e-3", "prompt": prompt, "size": size, "n": num_images}
+                json={"model": "dall-e-2", "prompt": prompt, "size": size, "n": num_images}
             )
             r.raise_for_status()
             data = r.json()
