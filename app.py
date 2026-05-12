@@ -989,7 +989,7 @@ BASE_SYSTEM_PROMPT = """You are HeloxAi, a powerful, multi-modal AI assistant. Y
 
 **Your Core Capabilities:**
 1. **Text & Reasoning:** Advanced understanding, reasoning, writing, and conversation.
-2. **Image Generation:** You can generate images from descriptions (using GPT Image 2).
+2. **Image Generation:** You can generate images from descriptions (using GPT Image 2 / DALL-E 2).
 3. **Video Generation:** You can create short video clips from text prompts (using Luma Dream Machine or Pika).
 4. **Audio:** You support Text-to-Speech (TTS) and Speech-to-Text (STT).
 5. **Code Expert:** You can write, debug, and analyze code in any programming language.
@@ -1109,7 +1109,7 @@ class IntentResult:
     def to_dict(self) -> Dict:
         return {
             "intent": self.intent.value,
-            "confidence": round(self.confidence, 3),
+            "confidence": round(self.confidence,3),
             "sub_intents": [i.value for i in self.sub_intents],
             "keywords_matched": self.keywords_matched,
             "patterns_matched": self.patterns_matched
@@ -2577,6 +2577,64 @@ async def ask_universal(req: Request, res: Response):
     user = await get_user(req, res, remember=remember)
 
     # =========================
+    # RETRY HELPERS
+    # =========================
+    async def stream_groq_chat_with_retry(messages):
+        max_retries = 5
+        for attempt in range(max_retries):
+            try:
+                async for token in stream_groq_chat(messages):
+                    yield token
+                return
+            except Exception as e:
+                error_str = str(e)
+                # Check for Rate Limit (429)
+                if "429" in error_str or "rate limit" in error_str.lower():
+                    # Use Regex to extract the exact wait time from Groq's error message
+                    # Error format: "Please try again in 10.785s."
+                    match = re.search(r"Please try again in (\d+\.\d+)s", error_str)
+                    
+                    if match:
+                        wait_time = float(match.group(1))
+                    else:
+                        # Fallback to a safe 10s if regex fails
+                        wait_time = 10.0
+                    
+                    logger.warning(f"429 streaming. Waiting {wait_time}s before retry {attempt + 1}/{max_retries}...")
+                    await asyncio.sleep(wait_time)
+                else:
+                    raise
+        raise Exception("Streaming failed after retries")
+
+    async def groq_request_with_retry(client, payload):
+        max_retries = 5
+        for attempt in range(max_retries):
+            try:
+                r = await client.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers=get_groq_headers(),
+                    json=payload
+                )
+                r.raise_for_status()
+                return r
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 429:
+                    error_text = e.response.text
+                    # Extract wait time from error message
+                    match = re.search(r"Please try again in (\d+\.\d+)s", error_text)
+                    
+                    if match:
+                        wait_time = float(match.group(1))
+                    else:
+                        wait_time = 10.0
+
+                    logger.warning(f"429 non-stream. Waiting {wait_time}s before retry {attempt + 1}/{max_retries}...")
+                    await asyncio.sleep(wait_time)
+                else:
+                    raise
+        raise Exception("Request failed after retries")
+
+    # =========================
     # CONVERSATION HANDLING
     # =========================
     conversation_exists = False
@@ -2618,43 +2676,6 @@ async def ask_universal(req: Request, res: Response):
         )
 
     await save_message(user["id"], conv_id, "user", prompt)
-
-    # =========================
-    # RETRY HELPERS
-    # =========================
-    async def stream_groq_chat_with_retry(messages):
-        for attempt in range(3):
-            try:
-                async for token in stream_groq_chat(messages):
-                    yield token
-                return
-            except Exception as e:
-                if "429" in str(e) or "rate limit" in str(e).lower():
-                    wait = 2 ** attempt
-                    logger.warning(f"429 streaming. Retry in {wait}s")
-                    await asyncio.sleep(wait)
-                else:
-                    raise
-        raise Exception("Streaming failed after retries")
-
-    async def groq_request_with_retry(client, payload):
-        for attempt in range(3):
-            try:
-                r = await client.post(
-                    "https://api.groq.com/openai/v1/chat/completions",
-                    headers=get_groq_headers(),
-                    json=payload
-                )
-                r.raise_for_status()
-                return r
-            except httpx.HTTPStatusError as e:
-                if e.response.status_code == 429:
-                    wait = 2 ** attempt
-                    logger.warning(f"429 non-stream. Retry in {wait}s")
-                    await asyncio.sleep(wait)
-                else:
-                    raise
-        raise Exception("Request failed after retries")
 
     # =========================
     # BUILD PROMPT
@@ -2826,7 +2847,65 @@ async def analyze_files(
         )
 
     raise HTTPException(400, "No valid files provided for analysis.")
+
+# Helper for visual analysis (images/video frames)
+async def handle_visual_analysis(visual_items: list, stream: bool, user_prompt: str = ""):
+    """
+    Constructs a multi-modal prompt for LLM to analyze multiple images/video frames.
+    """
+    content_parts = [
+        {"type": "text", "text": user_prompt or "Analyze these visual items in detail. Describe everything you see."}
+    ]
     
+    for item in visual_items:
+        item_type = item.get('type', 'image')
+        b64_data = item.get('b64', '')
+        
+        if item_type == 'image':
+            content_parts.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:image/png;base64,{b64_data}"}
+            })
+        elif item_type == 'video':
+            # Each video frame is treated as a separate image for detailed analysis
+            content_parts.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{b64_data}"}
+            })
+    
+    payload = {
+        "model": "gpt-4o-mini", # Using GPT-4o-mini for vision
+        "messages": [{
+            "role": "user",
+            "content": content_parts
+        }]
+    }
+
+    if stream:
+        async def gen():
+            task = asyncio.current_task()
+            try:
+                async with httpx.AsyncClient(timeout=60.0) as client:
+                    r = await client.post(
+                        "https://api.openai.com/v1/chat/completions",
+                        headers=get_openai_headers(),
+                        json=payload
+                    )
+                    r.raise_for_status()
+                
+                result = r.json()["choices"][0]["message"]["content"]
+                yield sse({"type": "text", "text": result})
+                yield sse({"type": "done"})
+            except Exception as e:
+                logger.error(f"Visual analysis stream error: {e}")
+                yield sse({"type": "error", "message": "Analysis failed."})
+            finally:
+                pass # Ensure task cleanup if needed
+
+        return StreamingResponse(gen(), media_type="text/event-stream")
+    
+    return {"analysis": "Visual analysis completed."}
+
 async def handle_archive_analysis(
     result: FileExtractionResult,
     stream: bool
@@ -3426,4 +3505,132 @@ async def handle_video_generation(prompt: str, user: Dict[str, Any], conv_id: st
     prompt_lower = prompt.lower()
     is_anime = any(k in prompt_lower for k in ['anime', 'manga', 'cartoon', '2d animation', 'studio ghibli'])
     
-    # 2. Select Model
+    # 2. Select Model based on intent
+    if is_anime:
+        MODEL_VERSION = "pika-labs/pika-1.0" 
+        model_name = "Pika"
+    else:
+        MODEL_VERSION = "luma-dream-machine"
+        model_name = "Luma"
+
+    headers = {"Authorization": f"Token {REPLICATE_API_TOKEN}", "Content-Type": "application/json"}
+    
+    async def gen():
+        try:
+            yield sse({"type": "status", "message": f"Initializing {model_name} AI..."})
+            
+            async with httpx.AsyncClient(timeout=300) as client:
+                input_payload = {"prompt": prompt}
+                
+                if model_name == "Luma":
+                    input_payload["loop"] = False
+                    if "vertical" in prompt_lower or "portrait" in prompt_lower or "phone" in prompt_lower:
+                        input_payload["aspect_ratio"] = "9:16"
+                    else:
+                        input_payload["aspect_ratio"] = "16:9"
+                
+                elif model_name == "Pika":
+                    input_payload["frame_rate"] = 24
+                    input_payload["motion_bucket_id"] = 150 
+                
+                r = await client.post(
+                    "https://api.replicate.com/v1/predictions", 
+                    headers=headers, 
+                    json={"version": MODEL_VERSION, "input": input_payload}
+                )
+                
+                if r.status_code == 402:
+                     logger.error(f"Video gen billing error (402): Insufficient credits.")
+                     yield sse({"type": "error", "message": "Video generation requires paid credits on Replicate."})
+                     return
+
+                r.raise_for_status()
+                prediction = r.json()
+                prediction_id = prediction["id"]
+                
+                yield sse({"type": "status", "message": f"Generating video ({model_name})..."})
+                
+                poll_count = 0
+                while poll_count < 180: 
+                    r = await client.get(f"https://api.replicate.com/v1/predictions/{prediction_id}", headers=headers)
+                    r.raise_for_status()
+                    data = r.json()
+                    
+                    if data["status"] == "succeeded":
+                        raw_video_url = data["output"]
+                        
+                        if isinstance(raw_video_url, list):
+                            raw_video_url = raw_video_url[0]
+                            
+                        yield sse({"type": "status", "message": "Applying watermark..."})
+                        
+                        watermarked_url = await add_watermark_to_video(raw_video_url)
+                        
+                        yield sse({"type": "video", "url": watermarked_url})
+                        yield sse({"type": "done"})
+                        return
+                    
+                    elif data["status"] == "failed":
+                        error_detail = data.get('error', 'Unknown error')
+                        logger.error(f"{model_name} prediction failed: {error_detail}")
+                        yield sse({"type": "error", "message": f"Video generation failed: {error_detail}"})
+                        return
+                    
+                    poll_count += 1
+                    await asyncio.sleep(2)
+                
+                yield sse({"type": "error", "message": "Video generation timed out."})
+                
+        except httpx.HTTPStatusError as e:
+            logger.error(f"Video gen HTTP error: {e.response.status_code} - {e.response.text}")
+            yield sse({"type": "error", "message": f"Service error: {e.response.status_code}"})
+        except Exception as e:
+            logger.error(f"Video gen unexpected error: {e}", exc_info=True)
+            yield sse({"type": "error", "message": str(e)})
+    
+    return StreamingResponse(gen(), media_type="text/event-stream")
+    
+# =========================
+# DATABASE MIGRATION HELPER
+# =========================
+@app.get("/setup/sessions-table")
+async def setup_sessions_table():
+    """
+    SQL to create user_sessions table.
+    Run this in your Supabase SQL editor.
+    """
+    sql = """
+    -- Create user_sessions table for production-grade session management
+    CREATE TABLE IF NOT EXISTS user_sessions (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        token TEXT NOT NULL,
+        fingerprint TEXT,
+        user_agent TEXT,
+        ip_address TEXT,
+        expires_at TIMESTAMPTZ NOT NULL,
+        is_valid BOOLEAN DEFAULT TRUE,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    -- Index for fast token lookups
+    CREATE INDEX IF NOT EXISTS idx_user_sessions_token ON user_sessions(user_id, token);
+    CREATE INDEX IF NOT EXISTS idx_user_sessions_valid ON user_sessions(user_id, is_valid) WHERE is_valid = TRUE;
+    CREATE INDEX IF NOT EXISTS idx_user_sessions_expiry ON user_sessions(expires_at);
+
+    -- Enable RLS
+    ALTER TABLE user_sessions ENABLE ROW LEVEL SECURITY;
+
+    -- Policy: Service Role (or backend) can do anything
+    CREATE POLICY "Service full access" ON user_sessions
+        USING (true) WITH CHECK (true);
+
+    -- Create or update conversations table to support updated_at sorting
+    ALTER TABLE conversations ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
+    """
+    return {"sql": sql, "note": "Run this SQL in your Supabase SQL editor"}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8080)
