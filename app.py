@@ -3443,4 +3443,39 @@ async def get_voices():
     }
 
 @app.post("/stt")
-async def speech_to_text
+async def speech_to_text(file: UploadFile = File(...)):
+    """
+    Fixed STT: Complete implementation with optimized httpx usage.
+    """
+    if not OPENAI_API_KEY:
+        raise HTTPException(500, "OpenAI Key missing")
+
+    content = await file.read()
+    
+    # Optimized: Use a reasonable timeout and efficient async client
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        files = {"file": (file.filename, content, file.content_type)}
+        data = {"model": "whisper-1"}
+        
+        try:
+            r = await client.post(
+                "https://api.openai.com/v1/audio/transcriptions",
+                headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+                files=files, 
+                data=data
+            )
+            r.raise_for_status()
+            return r.json()
+        except httpx.HTTPStatusError as e:
+            logger.error(f"STT Error: {e.response.text}")
+            raise HTTPException(e.response.status_code, f"STT Failed: {e.response.text}")
+        except Exception as e:
+            logger.error(f"STT Exception: {e}")
+            raise HTTPException(500, "Speech to Text failed")
+
+# =========================
+# STARTUP
+# =========================
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8080)
