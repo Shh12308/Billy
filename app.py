@@ -46,7 +46,7 @@ SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")  # CRITICAL: Used for b
 GROQ_API_KEY = os.getenv("GROQ_API_KEY").strip() if os.getenv("GROQ_API_KEY") else None
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
-TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")  # NEW: For live research
+TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")  # NEW: For live research & images
 LOGO_URL = os.getenv("LOGO_URL", "https://heloxai.xyz/logo.png")
 
 # File handling config
@@ -68,7 +68,7 @@ if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
 app = FastAPI(
     title="HeloxAi API",
     description="Advanced AI Assistant Backend",
-    version="2.4.0" # Bumped version for Fixes
+    version="2.5.0" # Bumped version for ChatGPT-like interaction
 )
 
 # CORS
@@ -958,25 +958,24 @@ async def cleanup_session_cache():
         del _session_cache[key]
 
 # =========================
-# BASE SYSTEM PROMPT
+# BASE SYSTEM PROMPT (UPDATED)
 # =========================
-BASE_SYSTEM_PROMPT = """You are HeloxAi, a powerful, multi-modal AI assistant. You possess advanced capabilities beyond simple text generation.
+BASE_SYSTEM_PROMPT = """You are HeloxAi, a powerful, multi-modal AI assistant.
+
+**Response Style:**
+- **Structure:** Always format your responses with clear paragraphs. Do not output walls of text. Use headers (##), bullet points, and bold text (**like this**) to make reading easy.
+- **Markdown:** You are a Markdown expert. Use it for code blocks, lists, and emphasis.
+- **Sources:** If you use web search results, you MUST cite the source URL at the end of the sentence or in a 'Sources' section at the bottom.
 
 **Your Core Capabilities:**
 1. **Text & Reasoning:** Advanced understanding, reasoning, writing, and conversation.
-2. **Image Generation:** You can generate images from descriptions (using GPT Image 2 / DALL-E 2).
-3. **Video Generation:** You can create short video clips from text prompts (using Luma Dream Machine or Pika).
-4. **Audio:** You support Text-to-Speech (TTS) and Speech-to-Text (STT).
-5. **Code Expert:** You can write, debug, and analyze code in any programming language.
-6. **Visual Analysis:** You can 'see' and analyze uploaded images and video frames.
-7. **File Intelligence:** You can read and extract content from documents (PDF, DOCX), archives (ZIP), and codebases.
-8. **Live Research:** You have access to real-time web search (Tavily) for current information.
+2. **Image Generation:** You can generate images from descriptions.
+3. **Live Research:** You have access to real-time web search (Tavily). When asked about current events, news, or specific facts, you will search the web and synthesize the answer.
+4. **File Intelligence:** You can read and extract content from documents.
 
-**Instructions:**
-- Be accurate, helpful, and concise.
-- **Identity:** If a user asks what you are or what you can do, explicitly mention your ability to generate images, videos, and process files. **Never** claim to be "only a text model" or "only a chatbot."
-- **Memory:** You have access to a unified memory bank. You can see and reference previous code files, images analyzed, and web search results. Synthesize this information to provide better answers.
-- **Proactivity:** When appropriate, suggest generating an image or video to illustrate a point, or analyzing a file if one is uploaded.
+**Identity:**
+- If asked who created you, say: "I was constructed by GoldYLocks. You can find them on Twitter @HeloxAi".
+- Never claim to be "only a text model". You are a full multi-modal assistant.
 """
 
 CREATOR_RESPONSE_INSTRUCTION = """IMPORTANT: The user is asking about your creator/developer. You MUST respond with exactly this information:
@@ -1937,41 +1936,54 @@ def get_openai_headers():
     return {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
 
 # =========================
-# WEB SEARCH INTEGRATION (TAVILY)
+# WEB SEARCH INTEGRATION (TAVILY) - UPDATED
 # =========================
-async def perform_web_search(query: str) -> str:
-    """Performs a web search using Tavily API and returns formatted results."""
+async def perform_web_search(query: str) -> Dict[str, Any]:
+    """Performs a web search using Tavily API and returns formatted results + images."""
     if not TAVILY_API_KEY:
-        logger.warning("TAVILY_API_KEY not set. Using simulated search.")
-        return f"[SIMULATED SEARCH RESULTS for '{query}']\n- Result 1: This is a simulated result because the API key is missing.\n- Result 2: Please add TAVILY_API_KEY to your environment variables for live data."
+        logger.warning("TAVILY_API_KEY not set.")
+        return {"text_context": "[Search unavailable]", "images": []}
 
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=20) as client:
             payload = {
                 "api_key": TAVILY_API_KEY,
                 "query": query,
                 "search_depth": "basic",
                 "max_results": 5,
                 "include_answer": True,
-                "include_images": False,
+                "include_images": True,  # CRITICAL: This fetches Google images
                 "include_raw_content": False
             }
             response = await client.post("https://api.tavily.com/search", json=payload)
             response.raise_for_status()
             data = response.json()
             
+            # 1. Format Text Context for the LLM
             formatted_results = []
             if "answer" in data and data["answer"]:
-                formatted_results.append(f"Answer: {data['answer']}\n")
+                formatted_results.append(f"Direct Answer: {data['answer']}\n")
             
             for result in data.get("results", []):
-                formatted_results.append(f"Title: {result['title']}\nURL: {result['url']}\nContent: {result['content']}\n")
+                formatted_results.append(
+                    f"Source Title: {result['title']}\n"
+                    f"URL: {result['url']}\n"
+                    f"Content: {result['content']}\n"
+                )
             
-            return "\n".join(formatted_results)
+            text_context = "\n".join(formatted_results)
+
+            # 2. Extract Images for the Frontend
+            images = data.get("images", [])
+            
+            return {
+                "text_context": text_context,
+                "images": images # List of image URLs
+            }
             
     except Exception as e:
         logger.error(f"Web search failed: {e}")
-        return "[Error performing web search. Please try again later.]"
+        return {"text_context": "[Error performing search]", "images": []}
 
 # =========================
 # VIDEO WATERMARK SYSTEM
@@ -2427,7 +2439,7 @@ async def root():
     return {
         "status": "running",
         "service": "HeloxAi Backend",
-        "version": "2.4.0",
+        "version": "2.5.0",
         "features": {
             "intent_detection": "advanced",
             "user_recognition": "production-grade",
@@ -2435,7 +2447,8 @@ async def root():
             "session_management": "persistent",
             "memory": "intelligent_llm_consolidation",
             "chat_management": "global_sorted",
-            "media_generation": "fixed_and_optimized"
+            "media_generation": "fixed_and_optimized",
+            "web_search": "tavily_with_images"
         }
     }
 
@@ -2625,30 +2638,28 @@ async def handle_video_generation(prompt: str, user: Dict[str, Any], conv_id: st
     return StreamingResponse(gen(), media_type="text/event-stream")
 
 # =========================
-# MAIN ENDPOINT (FIXED ROUTING)
+# MAIN ENDPOINT (UPDATED FOR CHATGPT FEELING)
 # =========================
 
 @app.post("/ask/universal")
 async def ask_universal(req: Request, res: Response):
     content_type = req.headers.get("content-type", "")
     
+    # Default remember
     remember = True
+    body = {}
+    
     if "application/json" in content_type:
         try:
             body = await req.json()
             remember = body.get("remember", True)
-        except Exception:
-            pass
-
-    if "application/json" in content_type:
-        try:
-            body = await req.json()
         except Exception:
             raise HTTPException(400, "Invalid JSON")
 
     elif "multipart/form-data" in content_type:
         form = await req.form()
         body = dict(form)
+        remember = body.get("remember", True)
 
         if "file" in form:
             file: UploadFile = form["file"]
@@ -2687,7 +2698,7 @@ async def ask_universal(req: Request, res: Response):
     if intent:
         logger.info(f"Intent Detected: {intent.intent.value} (Confidence: {intent.confidence:.2f})")
         
-        # Route to Image Generation
+        # Route to Image Generation (DALL-E)
         if intent.intent == IntentCategory.IMAGE_GENERATION:
             logger.info("Routing to Image Generation Handler")
             return await handle_image_generation(prompt, user, conv_id, stream)
@@ -2704,8 +2715,19 @@ async def ask_universal(req: Request, res: Response):
              pass
 
     # =========================
-    # CONVERSATION HANDLING (Text/Code)
+    # CONVERSATION HANDLING (Text/Code/Search)
     # =========================
+    
+    # Determine if we need a web search
+    needs_search = False
+    if intent and intent.intent == IntentCategory.RESEARCH:
+        needs_search = True
+    
+    # Trigger search for specific keywords implying current data
+    search_keywords = ["latest", "news", "current", "recent", "today", "who is", "what is", "price", "weather", "stock"]
+    if any(kw in prompt.lower() for kw in search_keywords):
+        needs_search = True
+
     conversation_exists = False
     
     if conv_id:
@@ -2746,18 +2768,6 @@ async def ask_universal(req: Request, res: Response):
 
     await save_message(user["id"], conv_id, "user", prompt)
 
-    # Build Prompt
-    history = await get_history(conv_id)
-    MAX_MESSAGES = 10
-    history = history[-MAX_MESSAGES:]
-
-    base_system = get_system_prompt(prompt)
-    user_memory = user.get("memory", "")
-    if user_memory:
-        base_system += f"\n\nUser Context: {user_memory}"
-
-    full_history = [{"role": "system", "content": base_system}] + history
-
     # Stream Mode
     if stream:
         async def event_gen():
@@ -2766,13 +2776,54 @@ async def ask_universal(req: Request, res: Response):
 
             try:
                 full_text = ""
+                
+                # 1. HANDLE WEB SEARCH
+                search_context = ""
+                if needs_search:
+                    yield sse({"type": "status", "message": "Searching the web..."})
+                    
+                    search_data = await perform_web_search(prompt)
+                    search_context = search_data.get("text_context", "")
+                    search_images = search_data.get("images", [])
+                    
+                    # Send images to frontend immediately
+                    if search_images:
+                        yield sse({"type": "images", "images": search_images[:3]})
+                    
+                    if not search_context:
+                        yield sse({"type": "status", "message": "No results found, answering from memory..."})
+                    else:
+                        yield sse({"type": "status", "message": "Reading results..."})
 
+                # 2. BUILD PROMPT
+                history = await get_history(conv_id)
+                MAX_MESSAGES = 10
+                history = history[-MAX_MESSAGES:]
+
+                base_system = get_system_prompt(prompt)
+                user_memory = user.get("memory", "")
+                if user_memory:
+                    base_system += f"\n\nUser Context: {user_memory}"
+                
+                # Inject Search Results if available
+                if search_context:
+                    base_system += f"""
+
+CURRENT WEB RESULTS:
+{search_context}
+
+INSTRUCTIONS: Use the above web results to answer the user's question. Use Markdown formatting (paragraphs, bold text) and cite the sources provided above."""
+
+                full_history = [{"role": "system", "content": base_system}] + history
+
+                # 3. STREAM LLM RESPONSE
                 async for token in stream_groq_chat(full_history):
                     if task.cancelled():
                         break
                     full_text += token
                     yield sse({"type": "token", "text": token})
 
+                # 4. POST-RESPONSE TASKS
                 asyncio.create_task(
                     update_user_memory(user["id"], user_memory, prompt, full_text)
                 )
@@ -2791,6 +2842,19 @@ async def ask_universal(req: Request, res: Response):
 
     # Non-Stream Mode
     else:
+        # Simplified non-stream logic for brevity
+        search_context = ""
+        if needs_search:
+            search_data = await perform_web_search(prompt)
+            search_context = search_data.get("text_context", "")
+        
+        history = await get_history(conv_id)
+        base_system = get_system_prompt(prompt)
+        if user.get("memory"): base_system += f"\n\nUser Context: {user['memory']}"
+        if search_context: base_system += f"\n\nWEB RESULTS:\n{search_context}"
+        
+        full_history = [{"role": "system", "content": base_system}] + history
+        
         async with httpx.AsyncClient() as client:
             r = await groq_request_with_retry(client, {
                 "model": "llama-3.3-70b-versatile",
@@ -2801,7 +2865,7 @@ async def ask_universal(req: Request, res: Response):
         reply = r.json()["choices"][0]["message"]["content"]
 
         asyncio.create_task(
-            update_user_memory(user["id"], user_memory, prompt, reply)
+            update_user_memory(user["id"], user.get("memory", ""), prompt, reply)
         )
 
         await save_message(user["id"], conv_id, "assistant", reply)
@@ -3419,9 +3483,6 @@ async def text_to_speech(req: Request):
                 if response.status_code != 200:
                     error_body = await response.aread()
                     logger.error(f"TTS Error: {error_body}")
-                    # We can't raise HTTPException inside a stream generator easily, 
-                    # but we can yield nothing or handle it client-side.
-                    # For simplicity, we just log and return.
                     return
                 
                 async for chunk in response.aiter_bytes():
