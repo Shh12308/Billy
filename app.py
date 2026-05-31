@@ -68,7 +68,7 @@ if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
 app = FastAPI(
     title="HeloxAi API",
     description="Advanced AI Assistant Backend",
-    version="2.5.2" # Patched for Video & Rate Limit Fixes
+    version="2.5.3" # Updated for FLUX.1 Schnell
 )
 
 # CORS
@@ -2452,7 +2452,7 @@ async def root():
     return {
         "status": "running",
         "service": "HeloxAi Backend",
-        "version": "2.5.2",
+        "version": "2.5.3",
         "features": {
             "intent_detection": "advanced",
             "user_recognition": "production-grade",
@@ -2460,112 +2460,121 @@ async def root():
             "session_management": "persistent",
             "memory": "intelligent_llm_consolidation",
             "chat_management": "global_sorted",
-            "media_generation": "fixed_and_optimized",
+            "media_generation": "flux_schnell_replicate",
             "web_search": "tavily_with_images"
         }
     }
 
 # =========================
-# MEDIA GENERATION HANDLERS (FIXED)
+# MEDIA GENERATION HANDLERS (UPDATED FOR FLUX.1 SCHNELL)
 # =========================
 
 async def handle_image_generation(prompt: str, user: Dict[str, Any], conv_id: str, stream: bool, style: str = None, size: str = "1024x1024"):
     """
-    FIXED: Updated to use DALL-E-3 for better quality and reliability.
+    UPDATED: Uses FLUX.1 Schnell via Replicate for faster, high-quality image generation.
     """
-    if not OPENAI_API_KEY:
-        msg = "OpenAI API Key not configured."
+    if not REPLICATE_API_TOKEN:
+        msg = "Replicate API Token not configured."
         async def err_gen(): yield sse({"type": "error", "message": msg})
         if stream: return StreamingResponse(err_gen(), media_type="text/event-stream")
         return {"error": msg}
     
     if not prompt or not prompt.strip(): 
         raise HTTPException(400, "Prompt is required")
-    
-    if len(prompt) > 4000: 
-        prompt = prompt[:4000]
 
-    # DALL-E-3 has 'natural' and 'vivid' styles.
-    quality = "standard"
-    api_style = "vivid" 
-    
-    if style == "realistic" or style == "natural":
-        api_style = "natural"
-    elif style:
+    # Map DALL-E size to FLUX aspect ratio
+    aspect_ratio = "1:1"
+    if "1792x1024" in size or "16:9" in size:
+        aspect_ratio = "16:9"
+    elif "1024x1792" in size or "9:16" in size:
+        aspect_ratio = "9:16"
+
+    # Append style to prompt if provided
+    if style:
         prompt = f"{prompt}, {style} style"
 
+    headers = {
+        "Authorization": f"Token {REPLICATE_API_TOKEN}",
+        "Content-Type": "application/json",
+    }
+
+    # Replicate Input Payload for FLUX Schnell
+    input_payload = {
+        "prompt": prompt,
+        "aspect_ratio": aspect_ratio,
+        "num_outputs": 1,
+        "disable_safety_checker": False 
+    }
+
     try:
-        async with httpx.AsyncClient(timeout=90) as client:
+        async with httpx.AsyncClient(timeout=600.0) as client: # 10 min timeout
+            # 1. Start Prediction
             r = await client.post(
-                "https://api.openai.com/v1/images/generations", 
-                headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}, 
-                json={
-                    "model": "dall-e-3", 
-                    "prompt": prompt, 
-                    "size": size, 
-                    "quality": quality,
-                    "style": api_style,
-                    "n": 1,
-                    "response_format": "url"
-                }
+                "https://api.replicate.com/v1/models/black-forest-labs/flux-schnell/predictions",
+                headers=headers,
+                json={"input": input_payload}
             )
-            
-            if r.status_code != 200:
-                logger.error(f"OpenAI Image Error: {r.text}")
+
+            if r.status_code != 201:
+                logger.error(f"Replicate Start Error: {r.text}")
+                raise Exception(f"Failed to start image generation: {r.text}")
+
+            prediction = r.json()
+            get_url = prediction.get("urls", {}).get("get")
+
+            # 2. Polling Loop
+            output_url = None
+            poll_count = 0
+            max_polls = 120 # Approx 2 mins
+
+            while poll_count < max_polls:
+                r = await client.get(get_url, headers=headers)
+                data = r.json()
+                status = data.get("status")
+
+                if status == "succeeded":
+                    output = data.get("output")
+                    if isinstance(output, list) and len(output) > 0:
+                        output_url = output[0]
+                    else:
+                        output_url = output
+                    break
+                elif status == "failed" or status == "canceled":
+                    error_detail = data.get("error", "Unknown error")
+                    logger.error(f"Replicate Generation Failed: {error_detail}")
+                    raise Exception(f"Image generation failed: {error_detail}")
                 
-            r.raise_for_status()
-            data = r.json()
-            
-    except httpx.HTTPStatusError as e:
-        error_detail = "Unknown error"
-        try:
-            error_detail = e.response.json().get("error", {}).get("message", e.response.text)
-        except: pass
-        
-        logger.error(f"Image gen HTTP error {e.response.status_code}: {error_detail}")
-        
-        msg = f"Image generation failed: {error_detail}"
+                await asyncio.sleep(1)
+                poll_count += 1
+
+            if not output_url:
+                raise Exception("Image generation timed out.")
+
+    except Exception as e:
+        logger.error(f"Image gen error: {e}")
+        msg = str(e)
         async def err_gen(): yield sse({"type": "error", "message": msg})
         if stream: return StreamingResponse(err_gen(), media_type="text/event-stream")
         return {"error": msg}
-        
-    except Exception as e:
-        logger.error(f"Image gen unexpected error: {e}")
-        async def err_gen(): yield sse({"type": "error", "message": str(e)})
-        if stream: return StreamingResponse(err_gen(), media_type="text/event-stream")
-        return {"error": str(e)}
-    
-    images = []
-    try:
-        for item in data.get("data", []):
-            url = item.get("url")
-            revised_prompt = item.get("revised_prompt", prompt)
-            if url:
-                images.append({"url": url, "revised_prompt": revised_prompt})
-                
-    except Exception as e:
-        logger.error(f"Failed to parse image response: {e}")
-        msg = "Failed to process generated image."
-        async def err_gen(): yield sse({"type": "error", "message": msg})
-        if stream: return StreamingResponse(err_gen(), media_type="text/event-stream")
-        return {"error": msg}
-    
+
+    # Return Result
+    images = [{"url": output_url, "revised_prompt": prompt}]
+
     if stream:
         async def event_gen():
             yield sse({"type": "status", "message": "Image generated successfully."})
             yield sse({"type": "images", "images": images})
             yield sse({"type": "done"})
-        
         return StreamingResponse(event_gen(), media_type="text/event-stream")
-    
+
     return {"images": images}
-    
+
 async def handle_video_generation(prompt: str, user: Dict[str, Any], conv_id: str, stream: bool):
     """
-    Robust Video Generation using DALL-E 3 -> Stable Video Diffusion pipeline.
+    Robust Video Generation using FLUX Schnell -> Stable Video Diffusion pipeline.
     Fixes: 422 errors by using specific version IDs for Replicate.
     """
-    if not REPLICATE_API_TOKEN or not OPENAI_API_KEY:
+    if not REPLICATE_API_TOKEN:
         async def err_gen(): yield sse({"type": "error", "message": "API Keys missing."})
         return StreamingResponse(err_gen(), media_type="text/event-stream")
 
@@ -2578,19 +2587,36 @@ async def handle_video_generation(prompt: str, user: Dict[str, Any], conv_id: st
 
     async def gen():
         try:
-            # STEP 1: Generate Image with DALL-E 3
+            # STEP 1: Generate Image with FLUX Schnell
             yield sse({"type": "status", "message": "Generating visual concept..."})
             
             image_url = None
             try:
                 async with httpx.AsyncClient(timeout=60) as client:
                     r = await client.post(
-                        "https://api.openai.com/v1/images/generations",
-                        headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
-                        json={"model": "dall-e-3", "prompt": prompt, "size": "1024x1024", "quality": "standard", "n": 1}
+                        "https://api.replicate.com/v1/models/black-forest-labs/flux-schnell/predictions",
+                        headers=headers, 
+                        json={"input": {"prompt": prompt, "aspect_ratio": "16:9", "num_outputs": 1}}
                     )
-                    r.raise_for_status()
-                    image_url = r.json()['data'][0]['url']
+                    
+                    if r.status_code != 201:
+                        raise Exception("Failed to start image generation")
+
+                    prediction = r.json()
+                    get_url = prediction.get("urls", {}).get("get")
+
+                    # Poll for image
+                    while True:
+                        poll_resp = await client.get(get_url, headers=headers)
+                        data = poll_resp.json()
+                        if data.get("status") == "succeeded":
+                            output = data.get("output")
+                            image_url = output[0] if isinstance(output, list) else output
+                            break
+                        elif data.get("status") in ["failed", "canceled"]:
+                            raise Exception("Image generation failed")
+                        await asyncio.sleep(1)
+            
             except Exception as e:
                 yield sse({"type": "error", "message": "Failed to generate base image."})
                 return
@@ -2720,7 +2746,7 @@ async def ask_universal(req: Request, res: Response):
     if intent:
         logger.info(f"Intent Detected: {intent.intent.value} (Confidence: {intent.confidence:.2f})")
         
-        # Route to Image Generation (DALL-E)
+        # Route to Image Generation (FLUX Schnell)
         if intent.intent == IntentCategory.IMAGE_GENERATION:
             logger.info("Routing to Image Generation Handler")
             return await handle_image_generation(prompt, user, conv_id, stream)
