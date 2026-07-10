@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from typing import Optional, Dict, Any, List, Union, Tuple
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-
+from openai import AsyncOpenAI
 from fastapi import FastAPI, Request, Response, HTTPException, Depends, UploadFile, File, Cookie, Header
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -43,11 +43,16 @@ logger = logging.getLogger("HeloXAi")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")  # CRITICAL: Used for backend Admin access
-GROQ_API_KEY = os.getenv("GROQ_API_KEY").strip() if os.getenv("GROQ_API_KEY") else None
+GROQ_API_KEY = os.getenv("GROQ_API_KEY") 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
-TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")  # NEW: For live research & images
+
+# Using Hugging Face for Free Image/Video Generation
+HUGGINGFACE_API_TOKEN = os.getenv("HUGGINGFACE_API_TOKEN")
+
+TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")  # For live research & images
 LOGO_URL = os.getenv("LOGO_URL", "https://heloxai.xyz/logo.png")
+
+openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 # File handling config
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
@@ -62,13 +67,12 @@ SESSION_DURATION = 365 * 24 * 60 * 60  # 1 year in seconds
 REFRESH_THRESHOLD = 7 * 24 * 60 * 60  # Refresh session if less than 7 days remaining
 
 if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
-    # Service Key is required for the Backend API to bypass RLS for custom cookie auth
     raise RuntimeError("SUPABASE_URL and SUPABASE_SERVICE_KEY must be set for this backend.")
 
 app = FastAPI(
     title="HeloxAi API",
-    description="Advanced AI Assistant Backend",
-    version="2.5.3" # Updated for FLUX.1 Schnell
+    description="Advanced AI Assistant Backend - Free Media & Math Focused",
+    version="2.7.0" # Updated for HF Image Gen & Math/Translation Prompts
 )
 
 # CORS
@@ -109,48 +113,28 @@ class FileCategory(Enum):
 
 # Comprehensive file type mappings
 CODE_EXTENSIONS = {
-    # Python
     '.py', '.pyw', '.pyx', '.pyd', '.pyi', '.py3',
-    # JavaScript/TypeScript
     '.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.mts', '.cts',
-    # Web
     '.html', '.htm', '.css', '.scss', '.sass', '.less', '.styl',
     '.vue', '.svelte', '.astro',
-    # Java/JVM
     '.java', '.kt', '.kts', '.scala', '.groovy', '.gradle',
     '.clj', '.cljs', '.hs',
-    # C/C++
     '.c', '.h', '.cpp', '.hpp', '.cc', '.cxx', '.hxx', '.inl',
-    # C#
     '.cs', '.csx',
-    # Go
     '.go',
-    # Rust
     '.rs',
-    # PHP
     '.php', '.phtml',
-    # Ruby
     '.rb', '.erb', '.rake', '.gemspec',
-    # Swift
     '.swift',
-    # Dart/Flutter
     '.dart',
-    # Shell
     '.sh', '.bash', '.zsh', '.fish', '.ps1', '.psm1', '.bat', '.cmd',
-    # Lua
     '.lua',
-    # Perl
     '.pl', '.pm',
-    # R
     '.r', '.R',
-    # SQL
     '.sql', '.mysql', '.pgsql', '.sqlite',
-    # Config/Data formats
     '.json', '.yaml', '.yml', '.toml', '.ini', '.cfg', '.conf',
     '.env', '.properties', '.xml',
-    # Markup
     '.md', '.rst', '.asciidoc', '.adoc', '.tex', '.latex',
-    # Other
     '.dockerfile', '.makefile', '.cmake', '.proto', '.graphql', '.gql',
     '.tf', '.hcl', '.sol', '.move', '.cairo',
 }
@@ -259,7 +243,6 @@ def is_binary_file(filename: str, content: bytes = None) -> bool:
     """Check if file is binary based on extension or content"""
     ext = Path(filename).suffix.lower()
     
-    # Known binary extensions
     binary_exts = IMAGE_EXTENSIONS | AUDIO_EXTENSIONS | VIDEO_EXTENSIONS | {
         '.exe', '.dll', '.so', '.dylib', '.bin', '.dat',
         '.pyc', '.pyo', '.class', '.o', '.obj', '.a', '.lib',
@@ -275,9 +258,7 @@ def is_binary_file(filename: str, content: bytes = None) -> bool:
     if ext in binary_exts:
         return True
     
-    # Check content for null bytes (indicates binary)
     if content and len(content) > 0:
-        # Check first 8192 bytes for null bytes
         check_bytes = content[:8192]
         if b'\x00' in check_bytes:
             return True
@@ -338,11 +319,9 @@ async def extract_file_content(
     }
 
     try:
-        # Handle archives (zip files)
         if category == FileCategory.ARCHIVE:
             return await extract_archive_content(content, filename, max_length, metadata)
 
-        # Handle images
         if category == FileCategory.IMAGE:
             return FileExtractionResult(
                 content=f"[Image file: {filename} ({format_file_size(original_size)}) - Use image analysis endpoint for visual content]",
@@ -350,7 +329,6 @@ async def extract_file_content(
                 original_size=original_size
             )
 
-        # Handle audio/video
         if category in (FileCategory.AUDIO, FileCategory.VIDEO):
             return FileExtractionResult(
                 content=f"[{category.value.capitalize()} file: {filename} ({format_file_size(original_size)}) - Media file cannot be extracted as text]",
@@ -358,11 +336,9 @@ async def extract_file_content(
                 original_size=original_size
             )
 
-        # Handle PDF
         if filename.lower().endswith('.pdf'):
             return await extract_pdf_content(content, filename, max_length, metadata)
 
-        # Handle code and text files
         if category in (FileCategory.CODE, FileCategory.CONFIG, FileCategory.UNKNOWN):
             text, truncated = extract_text_with_fallback(content, max_length)
             metadata["line_count"] = text.count('\n') + 1
@@ -373,7 +349,6 @@ async def extract_file_content(
                 original_size=original_size
             )
 
-        # Handle documents and data files
         if category in (FileCategory.DOCUMENT, FileCategory.DATA):
             text, truncated = extract_text_with_fallback(content, max_length)
             metadata["line_count"] = text.count('\n') + 1
@@ -384,7 +359,6 @@ async def extract_file_content(
                 original_size=original_size
             )
 
-        # Handle binary files
         if is_binary_file(filename, content):
             return FileExtractionResult(
                 content=f"[Binary file: {filename} ({format_file_size(original_size)}) - Cannot extract text content]",
@@ -392,7 +366,6 @@ async def extract_file_content(
                 original_size=original_size
             )
 
-        # Fallback: try to decode as text
         text, truncated = extract_text_with_fallback(content, max_length)
         metadata["line_count"] = text.count('\n') + 1
         return FileExtractionResult(
@@ -424,7 +397,6 @@ def extract_text_with_fallback(content: bytes, max_length: int) -> Tuple[str, bo
         except (UnicodeDecodeError, LookupError):
             continue
     
-    # Final fallback: decode with error replacement
     text = content.decode('utf-8', errors='replace')
     truncated = len(text) > max_length
     if truncated:
@@ -508,7 +480,6 @@ async def extract_zip_content(
     
     try:
         with zipfile.ZipFile(BytesIO(content)) as zf:
-            # Check for zip bombs
             if len(zf.namelist()) > MAX_ZIP_ENTRIES:
                 return FileExtractionResult(
                     content=f"[ZIP archive: {filename} - Too many entries ({len(zf.namelist())}). Maximum allowed: {MAX_ZIP_ENTRIES}]",
@@ -516,11 +487,9 @@ async def extract_zip_content(
                     original_size=len(content)
                 )
             
-            # Sort by name for consistent output
             entries = sorted(zf.namelist())
             
             for entry_name in entries:
-                # Skip directories and hidden files
                 if entry_name.endswith('/') or '/__MACOSX/' in entry_name:
                     continue
                 if entry_name.startswith('__MACOSX') or entry_name.startswith('.'):
@@ -531,7 +500,6 @@ async def extract_zip_content(
                 try:
                     entry_info = zf.getinfo(entry_name)
                     
-                    # Skip if single file is too large
                     if entry_info.file_size > MAX_FILE_SIZE:
                         extracted_files.append({
                             "name": entry_name,
@@ -542,7 +510,6 @@ async def extract_zip_content(
                         })
                         continue
                     
-                    # Check total extracted size
                     if total_extracted + entry_info.file_size > MAX_EXTRACTED_SIZE:
                         extracted_files.append({
                             "name": entry_name,
@@ -553,14 +520,12 @@ async def extract_zip_content(
                         })
                         continue
                     
-                    # Read entry content
                     entry_content = zf.read(entry_name)
                     total_extracted += len(entry_content)
                     
                     entry_category = get_file_category(entry_name)
                     entry_language = get_file_language(entry_name)
                     
-                    # Extract text from entry
                     if entry_category in (FileCategory.IMAGE, FileCategory.AUDIO, FileCategory.VIDEO):
                         file_info = {
                             "name": entry_name,
@@ -613,7 +578,6 @@ async def extract_zip_content(
                         "error": str(e)
                     })
         
-        # Combine all extracted text
         full_text = f"ZIP Archive: {filename}\n"
         full_text += f"Total entries: {len(zf.namelist())}, Processed: {entry_count}\n"
         full_text += f"Extracted text files: {len(all_text_parts)}\n"
@@ -771,7 +735,6 @@ DEVICE_COOKIE = "HeloxAI_Dev"
 SESSION_TOKEN_COOKIE = "HeloxAI_Token"
 SESSION_EXPIRY_COOKIE = "HeloxAI_Expiry"
 
-# Cookie settings - production grade
 def get_cookie_settings(remember: bool = True) -> Dict:
     """Get cookie settings based on remember preference"""
     base = {
@@ -960,7 +923,7 @@ async def cleanup_session_cache():
 # =========================
 # BASE SYSTEM PROMPT (UPDATED)
 # =========================
-BASE_SYSTEM_PROMPT = """You are HeloxAi, a powerful, multi-modal AI assistant.
+BASE_SYSTEM_PROMPT = """You are HeloXAi1, a powerful, multi-modal AI assistant.
 
 **Response Style:**
 - **Structure:** Always format your responses with clear paragraphs. Do not output walls of text. Use headers (##), bullet points, and bold text (**like this**) to make reading easy.
@@ -974,12 +937,12 @@ BASE_SYSTEM_PROMPT = """You are HeloxAi, a powerful, multi-modal AI assistant.
 4. **File Intelligence:** You can read and extract content from documents.
 
 **Identity:**
-- If asked who created you, say: "I was constructed by GoldYLocks. You can find them on Twitter @HeloxAi".
+- If asked who created you, say: "I was constructed by GoldYLocks.".
 - Never claim to be "only a text model". You are a full multi-modal assistant.
 """
 
 CREATOR_RESPONSE_INSTRUCTION = """IMPORTANT: The user is asking about your creator/developer. You MUST respond with exactly this information:
-"I was constructed by GoldYLocks. You can find them on Twitter @HeloxAi"
+"I was constructed by GoldYLocks. You can find them on Twitter @HeloXAi1"
 
 Do not add extra details. Do not mention any other companies or people. This is the only correct answer to this question."""
 
@@ -1667,7 +1630,6 @@ async def get_user(
 ) -> Dict[str, Any]:
     await cleanup_session_cache()
     
-    # Get all cookie values
     primary_id = request.cookies.get(PRIMARY_COOKIE)
     backup_id = request.cookies.get(BACKUP_COOKIE)
     device_cookie = request.cookies.get(DEVICE_COOKIE)
@@ -1675,12 +1637,9 @@ async def get_user(
     session_token = request.cookies.get(SESSION_TOKEN_COOKIE)
     session_expiry = request.cookies.get(SESSION_EXPIRY_COOKIE)
     
-    # Generate current fingerprint
     current_fingerprint = generate_device_fingerprint(request)
     
-    # Determine remember preference
     if remember is None:
-        # Default to True unless session is about to expire
         remember = not is_session_expired(session_expiry or "0")
     
     user_obj = {
@@ -1692,22 +1651,18 @@ async def get_user(
         "session_token": None
     }
 
-    # Priority 1: Validate existing session token
     user_id = None
     if primary_id and session_token:
-        # Check if session is expired
         if is_session_expired(session_expiry or "0"):
             logger.info(f"Session expired for user {primary_id[:8]}...")
             clear_session_cookies(response)
         else:
-            # Validate token
             token_valid = await validate_session_token(primary_id, session_token)
             if token_valid:
                 user_id = primary_id
                 user_obj["session_valid"] = True
                 user_obj["session_token"] = session_token
                 
-                # Check if session should be refreshed
                 if should_refresh_session(session_expiry or "0"):
                     logger.info(f"Refreshing session for user {user_id[:8]}...")
                     new_token = await create_user_session(user_id, current_fingerprint, remember)
@@ -1715,12 +1670,10 @@ async def get_user(
             else:
                 logger.warning(f"Invalid session token for user {primary_id[:8]}...")
     
-    # Priority 2: Try backup cookie
     if not user_id and backup_id:
         user_id = backup_id
         logger.info(f"User recovered via backup cookie: {user_id[:8]}...")
     
-    # Priority 3: Try device fingerprint lookup
     if not user_id and device_cookie:
         try:
             fp_part = device_cookie.split("_")[0] if "_" in device_cookie else device_cookie
@@ -1734,7 +1687,6 @@ async def get_user(
         except Exception as e:
             logger.error(f"Fingerprint lookup failed: {e}")
 
-    # Priority 4: Try stored fingerprint
     if not user_id and stored_fingerprint:
         try:
             fp_resp = await _execute_supabase_with_retry(
@@ -1747,14 +1699,13 @@ async def get_user(
         except Exception as e:
             logger.error(f"Stored fingerprint lookup failed: {e}")
 
-    # Priority 5: Recover user by CURRENT fingerprint (no cookie needed)
     if not user_id and current_fingerprint:
         try:
             fp_resp = await _execute_supabase_with_retry(
                 supabase.table("users")
                 .select("id")
                 .eq("fingerprint", current_fingerprint)
-                .order("created_at", desc=False)   # get the ORIGINAL user, not a dupe
+                .order("created_at", desc=False)   
                 .limit(1),
                 description="User Lookup by Current Fingerprint (cookie-free)"
             )
@@ -1764,7 +1715,6 @@ async def get_user(
         except Exception as e:
             logger.error(f"Current fingerprint lookup failed: {e}")
 
-    # Load user data if we found an ID
     if user_id:
         try:
             user_resp = await _execute_supabase_with_retry(
@@ -1785,7 +1735,6 @@ async def get_user(
                     "session_token": user_obj.get("session_token")
                 }
                 
-                # Update fingerprint if changed
                 if u.get("fingerprint") != current_fingerprint:
                     try:
                         await _execute_supabase_with_retry(
@@ -1795,13 +1744,11 @@ async def get_user(
                     except Exception as e:
                         logger.warning(f"Failed to update fingerprint: {e}")
                 
-                # Create or refresh session
                 if not user_obj["session_valid"]:
                     new_token = await create_user_session(user_id, current_fingerprint, remember)
                     user_obj["session_token"] = new_token
                     user_obj["session_valid"] = True
                 
-                # Set all cookies
                 set_session_cookies(response, user_id, current_fingerprint, user_obj["session_token"], remember)
                 
                 logger.info(f"User authenticated: {user_id[:8]}... session_valid={user_obj['session_valid']}")
@@ -1809,7 +1756,6 @@ async def get_user(
         except Exception as e:
             logger.error(f"User data fetch failed: {e}")
 
-    # Create new anonymous user
     new_id = str(uuid.uuid4())
     
     try:
@@ -1831,12 +1777,10 @@ async def get_user(
         logger.error(f"Failed to create anonymous user: {e}")
         user_obj["id"] = new_id
 
-    # Create session for new user
     new_token = await create_user_session(new_id, current_fingerprint, remember)
     user_obj["session_token"] = new_token
     user_obj["session_valid"] = True
     
-    # Set all cookies
     set_session_cookies(response, new_id, current_fingerprint, new_token, remember)
     
     logger.info(f"New user created: {new_id[:8]}... with fingerprint {current_fingerprint[:8]}...")
@@ -1844,11 +1788,6 @@ async def get_user(
     return user_obj
 
 async def update_user_memory(user_id: str, old_memory: str, user_prompt: str, assistant_response: str):
-    """
-    Uses an LLM to intelligently update the user's long-term memory.
-    Includes retry logic for Rate Limits (429).
-    """
-    # System prompt for the internal Memory Agent
     memory_agent_prompt = """You are a memory management AI. Update the user's long-term memory based on the latest interaction.
 
 Rules:
@@ -1873,9 +1812,8 @@ Updated Memory:"""
         {"role": "user", "content": user_message}
     ]
 
-    # Retry logic for Rate Limiting (429)
     max_retries = 3
-    base_delay = 5 # seconds
+    base_delay = 5 
 
     for attempt in range(max_retries):
         try:
@@ -1884,10 +1822,10 @@ Updated Memory:"""
                     "https://api.groq.com/openai/v1/chat/completions",
                     headers=get_groq_headers(),
                     json={
-                        "model": "llama-3.3-70b-versatile",
+                        "model": "openai/gpt-oss-120b",
                         "messages": messages,
-                        "max_tokens": 300, # Keep memory short
-                        "temperature": 0.1 # Low temperature for factual extraction
+                        "max_tokens": 300,
+                        "temperature": 0.1
                     }
                 )
                 
@@ -1895,13 +1833,11 @@ Updated Memory:"""
                 
                 new_memory_content = r.json()["choices"][0]["message"]["content"].strip()
 
-                # Update Database
                 await _execute_supabase_with_retry(
                     supabase.table("users").update({"memory": new_memory_content}).eq("id", user_id),
                     description="Update User Memory (Intelligent)"
                 )
                 
-                # Update Cache
                 if user_id in _session_cache:
                     _session_cache[user_id]["memory"] = new_memory_content
                 
@@ -1912,7 +1848,7 @@ Updated Memory:"""
             status_code = e.response.status_code
             
             if status_code == 429:
-                wait_time = base_delay * (attempt + 1) # 5s, 10s, 15s
+                wait_time = base_delay * (attempt + 1)
                 logger.warning(
                     f"Memory update hit rate limit (429) for {user_id[:8]}. "
                     f"Attempt {attempt + 1}/{max_retries}. Retrying in {wait_time}s..."
@@ -1952,14 +1888,13 @@ async def perform_web_search(query: str) -> Dict[str, Any]:
                 "search_depth": "basic",
                 "max_results": 5,
                 "include_answer": True,
-                "include_images": True,  # CRITICAL: This fetches Google images
+                "include_images": True,  
                 "include_raw_content": False
             }
             response = await client.post("https://api.tavily.com/search", json=payload)
             response.raise_for_status()
             data = response.json()
             
-            # 1. Format Text Context for the LLM
             formatted_results = []
             if "answer" in data and data["answer"]:
                 formatted_results.append(f"Direct Answer: {data['answer']}\n")
@@ -1972,13 +1907,11 @@ async def perform_web_search(query: str) -> Dict[str, Any]:
                 )
             
             text_context = "\n".join(formatted_results)
-
-            # 2. Extract Images for the Frontend
             images = data.get("images", [])
             
             return {
                 "text_context": text_context,
-                "images": images # List of image URLs
+                "images": images 
             }
             
     except Exception as e:
@@ -1986,29 +1919,10 @@ async def perform_web_search(query: str) -> Dict[str, Any]:
         return {"text_context": "[Error performing search]", "images": []}
 
 # =========================
-# VIDEO WATERMARK SYSTEM
-# =========================
-async def fetch_logo_image() -> Optional[bytes]:
-    """Fetch the logo.png from the configured URL"""
-    try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.get(LOGO_URL)
-            if response.status_code == 200:
-                return response.content
-            logger.error(f"Failed to fetch logo: HTTP {response.status_code}")
-    except Exception as e:
-        logger.error(f"Logo fetch error: {e}")
-    return None
-
-# =========================
 # VIDEO PROCESSING HELPERS
 # =========================
 
 def get_video_duration(video_bytes: bytes) -> float:
-    """
-    Returns the duration of the video in seconds using OpenCV.
-    Writes bytes to a temp file for reliable reading.
-    """
     with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_file:
         tmp_file.write(video_bytes)
         tmp_file_path = tmp_file.name
@@ -2024,7 +1938,7 @@ def get_video_duration(video_bytes: bytes) -> float:
         cap.release()
         
         if fps == 0:
-            return 0.0 # Prevent division by zero
+            return 0.0 
             
         duration = frame_count / fps
         return duration
@@ -2033,10 +1947,6 @@ def get_video_duration(video_bytes: bytes) -> float:
             os.remove(tmp_file_path)
 
 def extract_video_frames(video_bytes: bytes, max_frames: int = 4) -> list:
-    """
-    Extracts base64 encoded frames from video bytes.
-    Returns a list of base64 strings (jpeg format).
-    """
     frames_b64 = []
     
     with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_file:
@@ -2227,7 +2137,7 @@ Preserve important technical details.{file_context}"""
             "https://api.groq.com/openai/v1/chat/completions",
             headers=get_groq_headers(),
             json={
-                "model": "llama-3.3-70b-versatile",
+                "model": "openai/gpt-oss-120b",
                 "messages": messages
             }
         )
@@ -2314,10 +2224,7 @@ async def get_history(conv_id: str, limit: int = 50):
     
     return [{"role": m["role"], "content": m["content"]} for m in final_messages]
 
-async def stream_groq_chat(messages: list, model: str = "llama-3.3-70b-versatile", max_tokens: int = 8192):
-    """
-    Streams LLM response with automatic retry for Rate Limits (429).
-    """
+async def stream_groq_chat(messages: list, model: str = "openai/gpt-oss-120b", max_tokens: int = 8192):
     max_retries = 2
     base_wait = 5
     
@@ -2332,17 +2239,15 @@ async def stream_groq_chat(messages: list, model: str = "llama-3.3-70b-versatile
                 ) as resp:
                     
                     if resp.status_code == 429:
-                        # Rate limit hit
                         logger.warning(f"Groq Rate Limit hit (Attempt {attempt+1}). Waiting...")
                         await asyncio.sleep(base_wait * (attempt + 1))
-                        continue # Retry
+                        continue 
 
                     if resp.status_code != 200:
                         error_text = await resp.aread()
                         logger.error(f"Groq API Error {resp.status_code}: {error_text}")
                         raise Exception(f"AI Service Error ({resp.status_code})")
 
-                    # Success - Stream data
                     async for line in resp.aiter_lines():
                         if line.startswith("data: "):
                             data = line[6:]
@@ -2352,7 +2257,7 @@ async def stream_groq_chat(messages: list, model: str = "llama-3.3-70b-versatile
                                 delta = chunk["choices"][0]["delta"].get("content")
                                 if delta: yield delta
                             except: pass
-                    return # Exit function on success
+                    return 
         
         except httpx.ConnectError:
             logger.error("Connection failed.")
@@ -2411,7 +2316,7 @@ async def handle_code_assistant(prompt: str, user: Dict[str, Any], conv_id: str,
         r = await client.post(
             "https://api.groq.com/openai/v1/chat/completions",
             headers=get_groq_headers(),
-            json={"model": "llama-3.3-70b-versatile", "messages": messages, "max_tokens": 8000}
+            json={"model": "openai/gpt-oss-120b", "messages": messages, "max_tokens": 8000}
         )
         r.raise_for_status()
         reply = r.json()["choices"][0]["message"]["content"]
@@ -2452,7 +2357,7 @@ async def root():
     return {
         "status": "running",
         "service": "HeloxAi Backend",
-        "version": "2.5.3",
+        "version": "2.7.0",
         "features": {
             "intent_detection": "advanced",
             "user_recognition": "production-grade",
@@ -2460,229 +2365,175 @@ async def root():
             "session_management": "persistent",
             "memory": "intelligent_llm_consolidation",
             "chat_management": "global_sorted",
-            "media_generation": "flux_schnell_replicate",
-            "web_search": "tavily_with_images"
+            "media_generation": "free_hugging_face_sd3_svd",
+            "web_search": "tavily_with_images",
+            "math_logic": "step_by_step_reasoning",
+            "translation": "native_llm_capability"
         }
     }
 
 # =========================
-# MEDIA GENERATION HANDLERS (UPDATED FOR FLUX.1 SCHNELL)
+# MEDIA GENERATION HANDLERS (HUGGING FACE - FREE)
 # =========================
+
+async def upload_bytes_to_storage(
+    file_bytes: bytes, 
+    filename: str, 
+    content_type: str, 
+    bucket: str = "ai-videos"
+) -> str:
+    """Uploads raw bytes to Supabase storage and returns the public URL."""
+    try:
+        path = f"public/{bucket}/{filename}"
+        
+        await asyncio.to_thread(
+            lambda: supabase.storage.from_(bucket).upload(
+                path, file_bytes, {"content-type": content_type}
+            )
+        )
+        
+        public_url = f"{SUPABASE_URL}/storage/v1/object/public/{bucket}/{path}"
+        logger.info(f"Uploaded {filename} to Supabase: {public_url}")
+        return public_url
+        
+    except Exception as e:
+        logger.error(f"Failed to upload {filename} to Supabase: {e}")
+        b64_data = base64.b64encode(file_bytes).decode('utf-8')
+        return f"data:{content_type};base64,{b64_data}"
 
 async def handle_image_generation(prompt: str, user: Dict[str, Any], conv_id: str, stream: bool, style: str = None, size: str = "1024x1024"):
     """
-    UPDATED: Uses FLUX.1 Schnell via Replicate for faster, high-quality image generation.
+    Generates images using Hugging Face (Stable Diffusion 3 Medium) for FREE.
     """
-    if not REPLICATE_API_TOKEN:
-        msg = "Replicate API Token not configured."
-        async def err_gen(): yield sse({"type": "error", "message": msg})
-        if stream: return StreamingResponse(err_gen(), media_type="text/event-stream")
+    if not HUGGINGFACE_API_TOKEN:
+        logger.error("Image generation failed: HUGGINGFACE_API_TOKEN is missing.")
+        msg = "Hugging Face API Token not configured."
+        if stream:
+            async def err_gen():
+                yield sse({"type": "error", "message": msg})
+            return StreamingResponse(err_gen(), media_type="text/event-stream")
         return {"error": msg}
-    
+
     if not prompt or not prompt.strip(): 
         raise HTTPException(400, "Prompt is required")
 
-    # Map DALL-E size to FLUX aspect ratio
-    aspect_ratio = "1:1"
-    if "1792x1024" in size or "16:9" in size:
-        aspect_ratio = "16:9"
-    elif "1024x1792" in size or "9:16" in size:
-        aspect_ratio = "9:16"
+    async def event_gen():
+        logger.info(f"[HF] Starting image generation with SD3 Medium: {prompt[:50]}...")
+        yield sse({"type": "status", "message": "Generating image (Free Model)..."})
 
-    # Append style to prompt if provided
-    if style:
-        prompt = f"{prompt}, {style} style"
+        try:
+            # Using Stability AI SD3 Medium on Hugging Face Inference API
+            API_URL = "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-3-medium"
+            headers = {"Authorization": f"Bearer {HUGGINGFACE_API_TOKEN}"}
+            
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                response = await client.post(API_URL, headers=headers, json={"inputs": prompt})
+                
+                if response.status_code != 200:
+                    error_text = response.text
+                    logger.error(f"HF API Error: {error_text}")
+                    # Often HF returns 503 if model is loading, or 500 for other issues
+                    if response.status_code == 503:
+                        yield sse({"type": "error", "message": "Model is loading, please try again in a few moments."})
+                    else:
+                        yield sse({"type": "error", "message": f"Generation failed: {response.status_code}"})
+                    return
 
-    headers = {
-        "Authorization": f"Token {REPLICATE_API_TOKEN}",
-        "Content-Type": "application/json",
-    }
+                image_bytes = response.content
 
-    # Replicate Input Payload for FLUX Schnell
-    input_payload = {
-        "prompt": prompt,
-        "aspect_ratio": aspect_ratio,
-        "num_outputs": 1,
-        "disable_safety_checker": False 
-    }
-
-    try:
-        async with httpx.AsyncClient(timeout=600.0) as client: # 10 min timeout
-            # 1. Start Prediction
-            r = await client.post(
-                "https://api.replicate.com/v1/models/black-forest-labs/flux-schnell/predictions",
-                headers=headers,
-                json={"input": input_payload}
+            filename = f"sd3_{uuid.uuid4().hex[:8]}.png"
+            secure_url = await upload_bytes_to_storage(
+                image_bytes, 
+                filename, 
+                "image/png", 
+                bucket="ai-videos"
             )
 
-            if r.status_code != 201:
-                logger.error(f"Replicate Start Error: {r.text}")
-                raise Exception(f"Failed to start image generation: {r.text}")
+            yield sse({"type": "status", "message": "Finalizing..."})
+            yield sse({"type": "images", "images": [{"url": secure_url, "revised_prompt": prompt}]})
+            yield sse({"type": "done"})
 
-            prediction = r.json()
-            get_url = prediction.get("urls", {}).get("get")
-
-            # 2. Polling Loop
-            output_url = None
-            poll_count = 0
-            max_polls = 120 # Approx 2 mins
-
-            while poll_count < max_polls:
-                r = await client.get(get_url, headers=headers)
-                data = r.json()
-                status = data.get("status")
-
-                if status == "succeeded":
-                    output = data.get("output")
-                    if isinstance(output, list) and len(output) > 0:
-                        output_url = output[0]
-                    else:
-                        output_url = output
-                    break
-                elif status == "failed" or status == "canceled":
-                    error_detail = data.get("error", "Unknown error")
-                    logger.error(f"Replicate Generation Failed: {error_detail}")
-                    raise Exception(f"Image generation failed: {error_detail}")
-                
-                await asyncio.sleep(1)
-                poll_count += 1
-
-            if not output_url:
-                raise Exception("Image generation timed out.")
-
-    except Exception as e:
-        logger.error(f"Image gen error: {e}")
-        msg = str(e)
-        async def err_gen(): yield sse({"type": "error", "message": msg})
-        if stream: return StreamingResponse(err_gen(), media_type="text/event-stream")
-        return {"error": msg}
-
-    # Return Result
-    images = [{"url": output_url, "revised_prompt": prompt}]
+        except Exception as e:
+            logger.error(f"[HF] Image Gen Error: {e}", exc_info=True)
+            yield sse({"type": "error", "message": str(e)})
 
     if stream:
-        async def event_gen():
-            yield sse({"type": "status", "message": "Image generated successfully."})
-            yield sse({"type": "images", "images": images})
-            yield sse({"type": "done"})
         return StreamingResponse(event_gen(), media_type="text/event-stream")
-
-    return {"images": images}
-
+    
+    return {"error": "Non-streaming mode not implemented."}
+    
+    
 async def handle_video_generation(prompt: str, user: Dict[str, Any], conv_id: str, stream: bool):
     """
-    Robust Video Generation using FLUX Schnell -> Stable Video Diffusion pipeline.
-    Fixes: 422 errors by using specific version IDs for Replicate.
+    Generates videos using the SOTA Free Pipeline: SD3 Medium (Image) -> SVD XT (Video).
     """
-    if not REPLICATE_API_TOKEN:
+    if not HUGGINGFACE_API_TOKEN:
         async def err_gen(): yield sse({"type": "error", "message": "API Keys missing."})
         return StreamingResponse(err_gen(), media_type="text/event-stream")
 
-    headers = {"Authorization": f"Token {REPLICATE_API_TOKEN}", "Content-Type": "application/json"}
-    
-    # Stable Video Diffusion (SVD) Version ID
-    # IMPORTANT: If this fails, get the latest version ID from: https://replicate.com/stability-ai/stable-video-diffusion-img2vid-xt
-    # This is a known valid version hash for SVD.
-    SVD_VERSION_ID = "3f0457e4619daac51203dedb472816fd606f1e1e9a4b0b2a6e6d5b2f2f1a1a1a" 
+    headers = {"Authorization": f"Bearer {HUGGINGFACE_API_TOKEN}"}
 
     async def gen():
+        image_bytes = None
+        tmp_img_path = None
+        
         try:
-            # STEP 1: Generate Image with FLUX Schnell
-            yield sse({"type": "status", "message": "Generating visual concept..."})
+            # STEP 1: Generate High-Quality Image (SD3 Medium)
+            yield sse({"type": "status", "message": "Step 1/2: Visualizing scene (SD3)..."})
             
-            image_url = None
-            try:
-                async with httpx.AsyncClient(timeout=60) as client:
-                    r = await client.post(
-                        "https://api.replicate.com/v1/models/black-forest-labs/flux-schnell/predictions",
-                        headers=headers, 
-                        json={"input": {"prompt": prompt, "aspect_ratio": "16:9", "num_outputs": 1}}
-                    )
-                    
-                    if r.status_code != 201:
-                        raise Exception("Failed to start image generation")
-
-                    prediction = r.json()
-                    get_url = prediction.get("urls", {}).get("get")
-
-                    # Poll for image
-                    while True:
-                        poll_resp = await client.get(get_url, headers=headers)
-                        data = poll_resp.json()
-                        if data.get("status") == "succeeded":
-                            output = data.get("output")
-                            image_url = output[0] if isinstance(output, list) else output
-                            break
-                        elif data.get("status") in ["failed", "canceled"]:
-                            raise Exception("Image generation failed")
-                        await asyncio.sleep(1)
+            SD3_URL = "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-3-medium"
             
-            except Exception as e:
-                yield sse({"type": "error", "message": "Failed to generate base image."})
-                return
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                img_resp = await client.post(SD3_URL, headers=headers, json={"inputs": prompt})
+                
+                if img_resp.status_code != 200:
+                    raise Exception(f"Image generation failed: {img_resp.text}")
+                
+                image_bytes = img_resp.content
 
-            yield sse({"type": "status", "message": "Animating video..."})
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp_img:
+                tmp_img.write(image_bytes)
+                tmp_img_path = tmp_img.name
 
-            # STEP 2: Animate using Stable Video Diffusion (SVD)
-            input_payload = {
-                "input_image": image_url,
-                "fps": 6,
-                "motion_bucket_id": 127,
-                "cond_aug": 0.02
-            }
+            # STEP 2: Animate with SVD XT (Best Video Model)
+            yield sse({"type": "status", "message": "Step 2/2: Animating (SVD XT)..."})
             
-            async with httpx.AsyncClient(timeout=300) as client:
-                r = await client.post(
-                    "https://api.replicate.com/v1/predictions", 
-                    headers=headers, 
-                    json={
-                        "version": SVD_VERSION_ID, # Uses version key to avoid 422
-                        "input": input_payload
-                    }
-                )
+            SVD_URL = "https://api-inference.huggingface.co/models/stabilityai/stable-video-diffusion-img2vid-xt"
+            
+            async with httpx.AsyncClient(timeout=300.0) as client: 
+                files = {"inputs": (tmp_img_path, open(tmp_img_path, "rb"), "image/png")}
                 
-                if r.status_code == 422:
-                     err = r.text
-                     logger.error(f"Replicate 422: {err}")
-                     yield sse({"type": "error", "message": f"Video Model Version invalid. Please update Version ID in code. {err}"})
-                     return
+                try:
+                    vid_resp = await client.post(SVD_URL, headers=headers, files=files)
+                finally:
+                    files["inputs"][1].close() 
 
-                if r.status_code != 201:
-                    logger.error(f"Replicate start error: {r.text}")
-                    yield sse({"type": "error", "message": f"Service error: {r.status_code}"})
-                    return
+                if vid_resp.status_code != 200:
+                    logger.warning(f"SVD failed, trying Text-to-Video fallback...")
+                    yield sse({"type": "status", "message": "Switching to direct Text-to-Video..."})
+                    
+                    T2V_URL = "https://api-inference.huggingface.co/models/damo-vilab/text-to-video-ms-1.7b"
+                    vid_resp = await client.post(T2V_URL, headers=headers, json={"inputs": prompt})
+                    
+                    if vid_resp.status_code != 200:
+                        raise Exception(f"Video generation failed: {vid_resp.text}")
 
-                prediction = r.json()
-                prediction_id = prediction["id"]
+                video_bytes = vid_resp.content
                 
-                # Polling
-                poll_count = 0
-                while poll_count < 180:
-                    r = await client.get(f"https://api.replicate.com/v1/predictions/{prediction_id}", headers=headers)
-                    data = r.json()
-                    
-                    if data["status"] == "succeeded":
-                        video_url = data["output"]
-                        if isinstance(video_url, list): video_url = video_url[0]
-                        
-                        # Watermark step omitted for brevity, assumed working
-                        yield sse({"type": "video", "url": video_url})
-                        yield sse({"type": "done"})
-                        return
-                    
-                    elif data["status"] == "failed":
-                        yield sse({"type": "error", "message": "Video processing failed."})
-                        return
-                    
-                    await asyncio.sleep(2)
-                    poll_count += 1
-                
-                yield sse({"type": "error", "message": "Video generation timed out."})
-                
+                filename = f"svd_{uuid.uuid4().hex[:8]}.mp4"
+                video_url = await upload_bytes_to_storage(video_bytes, filename, "video/mp4")
+
+                yield sse({"type": "video", "url": video_url})
+                yield sse({"type": "done"})
+
         except Exception as e:
-            logger.error(f"Video gen error: {e}")
+            logger.error(f"[Video Gen] Error: {e}", exc_info=True)
             yield sse({"type": "error", "message": str(e)})
-    
+            
+        finally:
+            if tmp_img_path and os.path.exists(tmp_img_path):
+                os.remove(tmp_img_path)
+
     return StreamingResponse(gen(), media_type="text/event-stream")
 
 # =========================
@@ -2693,7 +2544,6 @@ async def handle_video_generation(prompt: str, user: Dict[str, Any], conv_id: st
 async def ask_universal(req: Request, res: Response):
     content_type = req.headers.get("content-type", "")
     
-    # Default remember
     remember = True
     body = {}
     
@@ -2740,38 +2590,31 @@ async def ask_universal(req: Request, res: Response):
     # INTENT DETECTION & ROUTING (FIXED)
     # =========================
     
-    # Detect intent for routing
     intent = detect_intent(prompt)
     
     if intent:
         logger.info(f"Intent Detected: {intent.intent.value} (Confidence: {intent.confidence:.2f})")
         
-        # Route to Image Generation (FLUX Schnell)
         if intent.intent == IntentCategory.IMAGE_GENERATION:
-            logger.info("Routing to Image Generation Handler")
+            logger.info("Routing to Image Generation Handler (Free HF)")
             return await handle_image_generation(prompt, user, conv_id, stream)
             
-        # Route to Video Generation
         elif intent.intent == IntentCategory.VIDEO_GENERATION:
-            logger.info("Routing to Video Generation Handler")
+            logger.info("Routing to Video Generation Handler (Free HF)")
             return await handle_video_generation(prompt, user, conv_id, stream)
             
-        # Route to Code Assistant
         elif intent.intent in [IntentCategory.CODE_GENERATION, IntentCategory.CODE_DEBUG, IntentCategory.CODE_REVIEW]:
              logger.info("Routing to Code Assistant")
-             # Fall through to standard logic below which handles code context well
-             pass
+             return await handle_code_assistant(prompt, user, conv_id, stream)
 
     # =========================
-    # CONVERSATION HANDLING (Text/Code/Search)
+    # CONVERSATION HANDLING (Text/Code/Search/Math/Translation)
     # =========================
     
-    # Determine if we need a web search
     needs_search = False
     if intent and intent.intent == IntentCategory.RESEARCH:
         needs_search = True
     
-    # Trigger search for specific keywords implying current data
     search_keywords = ["latest", "news", "current", "recent", "today", "who is", "what is", "price", "weather", "stock"]
     if any(kw in prompt.lower() for kw in search_keywords):
         needs_search = True
@@ -2816,7 +2659,6 @@ async def ask_universal(req: Request, res: Response):
 
     await save_message(user["id"], conv_id, "user", prompt)
 
-    # Stream Mode
     if stream:
         async def event_gen():
             task = asyncio.current_task()
@@ -2825,7 +2667,6 @@ async def ask_universal(req: Request, res: Response):
             try:
                 full_text = ""
                 
-                # 1. HANDLE WEB SEARCH
                 search_context = ""
                 if needs_search:
                     yield sse({"type": "status", "message": "Searching the web..."})
@@ -2834,7 +2675,6 @@ async def ask_universal(req: Request, res: Response):
                     search_context = search_data.get("text_context", "")
                     search_images = search_data.get("images", [])
                     
-                    # Send images to frontend immediately
                     if search_images:
                         yield sse({"type": "images", "images": search_images[:3]})
                     
@@ -2843,17 +2683,23 @@ async def ask_universal(req: Request, res: Response):
                     else:
                         yield sse({"type": "status", "message": "Reading results..."})
 
-                # 2. BUILD PROMPT
                 history = await get_history(conv_id)
                 MAX_MESSAGES = 10
                 history = history[-MAX_MESSAGES:]
 
                 base_system = get_system_prompt(prompt)
+                
+                # Intent-Specific Prompt Engineering for Free Models (LLM)
+                if intent:
+                    if intent.intent == IntentCategory.MATHEMATICAL:
+                        base_system += "\n\nYou are a mathematical expert. For any calculation or proof, think step-by-step. If the problem requires complex computation, output a Python script to solve it."
+                    elif intent.intent == IntentCategory.TRANSLATION:
+                        base_system += "\n\nYou are a professional translator. Provide accurate, context-aware translations. If the target language isn't specified, ask for it. Maintain the tone of the original text."
+                
                 user_memory = user.get("memory", "")
                 if user_memory:
                     base_system += f"\n\nUser Context: {user_memory}"
                 
-                # Inject Search Results if available
                 if search_context:
                     base_system += f"""
 
@@ -2864,14 +2710,12 @@ INSTRUCTIONS: Use the above web results to answer the user's question. Use Markd
 
                 full_history = [{"role": "system", "content": base_system}] + history
 
-                # 3. STREAM LLM RESPONSE
                 async for token in stream_groq_chat(full_history):
                     if task.cancelled():
                         break
                     full_text += token
                     yield sse({"type": "token", "text": token})
 
-                # 4. POST-RESPONSE TASKS
                 asyncio.create_task(
                     update_user_memory(user["id"], user_memory, prompt, full_text)
                 )
@@ -2888,9 +2732,7 @@ INSTRUCTIONS: Use the above web results to answer the user's question. Use Markd
 
         return StreamingResponse(event_gen(), media_type="text/event-stream")
 
-    # Non-Stream Mode
     else:
-        # Simplified non-stream logic for brevity
         search_context = ""
         if needs_search:
             search_data = await perform_web_search(prompt)
@@ -2898,6 +2740,13 @@ INSTRUCTIONS: Use the above web results to answer the user's question. Use Markd
         
         history = await get_history(conv_id)
         base_system = get_system_prompt(prompt)
+        
+        if intent:
+            if intent.intent == IntentCategory.MATHEMATICAL:
+                base_system += "\n\nYou are a mathematical expert. Think step-by-step."
+            elif intent.intent == IntentCategory.TRANSLATION:
+                base_system += "\n\nYou are a professional translator."
+
         if user.get("memory"): base_system += f"\n\nUser Context: {user['memory']}"
         if search_context: base_system += f"\n\nWEB RESULTS:\n{search_context}"
         
@@ -2905,7 +2754,7 @@ INSTRUCTIONS: Use the above web results to answer the user's question. Use Markd
         
         async with httpx.AsyncClient() as client:
             r = await groq_request_with_retry(client, {
-                "model": "llama-3.3-70b-versatile",
+                "model": "openai/gpt-oss-120b",
                 "messages": full_history,
                 "max_tokens": 1024
             })
@@ -2930,12 +2779,6 @@ async def analyze_files(
     prompt: str = Form(""),
     stream: bool = True
 ):
-    """
-    Enhanced file analysis endpoint supporting:
-    - Up to 5 images at once.
-    - 1 video (max 1 minute duration).
-    - User text prompt to guide the analysis.
-    """
     user = await get_user(req, Response())
     
     if len(file) > 5:
@@ -2958,7 +2801,6 @@ async def analyze_files(
         if not content:
             continue 
 
-        # --- VIDEO HANDLING ---
         if content_type.startswith("video/") or filename.lower().endswith(('.mp4', '.mov', '.webm', '.avi')):
             video_count += 1
             if video_count > 1:
@@ -2977,12 +2819,10 @@ async def analyze_files(
             for i, frame_b64 in enumerate(frames):
                 visual_items.append({'type': 'video', 'b64': frame_b64, 'frame_index': i})
 
-        # --- IMAGE HANDLING ---
         elif content_type.startswith("image/") or get_file_category(filename) == FileCategory.IMAGE:
             b64 = base64.b64encode(content).decode()
             visual_items.append({'type': 'image', 'b64': b64})
 
-        # --- TEXT/ARCHIVE/CODE HANDLING ---
         else:
             category = get_file_category(filename)
             max_allowed = MAX_ZIP_SIZE if category == FileCategory.ARCHIVE else MAX_FILE_SIZE
@@ -3018,11 +2858,7 @@ async def analyze_files(
 
     raise HTTPException(400, "No valid files provided for analysis.")
 
-# Helper for visual analysis (images/video frames)
 async def handle_visual_analysis(visual_items: list, stream: bool, user_prompt: str = ""):
-    """
-    Constructs a multi-modal prompt for LLM to analyze multiple images/video frames.
-    """
     content_parts = [
         {"type": "text", "text": user_prompt or "Analyze these visual items in detail. Describe everything you see."}
     ]
@@ -3077,8 +2913,6 @@ async def handle_archive_analysis(
     result: FileExtractionResult,
     stream: bool
 ):
-    """Special handling for archive files with multiple extracted files"""
-    
     files_summary = []
     code_files = []
     text_files = []
@@ -3137,7 +2971,6 @@ Be organized and clear in your analysis."""
         async def gen():
             task = asyncio.current_task()
             try:
-                # First, send metadata
                 yield sse({
                     "type": "file_metadata",
                     "metadata": result.metadata,
@@ -3159,7 +2992,7 @@ Be organized and clear in your analysis."""
         r = await client.post(
             "https://api.groq.com/openai/v1/chat/completions",
             headers=get_groq_headers(),
-            json={"model": "llama-3.3-70b-versatile", "messages": messages}
+            json={"model": "openai/gpt-oss-120b", "messages": messages}
         )
         r.raise_for_status()
 
@@ -3171,7 +3004,6 @@ Be organized and clear in your analysis."""
 
 @app.get("/file-types")
 async def get_supported_file_types():
-    """Return list of supported file types"""
     return {
         "code": sorted(list(CODE_EXTENSIONS)),
         "document": sorted(list(DOCUMENT_EXTENSIONS)),
@@ -3194,24 +3026,21 @@ async def get_supported_file_types():
 # =========================
 @app.post("/session/validate")
 async def validate_session(req: Request, res: Response):
-    """Validate current session and return user info"""
     user = await get_user(req, res)
     return {
         "valid": user.get("session_valid", False),
         "user_id": user["id"],
         "fingerprint": user.get("fingerprint", "")[:8] + "...",
-        "is_authenticated": bool(user.get("email") and not user["email"].startswith("anon+"))
+        "is_authenticated": bool(user.get("email") and not user.get("email").startswith("anon+"))
     }
 
 @app.post("/session/refresh")
 async def refresh_session(req: Request, res: Response):
-    """Manually refresh the current session"""
     body = await req.json() if req.headers.get("content-type") == "application/json" else {}
     remember = body.get("remember", True)
     
     user = await get_user(req, res, remember=remember)
     
-    # Force session refresh
     new_token = await create_user_session(
         user["id"],
         user.get("fingerprint", ""),
@@ -3228,12 +3057,10 @@ async def refresh_session(req: Request, res: Response):
 
 @app.post("/session/logout")
 async def logout(req: Request, res: Response):
-    """Logout and clear all session data"""
     user_id = req.cookies.get(PRIMARY_COOKIE)
     
     if user_id:
         try:
-            # Invalidate all sessions for this user
             await _execute_supabase_with_retry(
                 supabase.table("user_sessions")
                 .update({"is_valid": False})
@@ -3243,7 +3070,6 @@ async def logout(req: Request, res: Response):
         except Exception as e:
             logger.error(f"Failed to invalidate sessions: {e}")
         
-        # Clear cache
         if user_id in _session_cache:
             del _session_cache[user_id]
     
@@ -3274,10 +3100,8 @@ async def new_chat(req: Request, res: Response):
 
 @app.get("/chat/{conversation_id}/messages")
 async def get_chat_messages(conversation_id: str, req: Request, res: Response):
-    """Fetches full history for a specific chat."""
     user = await get_user(req, res)
     
-    # Verify the conversation belongs to the user
     conv_check = await _execute_supabase_with_retry(
         supabase.table("conversations").select("id").eq("id", conversation_id).eq("user_id", user["id"]).limit(1),
         description="Verify Chat Ownership"
@@ -3286,7 +3110,6 @@ async def get_chat_messages(conversation_id: str, req: Request, res: Response):
     if not conv_check.data:
         raise HTTPException(403, "Access denied to this conversation")
 
-    # Fetch messages
     msgs = await _execute_supabase_with_retry(
         supabase.table("messages")
         .select("role, content, created_at")
@@ -3385,6 +3208,15 @@ async def regenerate(req: Request, res: Response):
             
             last_prompt = last_user_msg.get("content", "")
             base_system = get_system_prompt(last_prompt)
+            
+            # Re-check intent for regeneration prompt engineering
+            intent = detect_intent(last_prompt)
+            if intent:
+                if intent.intent == IntentCategory.MATHEMATICAL:
+                    base_system += "\n\nYou are a mathematical expert. Think step-by-step."
+                elif intent.intent == IntentCategory.TRANSLATION:
+                    base_system += "\n\nYou are a professional translator."
+
             user_memory = user.get("memory", "")
             if user_memory:
                 base_system += f"\n\nUser Context: {user_memory}"
@@ -3417,7 +3249,6 @@ async def regenerate(req: Request, res: Response):
 
 @app.get("/chats")
 async def list_chats(req: Request, res: Response):
-    """Returns a list of all conversations for the logged-in user, ordered by most recently active."""
     user = await get_user(req, res)
     
     result = await _execute_supabase_with_retry(
@@ -3440,7 +3271,7 @@ async def get_user_info(req: Request, res: Response):
         "fingerprint": user.get("fingerprint", "")[:8] + "...",
         "is_identified": True,
         "session_valid": user.get("session_valid", False),
-        "is_authenticated": bool(user.get("email") and not user["email"].startswith("anon+"))
+        "is_authenticated": bool(user.get("email") and not user.get("email").startswith("anon+"))
     }
 
 @app.post("/user/merge")
@@ -3506,10 +3337,6 @@ async def analyze_intent_endpoint(req: Request):
 
 @app.post("/tts")
 async def text_to_speech(req: Request):
-    """
-    Optimized TTS: Streams audio back immediately as it is generated.
-    This reduces latency significantly for long texts.
-    """
     data = await req.json()
     text = data.get("text")
     voice = data.get("voice", "alloy")
@@ -3519,7 +3346,6 @@ async def text_to_speech(req: Request):
     if not OPENAI_API_KEY:
         raise HTTPException(500, "OpenAI Key missing")
 
-    # Use streaming to get audio back faster
     async def stream_audio():
         async with httpx.AsyncClient(timeout=60.0) as client:
             async with client.stream(
@@ -3553,15 +3379,11 @@ async def get_voices():
 
 @app.post("/stt")
 async def speech_to_text(file: UploadFile = File(...)):
-    """
-    Fixed STT: Complete implementation with optimized httpx usage.
-    """
     if not OPENAI_API_KEY:
         raise HTTPException(500, "OpenAI Key missing")
 
     content = await file.read()
     
-    # Optimized: Use a reasonable timeout and efficient async client
     async with httpx.AsyncClient(timeout=30.0) as client:
         files = {"file": (file.filename, content, file.content_type)}
         data = {"model": "whisper-1"}
