@@ -440,6 +440,105 @@ async def extract_pdf_content(
             original_size=len(content)
         )
 
+async def handle_search_mode(
+    body: UniversalAskRequest,
+    history: list,
+    user_id: str,
+    is_premium: bool
+) -> StreamingResponse:
+    """Handle web search mode with Tavily"""
+    
+    async def search_stream():
+        # First: send search status
+        yield sse_event({"type": "status", "message": "Searching the web..."})
+        
+        # Perform actual Tavily search
+        search_results = await tavily_search(body.prompt, max_results=5)
+        
+        if not search_results:
+            yield sse_event({"type": "status", "message": "No results found"})
+            # Fall back to general AI response
+            async for chunk in generate_ai_response(body.prompt, history, "general"):
+                yield sse_event({"token": chunk})
+            return
+        
+        # Second: send source chips as structured data
+        sources = []
+        for r in search_results[:5]:
+            sources.append({
+                "title": r.get("title", ""),
+                "url": r.get("url", ""),
+                "snippet": r.get("content", "")[:200],
+                "favicon": f"https://www.google.com/s2/favicons?domain={urlparse(r['url']).hostname}&sz=32",
+                "score": r.get("score", 0)
+            })
+        
+        yield sse_event({"type": "sources", "data": sources})
+        
+        # Third: build context-augmented prompt
+        context = "\n\n".join([
+            f"[{i+1}] {r['title']}\nURL: {r['url']}\n{r.get('content', '')[:500]}"
+            for i, r in enumerate(search_results)
+        ])
+        
+        search_prompt = f"""Based on these search results, answer the user's question.
+Cite sources using [1], [2], etc. format inline.
+
+SEARCH RESULTS:
+{context}
+
+USER QUESTION: {body.prompt}
+
+ANSWER:"""
+        
+        # Fourth: stream AI response with citations
+        async for chunk in generate_ai_response(search_prompt, history, "search"):
+            yield sse_event({"token": chunk})
+        
+        yield sse_event({"type": "done"})
+    
+    return StreamingResponse(
+        search_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+    )
+
+
+async def tavily_search(query: str, max_results: int = 5) -> List[Dict]:
+    """Perform Tavily web search"""
+    if not TAVILY_API_KEY:
+        logger.warning("TAVILY_API_KEY not set")
+        return []
+    
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            response = await client.post(
+                "https://api.tavily.com/search",
+                json={
+                    "api_key": TAVILY_API_KEY,
+                    "query": query,
+                    "max_results": max_results,
+                    "include_answer": True,
+                    "include_raw_content": False,
+                    "include_images": True,
+                    "search_depth": "basic"
+                }
+            )
+            data = response.json()
+            return data.get("results", [])
+        except Exception as e:
+            logger.error(f"Tavily search error: {e}")
+            return []
+
+
+def sse_event(data: Dict) -> str:
+    """Format data as Server-Sent Event"""
+    return f"data: {json.dumps(data)}\n\n"
+
 async def extract_archive_content(
     content: bytes,
     filename: str,
@@ -919,6 +1018,210 @@ async def cleanup_session_cache():
     
     for key in expired_keys:
         del _session_cache[key]
+
+# =========================
+# CODE MODE
+# =========================
+CODE_SYSTEM_PROMPT = """You are an expert software engineer. Follow these rules strictly:
+
+1. **Always** provide complete, runnable code — never use placeholders like `// ...` or `# your code here`
+2. Include necessary imports and dependencies
+3. Add brief comments explaining non-obvious logic
+4. Suggest how to run the code at the end
+5. If the user shares error output, diagnose the root cause before providing a fix
+6. For web code (HTML/CSS/JS), provide a single complete file unless the user asks for separate files
+7. Use modern best practices and idiomatic code for the language
+8. If optimizing, show before/after with performance explanation
+"""
+
+async def handle_code_mode(
+    body: UniversalAskRequest,
+    history: list,
+    user_id: str,
+    is_premium: bool
+) -> StreamingResponse:
+    """Handle code mode with enhanced system prompt"""
+    
+    async def code_stream():
+        yield sse_event({"type": "status", "message": "Analyzing code..."})
+        
+        # Detect language from prompt
+        lang_hints = detect_language_hints(body.prompt)
+        
+        code_prompt = f"""{CODE_SYSTEM_PROMPT}
+
+{"Detected language context: " + ", ".join(lang_hints) if lang_hints else ""}
+
+USER REQUEST: {body.prompt}
+
+CODE:"""
+        
+        # Use a model better at code if available
+        model_override = "llama-3.3-70b-versatile" if not is_premium else "deepseek-r1-distill-llama-70b"
+        
+        async for chunk in generate_ai_response(
+            code_prompt, history, "code", model_override=model_override
+        ):
+            yield sse_event({"token": chunk})
+        
+        yield sse_event({"type": "done"})
+    
+    return StreamingResponse(code_stream(), media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+def detect_language_hints(text: str) -> List[str]:
+    """Detect programming languages mentioned in the prompt"""
+    hints = []
+    lang_map = {
+        "python": ["python", "py", "django", "flask", "fastapi", "pandas", "numpy"],
+        "javascript": ["javascript", "js", "node", "react", "vue", "angular", "typescript", "ts"],
+        "java": ["java", "spring", "maven", "gradle"],
+        "rust": ["rust", "cargo", "tokio"],
+        "go": ["golang", "go lang", "go module"],
+        "c++": ["c++", "cpp", "cmake"],
+        "sql": ["sql", "mysql", "postgres", "sqlite", "mongodb"],
+    }
+    
+    text_lower = text.lower()
+    for lang, keywords in lang_map.items():
+        if any(kw in text_lower for kw in keywords):
+            hints.append(lang)
+    
+    return hints
+
+# =========================
+# GENERAL MODE (with image/video gen detection)
+# =========================
+async def handle_general_mode(
+    body: UniversalAskRequest,
+    history: list,
+    user_id: str,
+    is_premium: bool
+) -> StreamingResponse:
+    """Handle general mode — detects if user wants image/video generation"""
+    
+    # Check if this is actually a media generation request
+    intent = detect_media_intent(body.prompt)
+    
+    if intent == "image" and is_premium:
+        # Intercept and generate image, then provide description
+        return await handle_inline_image_gen(body, history, user_id)
+    elif intent == "video" and is_premium:
+        return await handle_inline_video_gen(body, history, user_id)
+    
+    async def general_stream():
+        yield sse_event({"type": "status", "message": "Thinking..."})
+        
+        system_prompt = get_system_prompt(body.prompt)
+        
+        async for chunk in generate_ai_response(
+            body.prompt, history, "general",
+            system_prompt=system_prompt
+        ):
+            yield sse_event({"token": chunk})
+        
+        yield sse_event({"type": "done"})
+    
+    return StreamingResponse(general_stream(), media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+def detect_media_intent(text: str) -> Optional[str]:
+    """Detect if user wants to generate media"""
+    text_lower = text.lower()
+    
+    img_patterns = [
+        r'generate\s+(a\s+)?(image|picture|photo|drawing|illustration)',
+        r'create\s+(a\s+)?(image|picture|visual|graphic|art)',
+        r'draw\s+(me\s+)?(a\s+)?',
+        r'make\s+(me\s+)?(a\s+)?(image|picture|photo)',
+        r'render\s+(a\s+)?(image|scene|visual)',
+    ]
+    
+    vid_patterns = [
+        r'generate\s+(a\s+)?(video|clip|animation)',
+        r'create\s+(a\s+)?(video|clip|movie)',
+        r'make\s+(a\s+)?(video|animation|clip)',
+    ]
+    
+    for p in img_patterns:
+        if re.search(p, text_lower):
+            return "image"
+    for p in vid_patterns:
+        if re.search(p, text_lower):
+            return "video"
+    
+    return None
+
+
+async def handle_inline_image_gen(
+    body: UniversalAskRequest,
+    history: list,
+    user_id: str
+) -> StreamingResponse:
+    """Generate image and provide description in stream"""
+    
+    async def stream():
+        yield sse_event({"type": "status", "message": "Generating image..."})
+        
+        # Extract clean prompt for image generation
+        clean_prompt = re.sub(
+            r'^(generate|create|make|draw|render)\s+(a\s+)?(an?\s+)?(image|picture|photo|drawing|illustration|of)\s*',
+            '', body.prompt, flags=re.IGNORECASE
+        ).strip()
+        
+        if not clean_prompt:
+            clean_prompt = body.prompt
+        
+        # Generate image
+        try:
+            img_result = await generate_image_sync(clean_prompt)
+            
+            # Send image as media event
+            yield sse_event({
+                "type": "media",
+                "media_type": "image",
+                "data": [{"url": img_result["url"], "name": "Generated"}]
+            })
+            
+            # Then describe it
+            desc_prompt = f"The user asked to generate an image with prompt: '{clean_prompt}'. The image has been generated successfully. Describe what the generated image shows in a brief, engaging paragraph."
+            
+            async for chunk in generate_ai_response(desc_prompt, history, "general"):
+                yield sse_event({"token": chunk})
+                
+        except Exception as e:
+            yield sse_event({"token": f"Image generation failed: {str(e)}. Here's a description instead:\n\n"})
+            async for chunk in generate_ai_response(body.prompt, history, "general"):
+                yield sse_event({"token": chunk})
+        
+        yield sse_event({"type": "done"})
+    
+    return StreamingResponse(stream(), media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+async def generate_image_sync(prompt: str) -> Dict:
+    """Synchronous image generation helper"""
+    headers = {}
+    if HUGGINGFACE_API_TOKEN:
+        headers["Authorization"] = f"Bearer {HUGGINGFACE_API_TOKEN}"
+    
+    enhanced = f"{prompt}, highly detailed, professional quality, 8k"
+    
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        response = await client.post(
+            "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-xl-base-1.0",
+            json={"inputs": enhanced},
+            headers=headers,
+        )
+        
+        if response.status_code != 200:
+            raise Exception(f"Image gen failed: {response.status_code}")
+    
+    b64 = base64.b64encode(response.content).decode("utf-8")
+    return {"url": f"data:image/png;base64,{b64}"}
 
 # =========================
 # BASE SYSTEM PROMPT (UPDATED)
@@ -3002,6 +3305,136 @@ Be organized and clear in your analysis."""
         "files": result.files
     }
 
+# =========================
+# IMAGE GENERATION
+# =========================
+class ImageGenRequest(BaseModel):
+    prompt: str
+    model: str = "stable-diffusion-xl"
+    size: str = "1024x1024"
+    style: str = "natural"
+
+# Model routing for image generation
+IMAGE_MODELS = {
+    "stable-diffusion-xl": {
+        "endpoint": "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-xl-base-1.0",
+        "type": "huggingface"
+    },
+    "flux-schnell": {
+        "endpoint": "https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell",
+        "type": "huggingface"
+    },
+    "flux-dev": {
+        "endpoint": "https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-dev",
+        "type": "huggingface"
+    },
+    "dreamshaper": {
+        "endpoint": "https://api-inference.huggingface.co/models/Lykon/dreamshaper-xl-v2-turbo",
+        "type": "huggingface"
+    },
+}
+
+@app.post("/generate/image")
+async def generate_image(
+    request: Request,
+    body: ImageGenRequest,
+    authorization: Optional[str] = Header(None),
+    x_guest_id: Optional[str] = Header(None),
+):
+    """Generate image with streaming blur-compatible response"""
+    
+    user_id = await authenticate_request(request, authorization, x_guest_id)
+    
+    # Check daily limits
+    if not await check_image_limit(user_id):
+        raise HTTPException(status_code=429, detail="Daily image limit reached")
+    
+    model_config = IMAGE_MODELS.get(body.model, IMAGE_MODELS["stable-diffusion-xl"])
+    
+    # Enhanced prompt
+    enhanced_prompt = f"{body.prompt}, highly detailed, professional quality, 8k"
+    if body.style == "cinematic":
+        enhanced_prompt += ", cinematic lighting, film grain, anamorphic"
+    elif body.style == "anime":
+        enhanced_prompt += ", anime style, vibrant colors, detailed illustration"
+    
+    headers = {}
+    if HUGGINGFACE_API_TOKEN:
+        headers["Authorization"] = f"Bearer {HUGGINGFACE_API_TOKEN}"
+    
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        # Send status event first
+        response = await client.post(
+            model_config["endpoint"],
+            json={"inputs": enhanced_prompt},
+            headers=headers,
+        )
+        
+        if response.status_code != 200:
+            error_detail = response.text[:500]
+            logger.error(f"Image gen error: {response.status_code} - {error_detail}")
+            raise HTTPException(
+                status_code=response.status_code,
+                detail=f"Image generation failed: {error_detail}"
+            )
+    
+    # Convert to base64 for reliable transport
+    image_bytes = response.content
+    base64_image = base64.b64encode(image_bytes).decode("utf-8")
+    data_url = f"data:image/png;base64,{base64_image}"
+    
+    # Increment usage
+    await increment_image_usage(user_id)
+    
+    # Return in the format frontend expects for streaming blur
+    return JSONResponse(content={
+        "type": "media",
+        "media_type": "image",
+        "data": [{"url": data_url, "name": "Generated Image"}],
+        "prompt": body.prompt,
+        "model": body.model,
+        "size": f"{len(image_bytes)} bytes"
+    })
+
+
+# Daily limit tracking
+async def check_image_limit(user_id: str) -> bool:
+    """Check if user hasn't exceeded daily image limit"""
+    # Free: 6/day, Premium: 50/day, Lifetime: unlimited
+    is_premium = await check_is_premium(user_id)
+    if is_premium:
+        return True  # Or implement higher limit
+    
+    today = datetime.now(timezone.utc).date().isoformat()
+    try:
+        result = supabase.table("daily_usage") \
+            .select("count") \
+            .eq("user_id", user_id) \
+            .eq("date", today) \
+            .eq("type", "image") \
+            .execute()
+        
+        if result.data:
+            total = sum(r["count"] for r in result.data)
+            return total < 6
+    except Exception:
+        pass
+    return True
+
+
+async def increment_image_usage(user_id: str):
+    """Track image generation usage"""
+    today = datetime.now(timezone.utc).date().isoformat()
+    try:
+        supabase.table("daily_usage").upsert({
+            "user_id": user_id,
+            "date": today,
+            "type": "image",
+            "count": 1,
+        }, on_conflict="user_id,date,type").execute()
+    except Exception as e:
+        logger.error(f"Usage tracking error: {e}")
+
 @app.get("/file-types")
 async def get_supported_file_types():
     return {
@@ -3020,6 +3453,57 @@ async def get_supported_file_types():
             "max_text_length": format_file_size(MAX_TEXT_LENGTH)
         }
     }
+
+# =========================
+# SPEECH-TO-TEXT
+# =========================
+@app.post("/stt")
+async def speech_to_text(
+    request: Request,
+    file: UploadFile = File(...),
+    authorization: Optional[str] = Header(None),
+    x_guest_id: Optional[str] = Header(None),
+):
+    """Transcribe audio file to text using OpenAI Whisper"""
+    
+    user_id = await authenticate_request(request, authorization, x_guest_id)
+    
+    if not openai_client:
+        raise HTTPException(status_code=503, detail="STT not available")
+    
+    # Validate file
+    if not file.content_type or not file.content_type.startswith("audio/"):
+        raise HTTPException(status_code=400, detail="File must be audio")
+    
+    audio_bytes = await file.read()
+    
+    if len(audio_bytes) > 25 * 1024 * 1024:  # 25MB limit
+        raise HTTPException(status_code=413, detail="Audio file too large (max 25MB)")
+    
+    try:
+        # Write to temp file for OpenAI API
+        with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as tmp:
+            tmp.write(audio_bytes)
+            tmp_path = tmp.name
+        
+        with open(tmp_path, "rb") as audio_file:
+            transcript = await openai_client.audio.transcriptions.create(
+                model="whisper-1",
+                file=audio_file,
+                response_format="text",
+                language="en"  # or detect automatically
+            )
+        
+        # Cleanup
+        os.unlink(tmp_path)
+        
+        return {"text": transcript}
+    
+    except Exception as e:
+        logger.error(f"STT error: {e}")
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        raise HTTPException(status_code=500, detail=f"Transcription failed: {str(e)}")
 
 # =========================
 # SESSION MANAGEMENT ENDPOINTS
@@ -3159,6 +3643,239 @@ async def groq_request_with_retry(client, payload):
                 raise
     raise Exception("Request failed after retries")
 
+# =========================
+# TEXT-TO-SPEECH
+# =========================
+TTS_VOICES = [
+    {"id": "alloy", "name": "Alloy", "gender": "neutral", "accent": "american"},
+    {"id": "echo", "name": "Echo", "gender": "male", "accent": "american"},
+    {"id": "fable", "name": "Fable", "gender": "neutral", "accent": "british"},
+    {"id": "onyx", "name": "Onyx", "gender": "male", "accent": "american"},
+    {"id": "nova", "name": "Nova", "gender": "female", "accent": "american"},
+    {"id": "shimmer", "name": "Shimmer", "gender": "female", "accent": "american"},
+]
+
+@app.get("/tts/voices")
+async def list_tts_voices():
+    """Return available TTS voices"""
+    return {"voices": TTS_VOICES}
+
+
+class TTSRequest(BaseModel):
+    text: str
+    voice: str = "alloy"
+    speed: float = 1.0
+
+@app.post("/tts")
+async def text_to_speech(
+    request: Request,
+    body: TTSRequest,
+    authorization: Optional[str] = Header(None),
+    x_guest_id: Optional[str] = Header(None),
+):
+    """Generate speech from text using OpenAI TTS"""
+    
+    user_id = await authenticate_request(request, authorization, x_guest_id)
+    
+    if not openai_client:
+        raise HTTPException(status_code=503, detail="TTS not available")
+    
+    # Truncate text if too long (OpenAI limit is ~4096 chars)
+    text = body.text[:4000]
+    
+    try:
+        response = await openai_client.audio.speech.create(
+            model="tts-1",
+            voice=body.voice,
+            input=text,
+            speed=body.speed,
+            response_format="mp3"
+        )
+        
+        audio_bytes = response.content
+        
+        return StreamingResponse(
+            io.BytesIO(audio_bytes),
+            media_type="audio/mpeg",
+            headers={
+                "Content-Length": str(len(audio_bytes)),
+                "Content-Disposition": "inline; filename=speech.mp3"
+            }
+        )
+    except Exception as e:
+        logger.error(f"TTS error: {e}")
+        raise HTTPException(status_code=500, detail=f"TTS failed: {str(e)}")
+
+
+# =========================
+# SPEECH-TO-TEXT
+# =========================
+@app.post("/stt")
+async def speech_to_text(
+    request: Request,
+    file: UploadFile = File(...),
+    authorization: Optional[str] = Header(None),
+    x_guest_id: Optional[str] = Header(None),
+):
+    """Transcribe audio file to text using OpenAI Whisper"""
+    
+    user_id = await authenticate_request(request, authorization, x_guest_id)
+    
+    if not openai_client:
+        raise HTTPException(status_code=503, detail="STT not available")
+    
+    # Validate file
+    if not file.content_type or not file.content_type.startswith("audio/"):
+        raise HTTPException(status_code=400, detail="File must be audio")
+    
+    audio_bytes = await file.read()
+    
+    if len(audio_bytes) > 25 * 1024 * 1024:  # 25MB limit
+        raise HTTPException(status_code=413, detail="Audio file too large (max 25MB)")
+    
+    try:
+        # Write to temp file for OpenAI API
+        with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as tmp:
+            tmp.write(audio_bytes)
+            tmp_path = tmp.name
+        
+        with open(tmp_path, "rb") as audio_file:
+            transcript = await openai_client.audio.transcriptions.create(
+                model="whisper-1",
+                file=audio_file,
+                response_format="text",
+                language="en"  # or detect automatically
+            )
+        
+        # Cleanup
+        os.unlink(tmp_path)
+        
+        return {"text": transcript}
+    
+    except Exception as e:
+        logger.error(f"STT error: {e}")
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        raise HTTPException(status_code=500, detail=f"Transcription failed: {str(e)}")
+
+# =========================
+# FINANCE MODE
+# =========================
+async def handle_finance_mode(
+    body: UniversalAskRequest,
+    history: list,
+    user_id: str,
+    is_premium: bool
+) -> StreamingResponse:
+    """Handle finance mode with real-time data"""
+    
+    async def finance_stream():
+        yield sse_event({"type": "status", "message": "Fetching financial data..."})
+        
+        # Extract tickers from prompt
+        tickers = extract_tickers(body.prompt)
+        financial_data = {}
+        
+        for ticker in tickers[:5]:  # Max 5 tickers per query
+            data = await fetch_stock_data(ticker)
+            if data:
+                financial_data[ticker] = data
+        
+        # Build finance-aware prompt
+        finance_context = ""
+        if financial_data:
+            finance_context = "\n\nCURRENT MARKET DATA:\n"
+            for ticker, data in financial_data.items():
+                finance_context += f"""
+{ticker} ({data.get('name', '')}):
+- Price: ${data.get('price', 'N/A')}
+- Change: {data.get('change', 'N/A')} ({data.get('change_percent', 'N/A')}%)
+- Open: ${data.get('open', 'N/A')}
+- High: ${data.get('high', 'N/A')}
+- Low: ${data.get('low', 'N/A')}
+- Volume: {data.get('volume', 'N/A')}
+- Market Cap: {data.get('market_cap', 'N/A')}
+"""
+        
+        finance_prompt = f"""You are a financial analysis assistant. Use the provided market data to answer. 
+Always include disclaimers that this is not financial advice.
+
+{finance_context}
+
+USER QUESTION: {body.prompt}
+
+ANALYSIS:"""
+        
+        async for chunk in generate_ai_response(finance_prompt, history, "finance"):
+            yield sse_event({"token": chunk})
+        
+        yield sse_event({"type": "done"})
+    
+    return StreamingResponse(finance_stream(), media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+def extract_tickers(text: str) -> List[str]:
+    """Extract stock tickers from text"""
+    # Match $TICKER or standalone caps words that look like tickers
+    patterns = [
+        r'\$([A-Z]{1,5})',           # $AAPL
+        r'\b([A-Z]{2,5})\b',          # AAPL (standalone caps)
+    ]
+    
+    tickers = set()
+    known_tickers = {
+        "AAPL", "GOOGL", "GOOG", "MSFT", "AMZN", "TSLA", "META", "NVDA",
+        "NFLX", "AMD", "INTC", "PYPL", "DIS", "BA", "JPM", "V", "MA",
+        "BTC", "ETH", "SOL", "DOGE", "ADA", "XRP", "DOT", "LINK",
+        "SPY", "QQQ", "DIA", "IWM", "VTI", "BND"
+    }
+    
+    for pattern in patterns:
+        for match in re.finditer(pattern, text):
+            ticker = match.group(1)
+            if ticker in known_tickers or len(ticker) >= 3:
+                tickers.add(ticker)
+    
+    return list(tickers)
+
+
+async def fetch_stock_data(ticker: str) -> Optional[Dict]:
+    """Fetch stock data from free API"""
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            # Using Yahoo Finance via rapidapi or a free alternative
+            response = await client.get(
+                f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}",
+                headers={"User-Agent": "Mozilla/5.0"}
+            )
+            
+            if response.status_code != 200:
+                return None
+            
+            data = response.json()
+            result = data.get("chart", {}).get("result", [{}])[0]
+            meta = result.get("meta", {})
+            price = meta.get("regularMarketPrice", 0)
+            prev_close = meta.get("previousClose", price)
+            change = price - prev_close
+            change_pct = (change / prev_close * 100) if prev_close else 0
+            
+            return {
+                "name": meta.get("shortName", ticker),
+                "price": f"{price:.2f}",
+                "change": f"{change:+.2f}",
+                "change_percent": f"{change_pct:+.2f}",
+                "open": f"{meta.get('regularMarketOpen', 0):.2f}",
+                "high": f"{meta.get('regularMarketDayHigh', 0):.2f}",
+                "low": f"{meta.get('regularMarketDayLow', 0):.2f}",
+                "volume": meta.get("regularMarketVolume", "N/A"),
+                "market_cap": meta.get("marketCap", "N/A"),
+            }
+    except Exception as e:
+        logger.error(f"Stock data error for {ticker}: {e}")
+        return None
+        
 @app.post("/regenerate")
 async def regenerate(req: Request, res: Response):
     body = await req.json()
