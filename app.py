@@ -2224,10 +2224,14 @@ async def get_history(conv_id: str, limit: int = 50):
     
     return [{"role": m["role"], "content": m["content"]} for m in final_messages]
 
-async def stream_groq_chat(messages: list, model: str = "openai/gpt-oss-120b", max_tokens: int = 8192):
+async def stream_groq_chat(
+    messages: list,
+    model: str = "openai/gpt-oss-120b",
+    max_tokens: int = 2500,   # ← was 8192; keep total input+output < 8000 TPM
+):
     max_retries = 2
     base_wait = 5
-    
+
     for attempt in range(max_retries):
         try:
             async with httpx.AsyncClient(timeout=None) as client:
@@ -2235,13 +2239,29 @@ async def stream_groq_chat(messages: list, model: str = "openai/gpt-oss-120b", m
                     "POST",
                     "https://api.groq.com/openai/v1/chat/completions",
                     headers=get_groq_headers(),
-                    json={"model": model, "messages": messages, "stream": True, "max_tokens": max_tokens}
+                    json={
+                        "model": model,
+                        "messages": messages,
+                        "stream": True,
+                        "max_tokens": max_tokens
+                    }
                 ) as resp:
-                    
-                    if resp.status_code == 429:
-                        logger.warning(f"Groq Rate Limit hit (Attempt {attempt+1}). Waiting...")
+
+                    # Handle 429 AND 413 (TPM/payload limits)
+                    if resp.status_code in (429, 413):
+                        logger.warning(
+                            f"Groq limit hit ({resp.status_code}). "
+                            f"Attempt {attempt+1}/{max_retries}."
+                        )
+                        # Fallback to a faster, cheaper model with smaller TPM footprint
+                        if model == "openai/gpt-oss-120b":
+                            logger.info("Falling back to llama-3.1-8b-instant")
+                            model = "llama-3.1-8b-instant"
+                            max_tokens = min(max_tokens, 1500)
+                            await asyncio.sleep(2)
+                            continue
                         await asyncio.sleep(base_wait * (attempt + 1))
-                        continue 
+                        continue
 
                     if resp.status_code != 200:
                         error_text = await resp.aread()
@@ -2251,21 +2271,25 @@ async def stream_groq_chat(messages: list, model: str = "openai/gpt-oss-120b", m
                     async for line in resp.aiter_lines():
                         if line.startswith("data: "):
                             data = line[6:]
-                            if data == "[DONE]": return
+                            if data == "[DONE]":
+                                return
                             try:
                                 chunk = json.loads(data)
                                 delta = chunk["choices"][0]["delta"].get("content")
-                                if delta: yield delta
-                            except: pass
-                    return 
-        
+                                if delta:
+                                    yield delta
+                            except:
+                                pass
+                    return
+
         except httpx.ConnectError:
             logger.error("Connection failed.")
             raise Exception("Connection failed.")
         except Exception as e:
             logger.error(f"Stream error: {e}")
-            if attempt == max_retries - 1: raise e
-
+            if attempt == max_retries - 1:
+                raise e
+                
 async def handle_code_assistant(prompt: str, user: Dict[str, Any], conv_id: str, stream: bool):
     system_prompt = get_detector().get_code_system_prompt(prompt)
     
