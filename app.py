@@ -1915,9 +1915,10 @@ async def perform_web_search(query: str) -> Dict[str, Any]:
                 formatted_results.append(f"Direct Answer: {data['answer']}\n")
             
             for result in data.get("results", []):
+                # FIX: Removed backslash from inside f-string brackets
                 formatted_results.append(
                     f"Source Title: {result['title']}\n"
-                    f"URL: {result['url']\n"
+                    f"URL: {result['url']}\n"
                     f"Content: {result['content']}\n"
                 )
             
@@ -2105,7 +2106,7 @@ async def handle_text_analysis(
     
     file_context = ""
     if file_metadata:
-        file_context = f"\n\nFile Information:\n"
+        file_context = "\n\nFile Information:\n"
         for key, value in file_metadata.items():
             if key != "files":
                 file_context += f"- {key}: {value}\n"
