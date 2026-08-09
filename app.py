@@ -72,7 +72,7 @@ if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
 app = FastAPI(
     title="HeloxAi API",
     description="Advanced AI Assistant Backend - Free Media & Math Focused",
-    version="2.7.0" # Updated for HF Image Gen & Math/Translation Prompts
+    version="2.7.2" # Updated for streaming fixes
 )
 
 # CORS
@@ -95,6 +95,13 @@ active_streams: Dict[str, asyncio.Task] = {}
 _session_cache: Dict[str, Dict[str, Any]] = {}
 _session_cache_ttl = 300  # 5 minutes
 _session_cache_last_cleanup = time.time()
+
+# Standard headers to prevent proxy buffering (Fixes Load Failed)
+STREAM_HEADERS = {
+    "Cache-Control": "no-cache",
+    "Connection": "keep-alive",
+    "X-Accel-Buffering": "no"
+}
 
 # =========================
 # FILE TYPE DEFINITIONS
@@ -1787,6 +1794,13 @@ async def get_user(
     
     return user_obj
 
+async def _background_update_user_memory(user_id: str, old_memory: str, user_prompt: str, assistant_response: str):
+    """Wrapper for background task to update memory safely"""
+    try:
+        await update_user_memory(user_id, old_memory, user_prompt, assistant_response)
+    except Exception as e:
+        logger.error(f"Background memory update failed: {e}")
+
 async def update_user_memory(user_id: str, old_memory: str, user_prompt: str, assistant_response: str):
     memory_agent_prompt = """You are a memory management AI. Update the user's long-term memory based on the latest interaction.
 
@@ -1818,11 +1832,12 @@ Updated Memory:"""
     for attempt in range(max_retries):
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
+                # FIX: Using smaller model to prevent TPM conflicts
                 r = await client.post(
                     "https://api.groq.com/openai/v1/chat/completions",
                     headers=get_groq_headers(),
                     json={
-                        "model": "openai/gpt-oss-120b",
+                        "model": "llama-3.1-8b-instant", 
                         "messages": messages,
                         "max_tokens": 300,
                         "temperature": 0.1
@@ -1902,7 +1917,7 @@ async def perform_web_search(query: str) -> Dict[str, Any]:
             for result in data.get("results", []):
                 formatted_results.append(
                     f"Source Title: {result['title']}\n"
-                    f"URL: {result['url']}\n"
+                    f"URL: {result['url']\n"
                     f"Content: {result['content']}\n"
                 )
             
@@ -2130,7 +2145,7 @@ Preserve important technical details.{file_context}"""
                 logger.error(f"Text analysis stream error: {e}")
                 yield sse({"type": "error", "message": "Analysis failed."})
 
-        return StreamingResponse(gen(), media_type="text/event-stream")
+        return StreamingResponse(gen(), media_type="text/event-stream", headers=STREAM_HEADERS)
 
     async with httpx.AsyncClient() as client:
         r = await client.post(
@@ -2179,7 +2194,7 @@ async def handle_image_analysis(image_bytes: bytes, stream: bool, user_prompt: s
                 logger.error(f"Image analysis stream error: {e}")
                 yield sse({"type": "error", "message": "Analysis failed."})
 
-        return StreamingResponse(gen(), media_type="text/event-stream")
+        return StreamingResponse(gen(), media_type="text/event-stream", headers=STREAM_HEADERS)
 
     return {"analysis": result}
 
@@ -2224,14 +2239,11 @@ async def get_history(conv_id: str, limit: int = 50):
     
     return [{"role": m["role"], "content": m["content"]} for m in final_messages]
 
-async def stream_groq_chat(
-    messages: list,
-    model: str = "openai/gpt-oss-120b",
-    max_tokens: int = 2500,   # ← was 8192; keep total input+output < 8000 TPM
-):
-    max_retries = 2
+async def stream_groq_chat(messages: list, model: str = "openai/gpt-oss-120b", max_tokens: int = 2500):
+    # FIX: Reduced max_tokens from 8192 to 2500 to prevent 413 TPM errors
+    max_retries = 3
     base_wait = 5
-
+    
     for attempt in range(max_retries):
         try:
             async with httpx.AsyncClient(timeout=None) as client:
@@ -2239,29 +2251,20 @@ async def stream_groq_chat(
                     "POST",
                     "https://api.groq.com/openai/v1/chat/completions",
                     headers=get_groq_headers(),
-                    json={
-                        "model": model,
-                        "messages": messages,
-                        "stream": True,
-                        "max_tokens": max_tokens
-                    }
+                    json={"model": model, "messages": messages, "stream": True, "max_tokens": max_tokens}
                 ) as resp:
-
-                    # Handle 429 AND 413 (TPM/payload limits)
+                    
+                    # FIX: Handle 413 TPM limit explicitly and fallback to a smaller model
                     if resp.status_code in (429, 413):
-                        logger.warning(
-                            f"Groq limit hit ({resp.status_code}). "
-                            f"Attempt {attempt+1}/{max_retries}."
-                        )
-                        # Fallback to a faster, cheaper model with smaller TPM footprint
-                        if model == "openai/gpt-oss-120b":
-                            logger.info("Falling back to llama-3.1-8b-instant")
+                        logger.warning(f"Groq limit hit ({resp.status_code}). Attempt {attempt+1}/{max_retries}.")
+                        if model == "openai/gpt-oss-120b" and resp.status_code == 413:
+                            logger.info("Falling back to llama-3.1-8b-instant due to TPM limit")
                             model = "llama-3.1-8b-instant"
                             max_tokens = min(max_tokens, 1500)
                             await asyncio.sleep(2)
                             continue
                         await asyncio.sleep(base_wait * (attempt + 1))
-                        continue
+                        continue 
 
                     if resp.status_code != 200:
                         error_text = await resp.aread()
@@ -2271,25 +2274,22 @@ async def stream_groq_chat(
                     async for line in resp.aiter_lines():
                         if line.startswith("data: "):
                             data = line[6:]
-                            if data == "[DONE]":
-                                return
+                            if data == "[DONE]": return
                             try:
                                 chunk = json.loads(data)
                                 delta = chunk["choices"][0]["delta"].get("content")
-                                if delta:
-                                    yield delta
-                            except:
-                                pass
-                    return
-
+                                if delta: yield delta
+                            except: pass
+                    return 
+        
         except httpx.ConnectError:
             logger.error("Connection failed.")
             raise Exception("Connection failed.")
         except Exception as e:
             logger.error(f"Stream error: {e}")
-            if attempt == max_retries - 1:
-                raise e
-                
+            if attempt == max_retries - 1: raise e
+            await asyncio.sleep(2)
+
 async def handle_code_assistant(prompt: str, user: Dict[str, Any], conv_id: str, stream: bool):
     system_prompt = get_detector().get_code_system_prompt(prompt)
     
@@ -2318,14 +2318,16 @@ async def handle_code_assistant(prompt: str, user: Dict[str, Any], conv_id: str,
                     full_text += token
                     yield sse({"type": "token", "text": token})
 
-                asyncio.create_task(update_user_memory(user["id"], user_memory, prompt, full_text))
-
                 if conv_id:
                     try:
                         await save_message(user["id"], conv_id, "assistant", full_text)
                     except Exception as e:
                         logger.error(f"Failed to save assistant message: {e}")
+                        
                 yield sse({"type": "done"})
+
+                # FIX: Fire memory update in background so it doesn't block stream closure
+                asyncio.create_task(_background_update_user_memory(user["id"], user_memory, prompt, full_text))
             
             except Exception as e:
                 logger.error(f"Streaming Error: {e}")
@@ -2334,18 +2336,19 @@ async def handle_code_assistant(prompt: str, user: Dict[str, Any], conv_id: str,
             finally:
                 active_streams.pop(user["id"], None)
 
-        return StreamingResponse(gen(), media_type="text/event-stream")
+        return StreamingResponse(gen(), media_type="text/event-stream", headers=STREAM_HEADERS)
 
     async with httpx.AsyncClient(timeout=60) as client:
         r = await client.post(
             "https://api.groq.com/openai/v1/chat/completions",
             headers=get_groq_headers(),
-            json={"model": "openai/gpt-oss-120b", "messages": messages, "max_tokens": 8000}
+            # FIX: lower max_tokens
+            json={"model": "openai/gpt-oss-120b", "messages": messages, "max_tokens": 2500}
         )
         r.raise_for_status()
         reply = r.json()["choices"][0]["message"]["content"]
         
-        asyncio.create_task(update_user_memory(user["id"], user_memory, prompt, reply))
+        asyncio.create_task(_background_update_user_memory(user["id"], user_memory, prompt, reply))
 
     if conv_id:
         await save_message(user["id"], conv_id, "assistant", reply)
@@ -2381,7 +2384,7 @@ async def root():
     return {
         "status": "running",
         "service": "HeloxAi Backend",
-        "version": "2.7.0",
+        "version": "2.7.2",
         "features": {
             "intent_detection": "advanced",
             "user_recognition": "production-grade",
@@ -2435,7 +2438,7 @@ async def handle_image_generation(prompt: str, user: Dict[str, Any], conv_id: st
         if stream:
             async def err_gen():
                 yield sse({"type": "error", "message": msg})
-            return StreamingResponse(err_gen(), media_type="text/event-stream")
+            return StreamingResponse(err_gen(), media_type="text/event-stream", headers=STREAM_HEADERS)
         return {"error": msg}
 
     if not prompt or not prompt.strip(): 
@@ -2456,7 +2459,6 @@ async def handle_image_generation(prompt: str, user: Dict[str, Any], conv_id: st
                 if response.status_code != 200:
                     error_text = response.text
                     logger.error(f"HF API Error: {error_text}")
-                    # Often HF returns 503 if model is loading, or 500 for other issues
                     if response.status_code == 503:
                         yield sse({"type": "error", "message": "Model is loading, please try again in a few moments."})
                     else:
@@ -2475,6 +2477,15 @@ async def handle_image_generation(prompt: str, user: Dict[str, Any], conv_id: st
 
             yield sse({"type": "status", "message": "Finalizing..."})
             yield sse({"type": "images", "images": [{"url": secure_url, "revised_prompt": prompt}]})
+            
+            # Save the generated image message to database history
+            assistant_msg = f"![Generated Image]({secure_url})"
+            if conv_id:
+                try:
+                    await save_message(user["id"], conv_id, "assistant", assistant_msg)
+                except Exception as e:
+                    logger.error(f"Failed to save image gen assistant message: {e}")
+                    
             yield sse({"type": "done"})
 
         except Exception as e:
@@ -2482,7 +2493,7 @@ async def handle_image_generation(prompt: str, user: Dict[str, Any], conv_id: st
             yield sse({"type": "error", "message": str(e)})
 
     if stream:
-        return StreamingResponse(event_gen(), media_type="text/event-stream")
+        return StreamingResponse(event_gen(), media_type="text/event-stream", headers=STREAM_HEADERS)
     
     return {"error": "Non-streaming mode not implemented."}
     
@@ -2493,7 +2504,7 @@ async def handle_video_generation(prompt: str, user: Dict[str, Any], conv_id: st
     """
     if not HUGGINGFACE_API_TOKEN:
         async def err_gen(): yield sse({"type": "error", "message": "API Keys missing."})
-        return StreamingResponse(err_gen(), media_type="text/event-stream")
+        return StreamingResponse(err_gen(), media_type="text/event-stream", headers=STREAM_HEADERS)
 
     headers = {"Authorization": f"Bearer {HUGGINGFACE_API_TOKEN}"}
 
@@ -2548,6 +2559,15 @@ async def handle_video_generation(prompt: str, user: Dict[str, Any], conv_id: st
                 video_url = await upload_bytes_to_storage(video_bytes, filename, "video/mp4")
 
                 yield sse({"type": "video", "url": video_url})
+                
+                # Save the generated video message to database history
+                assistant_msg = f"[Generated Video]({video_url})"
+                if conv_id:
+                    try:
+                        await save_message(user["id"], conv_id, "assistant", assistant_msg)
+                    except Exception as e:
+                        logger.error(f"Failed to save video gen assistant message: {e}")
+
                 yield sse({"type": "done"})
 
         except Exception as e:
@@ -2558,7 +2578,7 @@ async def handle_video_generation(prompt: str, user: Dict[str, Any], conv_id: st
             if tmp_img_path and os.path.exists(tmp_img_path):
                 os.remove(tmp_img_path)
 
-    return StreamingResponse(gen(), media_type="text/event-stream")
+    return StreamingResponse(gen(), media_type="text/event-stream", headers=STREAM_HEADERS)
 
 # =========================
 # MAIN ENDPOINT (UPDATED FOR CHATGPT FEELING)
@@ -2611,40 +2631,16 @@ async def ask_universal(req: Request, res: Response):
     user = await get_user(req, res, remember=remember)
 
     # =========================
-    # INTENT DETECTION & ROUTING (FIXED)
+    # INTENT DETECTION & ROUTING
     # =========================
     
     intent = detect_intent(prompt)
     
     if intent:
         logger.info(f"Intent Detected: {intent.intent.value} (Confidence: {intent.confidence:.2f})")
-        
-        if intent.intent == IntentCategory.IMAGE_GENERATION:
-            logger.info("Routing to Image Generation Handler (Free HF)")
-            return await handle_image_generation(prompt, user, conv_id, stream)
-            
-        elif intent.intent == IntentCategory.VIDEO_GENERATION:
-            logger.info("Routing to Video Generation Handler (Free HF)")
-            return await handle_video_generation(prompt, user, conv_id, stream)
-            
-        elif intent.intent in [IntentCategory.CODE_GENERATION, IntentCategory.CODE_DEBUG, IntentCategory.CODE_REVIEW]:
-             logger.info("Routing to Code Assistant")
-             return await handle_code_assistant(prompt, user, conv_id, stream)
-
-    # =========================
-    # CONVERSATION HANDLING (Text/Code/Search/Math/Translation)
-    # =========================
     
-    needs_search = False
-    if intent and intent.intent == IntentCategory.RESEARCH:
-        needs_search = True
-    
-    search_keywords = ["latest", "news", "current", "recent", "today", "who is", "what is", "price", "weather", "stock"]
-    if any(kw in prompt.lower() for kw in search_keywords):
-        needs_search = True
-
+    # Pre-check/create conversation and save user prompt globally before routing
     conversation_exists = False
-    
     if conv_id:
         check = await _execute_supabase_with_retry(
             supabase.table("conversations")
@@ -2682,6 +2678,32 @@ async def ask_universal(req: Request, res: Response):
         )
 
     await save_message(user["id"], conv_id, "user", prompt)
+
+    # Route to specific handlers
+    if intent:
+        if intent.intent == IntentCategory.IMAGE_GENERATION:
+            logger.info("Routing to Image Generation Handler (Free HF)")
+            return await handle_image_generation(prompt, user, conv_id, stream)
+            
+        elif intent.intent == IntentCategory.VIDEO_GENERATION:
+            logger.info("Routing to Video Generation Handler (Free HF)")
+            return await handle_video_generation(prompt, user, conv_id, stream)
+            
+        elif intent.intent in [IntentCategory.CODE_GENERATION, IntentCategory.CODE_DEBUG, IntentCategory.CODE_REVIEW]:
+             logger.info("Routing to Code Assistant")
+             return await handle_code_assistant(prompt, user, conv_id, stream)
+
+    # =========================
+    # CONVERSATION HANDLING (Text/Code/Search/Math/Translation)
+    # =========================
+    
+    needs_search = False
+    if intent and intent.intent == IntentCategory.RESEARCH:
+        needs_search = True
+    
+    search_keywords = ["latest", "news", "current", "recent", "today", "who is", "what is", "price", "weather", "stock"]
+    if any(kw in prompt.lower() for kw in search_keywords):
+        needs_search = True
 
     if stream:
         async def event_gen():
@@ -2740,13 +2762,18 @@ INSTRUCTIONS: Use the above web results to answer the user's question. Use Markd
                     full_text += token
                     yield sse({"type": "token", "text": token})
 
-                asyncio.create_task(
-                    update_user_memory(user["id"], user_memory, prompt, full_text)
-                )
+                # Save to DB (fast)
+                if conv_id:
+                    try:
+                        await save_message(user["id"], conv_id, "assistant", full_text)
+                    except Exception as e:
+                        logger.error(f"Failed to save assistant message: {e}")
 
-                await save_message(user["id"], conv_id, "assistant", full_text)
-
+                # Tell frontend we are done IMMEDIATELY
                 yield sse({"type": "done"})
+
+                # Update memory in background (slow) - Doesn't block stream closing
+                asyncio.create_task(_background_update_user_memory(user["id"], user_memory, prompt, full_text))
 
             except Exception as e:
                 logger.error(f"Stream error: {e}")
@@ -2754,7 +2781,7 @@ INSTRUCTIONS: Use the above web results to answer the user's question. Use Markd
             finally:
                 active_streams.pop(user["id"], None)
 
-        return StreamingResponse(event_gen(), media_type="text/event-stream")
+        return StreamingResponse(event_gen(), media_type="text/event-stream", headers=STREAM_HEADERS)
 
     else:
         search_context = ""
@@ -2780,14 +2807,12 @@ INSTRUCTIONS: Use the above web results to answer the user's question. Use Markd
             r = await groq_request_with_retry(client, {
                 "model": "openai/gpt-oss-120b",
                 "messages": full_history,
-                "max_tokens": 1024
+                "max_tokens": 2500 # FIX: Lowered
             })
 
         reply = r.json()["choices"][0]["message"]["content"]
 
-        asyncio.create_task(
-            update_user_memory(user["id"], user.get("memory", ""), prompt, reply)
-        )
+        asyncio.create_task(_background_update_user_memory(user["id"], user.get("memory", ""), prompt, reply))
 
         await save_message(user["id"], conv_id, "assistant", reply)
 
@@ -2929,7 +2954,7 @@ async def handle_visual_analysis(visual_items: list, stream: bool, user_prompt: 
                 logger.error(f"Visual analysis stream error: {e}")
                 yield sse({"type": "error", "message": "Analysis failed."})
 
-        return StreamingResponse(gen(), media_type="text/event-stream")
+        return StreamingResponse(gen(), media_type="text/event-stream", headers=STREAM_HEADERS)
     
     return {"analysis": "Visual analysis completed."}
 
@@ -3010,7 +3035,7 @@ Be organized and clear in your analysis."""
                 logger.error(f"Archive analysis stream error: {e}")
                 yield sse({"type": "error", "message": "Analysis failed."})
 
-        return StreamingResponse(gen(), media_type="text/event-stream")
+        return StreamingResponse(gen(), media_type="text/event-stream", headers=STREAM_HEADERS)
 
     async with httpx.AsyncClient() as client:
         r = await client.post(
@@ -3168,16 +3193,24 @@ async def groq_request_with_retry(client, payload):
             r.raise_for_status()
             return r
         except httpx.HTTPStatusError as e:
-            if e.response.status_code == 429:
+            # FIX: Handle 413 explicitly alongside 429
+            if e.response.status_code in (429, 413):
+                logger.warning(f"Groq limit hit ({e.response.status_code}). Retrying {attempt + 1}/{max_retries}...")
+                
+                # Fallback to smaller model if 413 TPM limit
+                if e.response.status_code == 413 and payload.get("model") == "openai/gpt-oss-120b":
+                    logger.info("Falling back to llama-3.1-8b-instant for non-stream request")
+                    payload["model"] = "llama-3.1-8b-instant"
+                    payload["max_tokens"] = min(payload.get("max_tokens", 1024), 1500)
+                    continue
+                    
                 error_text = e.response.text
                 match = re.search(r"Please try again in (\d+\.\d+)s", error_text)
-                
                 if match:
                     wait_time = float(match.group(1))
                 else:
                     wait_time = 10.0
 
-                logger.warning(f"429 non-stream. Waiting {wait_time}s before retry {attempt + 1}/{max_retries}...")
                 await asyncio.sleep(wait_time)
             else:
                 raise
@@ -3253,14 +3286,15 @@ async def regenerate(req: Request, res: Response):
                 full_text += token
                 yield sse({"type": "token", "text": token})
 
-            asyncio.create_task(update_user_memory(user["id"], user_memory, last_prompt, full_text))
-
             try:
                 await save_message(user_id, conv_id, "assistant", full_text)
             except Exception as e:
                 logger.error(f"Failed to save assistant message: {e}")
 
             yield sse({"type": "done"})
+            
+            # Update memory in background
+            asyncio.create_task(_background_update_user_memory(user["id"], user_memory, last_prompt, full_text))
         
         except Exception as e:
             logger.error(f"Regenerate Stream Error: {e}")
@@ -3269,7 +3303,7 @@ async def regenerate(req: Request, res: Response):
         finally:
             active_streams.pop(user_id, None)
 
-    return StreamingResponse(event_gen(), media_type="text/event-stream")
+    return StreamingResponse(event_gen(), media_type="text/event-stream", headers=STREAM_HEADERS)
 
 @app.get("/chats")
 async def list_chats(req: Request, res: Response):
@@ -3386,7 +3420,7 @@ async def text_to_speech(req: Request):
                 async for chunk in response.aiter_bytes():
                     yield chunk
 
-    return StreamingResponse(stream_audio(), media_type="audio/mpeg")
+    return StreamingResponse(stream_audio(), media_type="audio/mpeg", headers=STREAM_HEADERS)
 
 @app.get("/tts/voices")
 async def get_voices():
