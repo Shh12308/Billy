@@ -2828,7 +2828,7 @@ async def ask_universal(req: Request, res: Response):
     # ============================================================
     # STREAMING RESPONSE
     # ============================================================
-        if stream:
+    if stream:
         async def event_gen():
             full_text = ""
             try:
