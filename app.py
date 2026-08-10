@@ -2922,14 +2922,9 @@ Do not invent facts that contradict the results.
                     if not token:
                         continue
                     full_text += token
-                    # IMPORTANT:
-                    # Your existing frontend expects raw text.
-                    #
-                    # Frontend:
-                    # full += chunk
-                    #
-                    # Therefore DO NOT use sse() here.
-                    yield token
+                    # FIX: Yield as SSE format so frontend can parse it properly
+                    yield sse({"type": "token", "text": token})
+                
                 # =================================================
                 # STREAM FINISHED
                 # =================================================
@@ -3000,27 +2995,16 @@ Do not invent facts that contradict the results.
                     "Universal stream failed: %s",
                     e
                 )
-                # Frontend expects plain text,
-                # so return the error as plain text.
-                yield (
-                    "\n\n**Error:** "
-                    + str(e)
-                )
+                # FIX: Return error in SSE format
+                yield sse({"type": "error", "message": "An error occurred processing your request."})
+        
+        # FIX: Use text/event-stream and standard headers so proxy buffering doesn't break it
         return StreamingResponse(
             event_gen(),
-            media_type="text/plain; charset=utf-8",
-            headers={
-                "Cache-Control": (
-                    "no-cache, "
-                    "no-store, "
-                    "must-revalidate"
-                ),
-                "Pragma": "no-cache",
-                "Expires": "0",
-                "X-Accel-Buffering": "no",
-                "Connection": "keep-alive"
-            }
+            media_type="text/event-stream",
+            headers=STREAM_HEADERS
         )
+        
     # ============================================================
     # NON-STREAMING RESPONSE
     # ============================================================
