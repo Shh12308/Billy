@@ -2587,85 +2587,147 @@ async def handle_video_generation(prompt: str, user: Dict[str, Any], conv_id: st
 
 @app.post("/ask/universal")
 async def ask_universal(req: Request, res: Response):
-    content_type = req.headers.get("content-type", "")
-    
+    content_type = req.headers.get("content-type", "").lower()
     remember = True
     body = {}
-    
+    # ============================================================
+    # PARSE REQUEST
+    # ============================================================
     if "application/json" in content_type:
         try:
             body = await req.json()
-            remember = body.get("remember", True)
         except Exception:
-            raise HTTPException(400, "Invalid JSON")
-
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid JSON"
+            )
+        remember = body.get("remember", True)
     elif "multipart/form-data" in content_type:
         form = await req.form()
         body = dict(form)
-        remember = body.get("remember", True)
-
+        remember = form.get("remember", True)
         if "file" in form:
             file: UploadFile = form["file"]
             content = await file.read()
-
-            logger.info(f"File upload: {file.filename}")
-
-            if file.content_type and file.content_type.startswith("image/"):
-                return await handle_image_analysis(content, stream=True)
-
-            result = await extract_file_content(content, file.filename)
+            logger.info(
+                f"File upload: {file.filename}"
+            )
+            # ----------------------------------------------------
+            # IMAGE
+            # ----------------------------------------------------
+            if (
+                file.content_type
+                and file.content_type.startswith("image/")
+            ):
+                return await handle_image_analysis(
+                    content,
+                    stream=True
+                )
+            # ----------------------------------------------------
+            # OTHER FILES
+            # ----------------------------------------------------
+            result = await extract_file_content(
+                content,
+                file.filename
+            )
             return await handle_text_analysis(
                 result.content,
                 stream=True,
                 file_metadata=result.metadata
             )
     else:
-        raise HTTPException(415, f"Unsupported content-type: {content_type}")
-
+        raise HTTPException(
+            status_code=415,
+            detail=f"Unsupported content-type: {content_type}"
+        )
+    # ============================================================
+    # REQUEST VALUES
+    # ============================================================
     prompt = body.get("prompt", "")
     conv_id = body.get("conversation_id")
     stream = body.get("stream", True)
-
+    # Handle string values from multipart/form-data
+    if isinstance(stream, str):
+        stream = stream.lower() not in (
+            "false",
+            "0",
+            "no"
+        )
     if not prompt:
-        raise HTTPException(400, "Prompt required")
-
-    user = await get_user(req, res, remember=remember)
-
-    # =========================
-    # INTENT DETECTION & ROUTING
-    # =========================
-    
+        raise HTTPException(
+            status_code=400,
+            detail="Prompt required"
+        )
+    # ============================================================
+    # AUTH / USER
+    # ============================================================
+    user = await get_user(
+        req,
+        res,
+        remember=remember
+    )
+    if not user or not user.get("id"):
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication required"
+        )
+    user_id = user["id"]
+    # ============================================================
+    # INTENT DETECTION
+    # ============================================================
     intent = detect_intent(prompt)
-    
     if intent:
-        logger.info(f"Intent Detected: {intent.intent.value} (Confidence: {intent.confidence:.2f})")
-    
-    # Pre-check/create conversation and save user prompt globally before routing
+        logger.info(
+            "Intent Detected: %s (Confidence: %.2f)",
+            intent.intent.value,
+            intent.confidence
+        )
+    # ============================================================
+    # CONVERSATION
+    # ============================================================
     conversation_exists = False
     if conv_id:
-        check = await _execute_supabase_with_retry(
-            supabase.table("conversations")
-            .select("id")
-            .eq("id", conv_id)
-            .eq("user_id", user["id"])
-            .limit(1)
-        )
-        if check.data:
-            conversation_exists = True
-        else:
-            logger.warning(f"Conversation {conv_id} not found. Creating new.")
+        try:
+            check = await _execute_supabase_with_retry(
+                supabase
+                .table("conversations")
+                .select("id")
+                .eq("id", conv_id)
+                .eq("user_id", user_id)
+                .limit(1)
+            )
+            if check.data:
+                conversation_exists = True
+            else:
+                logger.warning(
+                    "Conversation %s not found. Creating new.",
+                    conv_id
+                )
+                conv_id = None
+        except Exception as e:
+            logger.exception(
+                "Conversation lookup failed: %s",
+                e
+            )
             conv_id = None
-
+    # ------------------------------------------------------------
+    # CREATE CONVERSATION ID
+    # ------------------------------------------------------------
     if not conv_id:
         conv_id = str(uuid.uuid4())
-
-    now_iso = datetime.now(timezone.utc).isoformat()
-
+    now_iso = datetime.now(
+        timezone.utc
+    ).isoformat()
+    # ------------------------------------------------------------
+    # CREATE / UPDATE CONVERSATION
+    # ------------------------------------------------------------
     if not conversation_exists:
         await _execute_supabase_with_retry(
-            supabase.table("conversations").insert({
+            supabase
+            .table("conversations")
+            .insert({
                 "id": conv_id,
-                "user_id": user["id"],
+                "user_id": user_id,
                 "title": prompt[:30],
                 "created_at": now_iso,
                 "updated_at": now_iso
@@ -2673,152 +2735,480 @@ async def ask_universal(req: Request, res: Response):
         )
     else:
         await _execute_supabase_with_retry(
-            supabase.table("conversations").update({
+            supabase
+            .table("conversations")
+            .update({
                 "updated_at": now_iso
-            }).eq("id", conv_id)
+            })
+            .eq("id", conv_id)
         )
-
-    await save_message(user["id"], conv_id, "user", prompt)
-
-    # Route to specific handlers
+    # ============================================================
+    # SAVE USER MESSAGE
+    # ============================================================
+    await save_message(
+        user_id,
+        conv_id,
+        "user",
+        prompt
+    )
+    # ============================================================
+    # SPECIAL ROUTING
+    # ============================================================
     if intent:
+        # --------------------------------------------------------
+        # IMAGE GENERATION
+        # --------------------------------------------------------
         if intent.intent == IntentCategory.IMAGE_GENERATION:
-            logger.info("Routing to Image Generation Handler (Free HF)")
-            return await handle_image_generation(prompt, user, conv_id, stream)
-            
+            logger.info(
+                "Routing to Image Generation Handler"
+            )
+            return await handle_image_generation(
+                prompt,
+                user,
+                conv_id,
+                stream
+            )
+        # --------------------------------------------------------
+        # VIDEO GENERATION
+        # --------------------------------------------------------
         elif intent.intent == IntentCategory.VIDEO_GENERATION:
-            logger.info("Routing to Video Generation Handler (Free HF)")
-            return await handle_video_generation(prompt, user, conv_id, stream)
-            
-        elif intent.intent in [IntentCategory.CODE_GENERATION, IntentCategory.CODE_DEBUG, IntentCategory.CODE_REVIEW]:
-             logger.info("Routing to Code Assistant")
-             return await handle_code_assistant(prompt, user, conv_id, stream)
-
-    # =========================
-    # CONVERSATION HANDLING (Text/Code/Search/Math/Translation)
-    # =========================
-    
+            logger.info(
+                "Routing to Video Generation Handler"
+            )
+            return await handle_video_generation(
+                prompt,
+                user,
+                conv_id,
+                stream
+            )
+        # --------------------------------------------------------
+        # CODE
+        # --------------------------------------------------------
+        elif intent.intent in [
+            IntentCategory.CODE_GENERATION,
+            IntentCategory.CODE_DEBUG,
+            IntentCategory.CODE_REVIEW
+        ]:
+            logger.info(
+                "Routing to Code Assistant"
+            )
+            return await handle_code_assistant(
+                prompt,
+                user,
+                conv_id,
+                stream
+            )
+    # ============================================================
+    # SEARCH DETECTION
+    # ============================================================
     needs_search = False
-    if intent and intent.intent == IntentCategory.RESEARCH:
+    if (
+        intent
+        and intent.intent == IntentCategory.RESEARCH
+    ):
         needs_search = True
-    
-    search_keywords = ["latest", "news", "current", "recent", "today", "who is", "what is", "price", "weather", "stock"]
-    if any(kw in prompt.lower() for kw in search_keywords):
+    search_keywords = [
+        "latest",
+        "news",
+        "current",
+        "recent",
+        "today",
+        "who is",
+        "what is",
+        "price",
+        "weather",
+        "stock"
+    ]
+    prompt_lower = prompt.lower()
+    if any(
+        keyword in prompt_lower
+        for keyword in search_keywords
+    ):
         needs_search = True
-
+    # ============================================================
+    # STREAMING RESPONSE
+    # ============================================================
     if stream:
         async def event_gen():
             task = asyncio.current_task()
-            active_streams[user["id"]] = task
-
+            active_streams[user_id] = task
+            full_text = ""
             try:
-                full_text = ""
-                
+                # =================================================
+                # SEARCH
+                # =================================================
                 search_context = ""
                 if needs_search:
-                    yield sse({"type": "status", "message": "Searching the web..."})
-                    
-                    search_data = await perform_web_search(prompt)
-                    search_context = search_data.get("text_context", "")
-                    search_images = search_data.get("images", [])
-                    
-                    if search_images:
-                        yield sse({"type": "images", "images": search_images[:3]})
-                    
-                    if not search_context:
-                        yield sse({"type": "status", "message": "No results found, answering from memory..."})
-                    else:
-                        yield sse({"type": "status", "message": "Reading results..."})
-
-                history = await get_history(conv_id)
+                    logger.info(
+                        "Performing web search for: %s",
+                        prompt
+                    )
+                    try:
+                        search_data = await perform_web_search(
+                            prompt
+                        )
+                        search_context = (
+                            search_data.get(
+                                "text_context",
+                                ""
+                            )
+                            if search_data
+                            else ""
+                        )
+                    except Exception as e:
+                        logger.exception(
+                            "Web search failed: %s",
+                            e
+                        )
+                        # Don't kill the chat just because
+                        # search failed.
+                        search_context = ""
+                # =================================================
+                # HISTORY
+                # =================================================
+                history = await get_history(
+                    conv_id
+                )
                 MAX_MESSAGES = 10
-                history = history[-MAX_MESSAGES:]
-
-                base_system = get_system_prompt(prompt)
-                
-                # Intent-Specific Prompt Engineering for Free Models (LLM)
+                if history:
+                    history = history[
+                        -MAX_MESSAGES:
+                    ]
+                else:
+                    history = []
+                # =================================================
+                # SYSTEM PROMPT
+                # =================================================
+                base_system = get_system_prompt(
+                    prompt
+                )
+                # -------------------------------------------------
+                # INTENT-SPECIFIC PROMPTS
+                # -------------------------------------------------
                 if intent:
-                    if intent.intent == IntentCategory.MATHEMATICAL:
-                        base_system += "\n\nYou are a mathematical expert. For any calculation or proof, think step-by-step. If the problem requires complex computation, output a Python script to solve it."
-                    elif intent.intent == IntentCategory.TRANSLATION:
-                        base_system += "\n\nYou are a professional translator. Provide accurate, context-aware translations. If the target language isn't specified, ask for it. Maintain the tone of the original text."
-                
-                user_memory = user.get("memory", "")
+                    if (
+                        intent.intent
+                        == IntentCategory.MATHEMATICAL
+                    ):
+                        base_system += """
+You are a mathematical expert.
+Give accurate calculations and explanations.
+For complex calculations, reason carefully and verify
+the result before answering.
+Do not invent mathematical results.
+"""
+                    elif (
+                        intent.intent
+                        == IntentCategory.TRANSLATION
+                    ):
+                        base_system += """
+You are a professional translator.
+Provide accurate, natural and context-aware translations.
+Preserve the meaning, tone and formatting of the original.
+If the target language is not specified and cannot be
+reasonably inferred, ask the user which language they want.
+"""
+                # =================================================
+                # USER MEMORY
+                # =================================================
+                user_memory = user.get(
+                    "memory",
+                    ""
+                )
                 if user_memory:
-                    base_system += f"\n\nUser Context: {user_memory}"
-                
+                    base_system += (
+                        "\n\nUSER CONTEXT:\n"
+                        + str(user_memory)
+                    )
+                # =================================================
+                # WEB RESULTS
+                # =================================================
                 if search_context:
                     base_system += f"""
-
 CURRENT WEB RESULTS:
 {search_context}
-
-INSTRUCTIONS: Use the above web results to answer the user's question. Use Markdown formatting (paragraphs, bold text) and cite the sources provided above."""
-
-                full_history = [{"role": "system", "content": base_system}] + history
-
-                async for token in stream_groq_chat(full_history):
+Use the web results above when answering the user.
+Do not contradict reliable information from these results.
+If the results do not contain the answer, say so rather
+than inventing information.
+"""
+                # =================================================
+                # BUILD MODEL HISTORY
+                # =================================================
+                full_history = [
+                    {
+                        "role": "system",
+                        "content": base_system
+                    }
+                ] + history
+                logger.info(
+                    "Starting model stream for conversation %s",
+                    conv_id
+                )
+                # =================================================
+                # MODEL STREAM
+                # =================================================
+                async for token in stream_groq_chat(
+                    full_history
+                ):
+                    # User pressed stop
                     if task.cancelled():
+                        logger.info(
+                            "Stream cancelled for user %s",
+                            user_id
+                        )
                         break
+                    if token is None:
+                        continue
+                    token = str(token)
+                    if not token:
+                        continue
                     full_text += token
-                    yield sse({"type": "token", "text": token})
-
-                # Save to DB (fast)
-                if conv_id:
+                    # =================================================
+                    # IMPORTANT
+                    #
+                    # Your frontend currently does:
+                    #
+                    # full += chunk
+                    #
+                    # Therefore we send RAW TEXT.
+                    #
+                    # DO NOT send:
+                    #
+                    # sse(...)
+                    #
+                    # DO NOT send JSON.
+                    # =================================================
+                    yield token
+                # =================================================
+                # SAVE ASSISTANT RESPONSE
+                # =================================================
+                if full_text.strip():
                     try:
-                        await save_message(user["id"], conv_id, "assistant", full_text)
+                        await save_message(
+                            user_id,
+                            conv_id,
+                            "assistant",
+                            full_text
+                        )
                     except Exception as e:
-                        logger.error(f"Failed to save assistant message: {e}")
-
-                # Tell frontend we are done IMMEDIATELY
-                yield sse({"type": "done"})
-
-                # Update memory in background (slow) - Doesn't block stream closing
-                asyncio.create_task(_background_update_user_memory(user["id"], user_memory, prompt, full_text))
-
+                        logger.exception(
+                            "Failed to save assistant message: %s",
+                            e
+                        )
+                # =================================================
+                # UPDATE MEMORY IN BACKGROUND
+                # =================================================
+                try:
+                    asyncio.create_task(
+                        _background_update_user_memory(
+                            user_id,
+                            user_memory,
+                            prompt,
+                            full_text
+                        )
+                    )
+                except Exception as e:
+                    logger.exception(
+                        "Failed to schedule memory update: %s",
+                        e
+                    )
+            except asyncio.CancelledError:
+                logger.info(
+                    "Generation cancelled for user %s",
+                    user_id
+                )
+                # Do not send an error to the frontend.
+                # The browser intentionally cancelled the request.
+                raise
             except Exception as e:
-                logger.error(f"Stream error: {e}")
-                yield sse({"type": "error", "message": "Processing failed"})
+                logger.exception(
+                    "Stream error for user %s: %s",
+                    user_id,
+                    e
+                )
+                # Since the frontend expects plain text,
+                # return the error as text instead of SSE JSON.
+                error_text = (
+                    "\n\n**Error:** "
+                    + str(e)
+                )
+                yield error_text
             finally:
-                active_streams.pop(user["id"], None)
-
-        return StreamingResponse(event_gen(), media_type="text/event-stream", headers=STREAM_HEADERS)
-
+                active_streams.pop(
+                    user_id,
+                    None
+                )
+        # ========================================================
+        # STREAM RESPONSE
+        # ========================================================
+        return StreamingResponse(
+            event_gen(),
+            media_type="text/plain; charset=utf-8",
+            headers={
+                "Cache-Control": (
+                    "no-cache, "
+                    "no-store, "
+                    "must-revalidate"
+                ),
+                "Pragma": "no-cache",
+                "Expires": "0",
+                # Prevent nginx from buffering
+                "X-Accel-Buffering": "no",
+                # Keep streaming connection alive
+                "Connection": "keep-alive"
+            }
+        )
+    # ============================================================
+    # NON-STREAMING RESPONSE
+    # ============================================================
+    search_context = ""
+    if needs_search:
+        try:
+            search_data = await perform_web_search(
+                prompt
+            )
+            search_context = (
+                search_data.get(
+                    "text_context",
+                    ""
+                )
+                if search_data
+                else ""
+            )
+        except Exception as e:
+            logger.exception(
+                "Web search failed: %s",
+                e
+            )
+            search_context = ""
+    # ============================================================
+    # HISTORY
+    # ============================================================
+    history = await get_history(
+        conv_id
+    )
+    if history:
+        history = history[-10:]
     else:
-        search_context = ""
-        if needs_search:
-            search_data = await perform_web_search(prompt)
-            search_context = search_data.get("text_context", "")
-        
-        history = await get_history(conv_id)
-        base_system = get_system_prompt(prompt)
-        
-        if intent:
-            if intent.intent == IntentCategory.MATHEMATICAL:
-                base_system += "\n\nYou are a mathematical expert. Think step-by-step."
-            elif intent.intent == IntentCategory.TRANSLATION:
-                base_system += "\n\nYou are a professional translator."
-
-        if user.get("memory"): base_system += f"\n\nUser Context: {user['memory']}"
-        if search_context: base_system += f"\n\nWEB RESULTS:\n{search_context}"
-        
-        full_history = [{"role": "system", "content": base_system}] + history
-        
+        history = []
+    # ============================================================
+    # SYSTEM PROMPT
+    # ============================================================
+    base_system = get_system_prompt(
+        prompt
+    )
+    if intent:
+        if (
+            intent.intent
+            == IntentCategory.MATHEMATICAL
+        ):
+            base_system += """
+You are a mathematical expert.
+Give accurate calculations and explanations.
+"""
+        elif (
+            intent.intent
+            == IntentCategory.TRANSLATION
+        ):
+            base_system += """
+You are a professional translator.
+Provide accurate, natural and context-aware translations.
+"""
+    # ============================================================
+    # MEMORY
+    # ============================================================
+    user_memory = user.get(
+        "memory",
+        ""
+    )
+    if user_memory:
+        base_system += (
+            "\n\nUSER CONTEXT:\n"
+            + str(user_memory)
+        )
+    # ============================================================
+    # SEARCH RESULTS
+    # ============================================================
+    if search_context:
+        base_system += (
+            "\n\nWEB RESULTS:\n"
+            + search_context
+        )
+    # ============================================================
+    # MODEL REQUEST
+    # ============================================================
+    full_history = [
+        {
+            "role": "system",
+            "content": base_system
+        }
+    ] + history
+    try:
         async with httpx.AsyncClient() as client:
-            r = await groq_request_with_retry(client, {
-                "model": "openai/gpt-oss-120b",
-                "messages": full_history,
-                "max_tokens": 2500 # FIX: Lowered
-            })
-
-        reply = r.json()["choices"][0]["message"]["content"]
-
-        asyncio.create_task(_background_update_user_memory(user["id"], user.get("memory", ""), prompt, reply))
-
-        await save_message(user["id"], conv_id, "assistant", reply)
-
-        return {"reply": reply}
-
+            r = await groq_request_with_retry(
+                client,
+                {
+                    "model": "openai/gpt-oss-120b",
+                    "messages": full_history,
+                    "max_tokens": 2500
+                }
+            )
+        r.raise_for_status()
+        response_data = r.json()
+        reply = (
+            response_data
+            .get("choices", [{}])[0]
+            .get("message", {})
+            .get("content", "")
+        )
+        if not reply:
+            raise RuntimeError(
+                "Model returned an empty response"
+            )
+    except Exception as e:
+        logger.exception(
+            "Non-streaming model request failed: %s",
+            e
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="AI generation failed"
+        )
+    # ============================================================
+    # SAVE ASSISTANT RESPONSE
+    # ============================================================
+    await save_message(
+        user_id,
+        conv_id,
+        "assistant",
+        reply
+    )
+    # ============================================================
+    # MEMORY UPDATE
+    # ============================================================
+    try:
+        asyncio.create_task(
+            _background_update_user_memory(
+                user_id,
+                user_memory,
+                prompt,
+                reply
+            )
+        )
+    except Exception as e:
+        logger.exception(
+            "Failed to schedule memory update: %s",
+            e
+        )
+    # ============================================================
+    # FRONTEND EXPECTS reply / response / content / result / message
+    # ============================================================
+    return {
+        "reply": reply,
+        "conversation_id": conv_id
+    }
+    
 # =========================
 # UPDATED ANALYSIS ENDPOINT
 # =========================
