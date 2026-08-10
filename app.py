@@ -2829,236 +2829,269 @@ async def ask_universal(req: Request, res: Response):
     # STREAMING RESPONSE
     # ============================================================
     if stream:
-        async def event_gen():
-            task = asyncio.current_task()
-            active_streams[user_id] = task
-            full_text = ""
-            try:
-                # =================================================
-                # SEARCH
-                # =================================================
-                search_context = ""
-                if needs_search:
-                    logger.info(
-                        "Performing web search for: %s",
-                        prompt
+
+    async def event_gen():
+        full_text = ""
+
+        try:
+            logger.info(
+                "Starting model stream for conversation %s",
+                conv_id
+            )
+
+            # =====================================================
+            # SEARCH
+            # =====================================================
+
+            search_context = ""
+
+            if needs_search:
+                try:
+                    search_data = await perform_web_search(prompt)
+
+                    if search_data:
+                        search_context = search_data.get(
+                            "text_context",
+                            ""
+                        )
+
+                except Exception as e:
+                    logger.exception(
+                        "Web search failed: %s",
+                        e
                     )
-                    try:
-                        search_data = await perform_web_search(
-                            prompt
-                        )
-                        search_context = (
-                            search_data.get(
-                                "text_context",
-                                ""
-                            )
-                            if search_data
-                            else ""
-                        )
-                    except Exception as e:
-                        logger.exception(
-                            "Web search failed: %s",
-                            e
-                        )
-                        # Don't kill the chat just because
-                        # search failed.
-                        search_context = ""
-                # =================================================
-                # HISTORY
-                # =================================================
-                history = await get_history(
-                    conv_id
-                )
-                MAX_MESSAGES = 10
-                if history:
-                    history = history[
-                        -MAX_MESSAGES:
-                    ]
-                else:
-                    history = []
-                # =================================================
-                # SYSTEM PROMPT
-                # =================================================
-                base_system = get_system_prompt(
-                    prompt
-                )
-                # -------------------------------------------------
-                # INTENT-SPECIFIC PROMPTS
-                # -------------------------------------------------
-                if intent:
-                    if (
-                        intent.intent
-                        == IntentCategory.MATHEMATICAL
-                    ):
-                        base_system += """
+
+            # =====================================================
+            # HISTORY
+            # =====================================================
+
+            history = await get_history(conv_id)
+
+            if history:
+                history = history[-10:]
+            else:
+                history = []
+
+            # =====================================================
+            # SYSTEM PROMPT
+            # =====================================================
+
+            base_system = get_system_prompt(prompt)
+
+            if intent:
+
+                if intent.intent == IntentCategory.MATHEMATICAL:
+
+                    base_system += """
 You are a mathematical expert.
 Give accurate calculations and explanations.
-For complex calculations, reason carefully and verify
-the result before answering.
-Do not invent mathematical results.
+Verify calculations carefully before answering.
 """
-                    elif (
-                        intent.intent
-                        == IntentCategory.TRANSLATION
-                    ):
-                        base_system += """
+
+                elif intent.intent == IntentCategory.TRANSLATION:
+
+                    base_system += """
 You are a professional translator.
 Provide accurate, natural and context-aware translations.
-Preserve the meaning, tone and formatting of the original.
-If the target language is not specified and cannot be
-reasonably inferred, ask the user which language they want.
+Preserve the original meaning and tone.
 """
-                # =================================================
-                # USER MEMORY
-                # =================================================
-                user_memory = user.get(
-                    "memory",
-                    ""
+
+            # =====================================================
+            # MEMORY
+            # =====================================================
+
+            user_memory = user.get("memory", "")
+
+            if user_memory:
+
+                base_system += (
+                    "\n\nUSER CONTEXT:\n"
+                    + str(user_memory)
                 )
-                if user_memory:
-                    base_system += (
-                        "\n\nUSER CONTEXT:\n"
-                        + str(user_memory)
-                    )
-                # =================================================
-                # WEB RESULTS
-                # =================================================
-                if search_context:
-                    base_system += f"""
-CURRENT WEB RESULTS:
-{search_context}
-Use the web results above when answering the user.
-Do not contradict reliable information from these results.
-If the results do not contain the answer, say so rather
-than inventing information.
+
+            # =====================================================
+            # WEB RESULTS
+            # =====================================================
+
+            if search_context:
+
+                base_system += (
+                    "\n\nCURRENT WEB RESULTS:\n"
+                    + search_context
+                    + """
+
+Use the web results when answering the user's question.
+Do not invent facts that contradict the results.
 """
-                # =================================================
-                # BUILD MODEL HISTORY
-                # =================================================
-                full_history = [
-                    {
-                        "role": "system",
-                        "content": base_system
-                    }
-                ] + history
-                logger.info(
-                    "Starting model stream for conversation %s",
-                    conv_id
                 )
-                # =================================================
-                # MODEL STREAM
-                # =================================================
-                async for token in stream_groq_chat(
-                    full_history
-                ):
-                    # User pressed stop
-                    if task.cancelled():
-                        logger.info(
-                            "Stream cancelled for user %s",
-                            user_id
-                        )
-                        break
-                    if token is None:
-                        continue
-                    token = str(token)
-                    if not token:
-                        continue
-                    full_text += token
-                    # =================================================
-                    # IMPORTANT
-                    #
-                    # Your frontend currently does:
-                    #
-                    # full += chunk
-                    #
-                    # Therefore we send RAW TEXT.
-                    #
-                    # DO NOT send:
-                    #
-                    # sse(...)
-                    #
-                    # DO NOT send JSON.
-                    # =================================================
-                    yield token
-                # =================================================
-                # SAVE ASSISTANT RESPONSE
-                # =================================================
-                if full_text.strip():
-                    try:
-                        await save_message(
-                            user_id,
-                            conv_id,
-                            "assistant",
-                            full_text
-                        )
-                    except Exception as e:
-                        logger.exception(
-                            "Failed to save assistant message: %s",
-                            e
-                        )
-                # =================================================
-                # UPDATE MEMORY IN BACKGROUND
-                # =================================================
+
+            # =====================================================
+            # MODEL HISTORY
+            # =====================================================
+
+            full_history = [
+                {
+                    "role": "system",
+                    "content": base_system
+                }
+            ] + history
+
+            logger.info(
+                "Calling Groq stream for conversation %s",
+                conv_id
+            )
+
+            # =====================================================
+            # STREAM FROM GROQ
+            # =====================================================
+
+            async for token in stream_groq_chat(
+                full_history
+            ):
+
+                if token is None:
+                    continue
+
+                token = str(token)
+
+                if not token:
+                    continue
+
+                full_text += token
+
+                # IMPORTANT:
+                #
+                # Frontend currently does:
+                #
+                # full += chunk
+                #
+                # Therefore send RAW TEXT.
+                #
+                yield token
+
+            # =====================================================
+            # STREAM FINISHED NORMALLY
+            # =====================================================
+
+            logger.info(
+                "Model stream finished. Generated %d characters.",
+                len(full_text)
+            )
+
+            # =====================================================
+            # SAVE ASSISTANT MESSAGE
+            # =====================================================
+
+            if full_text.strip():
+
                 try:
+
+                    await save_message(
+                        user["id"],
+                        conv_id,
+                        "assistant",
+                        full_text
+                    )
+
+                    logger.info(
+                        "Assistant message saved for %s",
+                        conv_id
+                    )
+
+                except Exception as e:
+
+                    logger.exception(
+                        "Failed to save assistant message: %s",
+                        e
+                    )
+
+                # =================================================
+                # MEMORY
+                # =================================================
+
+                try:
+
                     asyncio.create_task(
                         _background_update_user_memory(
-                            user_id,
+                            user["id"],
                             user_memory,
                             prompt,
                             full_text
                         )
                     )
+
                 except Exception as e:
+
                     logger.exception(
                         "Failed to schedule memory update: %s",
                         e
                     )
-            except asyncio.CancelledError:
-                logger.info(
-                    "Generation cancelled for user %s",
-                    user_id
-                )
-                # Do not send an error to the frontend.
-                # The browser intentionally cancelled the request.
-                raise
-            except Exception as e:
-                logger.exception(
-                    "Stream error for user %s: %s",
-                    user_id,
-                    e
-                )
-                # Since the frontend expects plain text,
-                # return the error as text instead of SSE JSON.
-                error_text = (
-                    "\n\n**Error:** "
-                    + str(e)
-                )
-                yield error_text
-            finally:
-                active_streams.pop(
-                    user_id,
-                    None
-                )
-        # ========================================================
-        # STREAM RESPONSE
-        # ========================================================
-        return StreamingResponse(
-            event_gen(),
-            media_type="text/plain; charset=utf-8",
-            headers={
-                "Cache-Control": (
-                    "no-cache, "
-                    "no-store, "
-                    "must-revalidate"
-                ),
-                "Pragma": "no-cache",
-                "Expires": "0",
-                # Prevent nginx from buffering
-                "X-Accel-Buffering": "no",
-                # Keep streaming connection alive
-                "Connection": "keep-alive"
-            }
-        )
+
+        except asyncio.CancelledError:
+
+            # Browser disconnected / AbortController fired.
+            #
+            # This is NOT an AI error.
+            logger.info(
+                "Client disconnected during generation for user %s",
+                user["id"]
+            )
+
+            # Save whatever text was already generated.
+            if full_text.strip():
+
+                try:
+
+                    await save_message(
+                        user["id"],
+                        conv_id,
+                        "assistant",
+                        full_text
+                    )
+
+                except Exception as e:
+
+                    logger.exception(
+                        "Failed to save partial response: %s",
+                        e
+                    )
+
+            return
+
+        except Exception as e:
+
+            logger.exception(
+                "Universal stream failed: %s",
+                e
+            )
+
+            # Since the frontend expects plain text,
+            # return the error as text.
+
+            yield (
+                "\n\n**Error:** "
+                + str(e)
+            )
+
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/plain; charset=utf-8",
+        headers={
+            "Cache-Control": (
+                "no-cache, "
+                "no-store, "
+                "must-revalidate"
+            ),
+            "Pragma": "no-cache",
+            "Expires": "0",
+
+            # Critical when behind nginx / proxy
+            "X-Accel-Buffering": "no",
+
+            # Don't manually set Content-Length
+            "Connection": "keep-alive"
+        }
+    )
     # ============================================================
     # NON-STREAMING RESPONSE
     # ============================================================
