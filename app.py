@@ -1,6 +1,3 @@
-Here is the fully updated backend Python file. I have integrated **Replicate** for images (Flux 1.1 Pro), videos (Wan 2.1 14B), and music (MusicGen), while keeping OpenAI GPT-4o for chat/vision, Groq for STT/memory, and Tavily for web search. I also aligned all the SSE streaming events (`text_delta`, `image_generating`, `image_generated`, `video`, `music`, `search_results`, `done`) so they perfectly match what the fixed frontend expects.
-
-```python
 import os
 import re
 import json
