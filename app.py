@@ -883,9 +883,9 @@ async def create_user_session(
                 "id": str(uuid.uuid4()),
                 "user_id": user_id,
                 "token": token,
-                "fingerprint": fingerprint,
+                "current_fingerprint": fingerprint,
                 "user_agent": "",
-                "ip_address": "",
+                "ip_address": None,
                 "expires_at": expires_at.isoformat(),
                 "is_valid": True,
                 "created_at": datetime.now(timezone.utc).isoformat()
@@ -1685,7 +1685,7 @@ async def get_user(
         try:
             fp_part = device_cookie.split("_")[0] if "_" in device_cookie else device_cookie
             fp_resp = await _execute_supabase_with_retry(
-                supabase.table("users").select("id").eq("fingerprint", fp_part).limit(1),
+                supabase.table("users").select("id").eq("device_fingerprint", fp_part).limit(1),
                 description="User Lookup by Fingerprint"
             )
             if fp_resp.data:
@@ -1697,7 +1697,7 @@ async def get_user(
     if not user_id and stored_fingerprint:
         try:
             fp_resp = await _execute_supabase_with_retry(
-                supabase.table("users").select("id").eq("fingerprint", stored_fingerprint).limit(1),
+                supabase.table("users").select("id").eq("device_fingerprint", stored_fingerprint).limit(1),
                 description="User Lookup by Stored Fingerprint"
             )
             if fp_resp.data:
@@ -1711,7 +1711,7 @@ async def get_user(
             fp_resp = await _execute_supabase_with_retry(
                 supabase.table("users")
                 .select("id")
-                .eq("fingerprint", current_fingerprint)
+                .eq("device_fingerprint", current_fingerprint)
                 .order("created_at", desc=False)   
                 .limit(1),
                 description="User Lookup by Current Fingerprint (cookie-free)"
@@ -1737,15 +1737,15 @@ async def get_user(
                     "is_premium": u.get("is_premium", False),
                     "is_lifetime": u.get("is_lifetime", False),
                     "plan": u.get("plan", "free"),
-                    "fingerprint": current_fingerprint,
+                    "device_fingerprint": current_fingerprint,
                     "session_valid": user_obj.get("session_valid", False),
                     "session_token": user_obj.get("session_token")
                 }
                 
-                if u.get("fingerprint") != current_fingerprint:
+                if u.get("device_fingerprint") != current_fingerprint:
                     try:
                         await _execute_supabase_with_retry(
-                            supabase.table("users").update({"fingerprint": current_fingerprint}).eq("id", user_id),
+                            supabase.table("users").update({"device_fingerprint": current_fingerprint}).eq("id", user_id),
                             description="Update Fingerprint"
                         )
                     except Exception as e:
