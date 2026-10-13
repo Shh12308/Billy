@@ -2466,7 +2466,7 @@ async def handle_image_generation(prompt: str, user: Dict[str, Any], conv_id: st
 
         try:
             # Using Stability AI SD3 Medium on Hugging Face Inference API
-            API_URL = "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-3-medium"
+            API_URL = "https://router.huggingface.co/hf-inference/models/stabilityai/stable-diffusion-3-medium-diffusers"
             headers = {"Authorization": f"Bearer {HUGGINGFACE_API_TOKEN}"}
             
             async with httpx.AsyncClient(timeout=120.0) as client:
@@ -2532,7 +2532,7 @@ async def handle_video_generation(prompt: str, user: Dict[str, Any], conv_id: st
             # STEP 1: Generate High-Quality Image (SD3 Medium)
             yield sse({"type": "status", "message": "Step 1/2: Visualizing scene (SD3)..."})
             
-            SD3_URL = "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-3-medium"
+            SD3_URL = "https://router.huggingface.co/hf-inference/models/stabilityai/stable-diffusion-3-medium-diffusers"
             
             async with httpx.AsyncClient(timeout=120.0) as client:
                 img_resp = await client.post(SD3_URL, headers=headers, json={"inputs": prompt})
@@ -2549,7 +2549,7 @@ async def handle_video_generation(prompt: str, user: Dict[str, Any], conv_id: st
             # STEP 2: Animate with SVD XT (Best Video Model)
             yield sse({"type": "status", "message": "Step 2/2: Animating (SVD XT)..."})
             
-            SVD_URL = "https://api-inference.huggingface.co/models/stabilityai/stable-video-diffusion-img2vid-xt"
+            SVD_URL = "https://router.huggingface.co/hf-inference/models/stabilityai/stable-video-diffusion-img2vid-xt"
             
             async with httpx.AsyncClient(timeout=300.0) as client: 
                 files = {"inputs": (tmp_img_path, open(tmp_img_path, "rb"), "image/png")}
@@ -2563,7 +2563,7 @@ async def handle_video_generation(prompt: str, user: Dict[str, Any], conv_id: st
                     logger.warning(f"SVD failed, trying Text-to-Video fallback...")
                     yield sse({"type": "status", "message": "Switching to direct Text-to-Video..."})
                     
-                    T2V_URL = "https://api-inference.huggingface.co/models/damo-vilab/text-to-video-ms-1.7b"
+                    T2V_URL = "https://router.huggingface.co/hf-inference/models/damo-vilab/text-to-video-ms-1.7b"
                     vid_resp = await client.post(T2V_URL, headers=headers, json={"inputs": prompt})
                     
                     if vid_resp.status_code != 200:
