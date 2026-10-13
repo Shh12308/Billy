@@ -883,7 +883,6 @@ async def create_user_session(
                 "id": str(uuid.uuid4()),
                 "user_id": user_id,
                 "token": token,
-                "current_fingerprint": fingerprint,
                 "user_agent": "",
                 "ip_address": None,
                 "expires_at": expires_at.isoformat(),
@@ -900,8 +899,12 @@ async def create_user_session(
         
         return token
     except Exception as e:
-        logger.error(f"Failed to create session: {e}")
-        return token
+        logger.exception("Failed to create session")
+        _session_cache.pop(user_id, None)
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to create session. Check the shared Supabase schema and permissions."
+        ) from e
 
 async def cleanup_session_cache():
     """Periodically clean up expired session cache entries"""
@@ -1764,34 +1767,46 @@ async def get_user(
             logger.error(f"User data fetch failed: {e}")
 
     new_id = str(uuid.uuid4())
-    
+
     try:
         new_user_data = {
             "id": new_id,
             "email": f"anon+{new_id[:8]}@local",
             "memory": "",
-            "fingerprint": current_fingerprint
+            # Match the shared schema used by lookups elsewhere in this backend.
+            "device_fingerprint": current_fingerprint
         }
-        
+
         await _execute_supabase_with_retry(
             supabase.table("users").upsert(new_user_data, on_conflict="id"),
             description="Create Anonymous User"
         )
-        
-        user_obj["id"] = new_id
-        
-    except Exception as e:
-        logger.error(f"Failed to create anonymous user: {e}")
-        user_obj["id"] = new_id
 
-    new_token = await create_user_session(new_id, current_fingerprint, remember)
+        # Verify persistence before creating a session or conversation.
+        verify_resp = await _execute_supabase_with_retry(
+            supabase.table("users").select("id").eq("id", new_id).limit(1),
+            description="Verify Anonymous User"
+        )
+        if not verify_resp.data:
+            raise RuntimeError("Anonymous user row could not be verified")
+
+        user_obj["id"] = verify_resp.data[0]["id"]
+
+    except Exception as e:
+        logger.exception("Failed to create anonymous user")
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to create user record. Check shared Supabase schema and permissions."
+        ) from e
+
+    new_token = await create_user_session(user_obj["id"], current_fingerprint, remember)
     user_obj["session_token"] = new_token
     user_obj["session_valid"] = True
-    
-    set_session_cookies(response, new_id, current_fingerprint, new_token, remember)
-    
-    logger.info(f"New user created: {new_id[:8]}... with fingerprint {current_fingerprint[:8]}...")
-    
+
+    set_session_cookies(response, user_obj["id"], current_fingerprint, new_token, remember)
+
+    logger.info("New user created: %s...", user_obj["id"][:8])
+
     return user_obj
 
 async def _background_update_user_memory(user_id: str, old_memory: str, user_prompt: str, assistant_response: str):
