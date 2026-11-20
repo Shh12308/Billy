@@ -1852,7 +1852,7 @@ Updated Memory:"""
                     "https://api.groq.com/openai/v1/chat/completions",
                     headers=get_groq_headers(),
                     json={
-                        "model": "llama-3.1-8b-instant", 
+                        "model": "openai/gpt-oss-20b", 
                         "messages": messages,
                         "max_tokens": 300,
                         "temperature": 0.1
@@ -2274,8 +2274,8 @@ async def stream_groq_chat(messages: list, model: str = "openai/gpt-oss-120b", m
                     if resp.status_code in (429, 413):
                         logger.warning(f"Groq limit hit ({resp.status_code}). Attempt {attempt+1}/{max_retries}.")
                         if model == "openai/gpt-oss-120b" and resp.status_code == 413:
-                            logger.info("Falling back to llama-3.1-8b-instant due to TPM limit")
-                            model = "llama-3.1-8b-instant"
+                            logger.info("Falling back to openai/gpt-oss-20b due to TPM limit")
+                            model = "openai/gpt-oss-20b"
                             max_tokens = min(max_tokens, 1500)
                             await asyncio.sleep(2)
                             continue
@@ -3551,8 +3551,8 @@ async def groq_request_with_retry(client, payload):
                 
                 # Fallback to smaller model if 413 TPM limit
                 if e.response.status_code == 413 and payload.get("model") == "openai/gpt-oss-120b":
-                    logger.info("Falling back to llama-3.1-8b-instant for non-stream request")
-                    payload["model"] = "llama-3.1-8b-instant"
+                    logger.info("Falling back to openai/gpt-oss-20b for non-stream request")
+                    payload["model"] = "openai/gpt-oss-20b"
                     payload["max_tokens"] = min(payload.get("max_tokens", 1024), 1500)
                     continue
                     
